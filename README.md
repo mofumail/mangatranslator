@@ -34,7 +34,7 @@ Output pages are written as `<name>_translated.png`, plus a `glossary.txt` of na
 | Stage | Model (local) |
 |---|---|
 | Bubble detection | YOLOv8 manga109 bubble seg + RT-DETR conjoined-bubble detector + manga109 panel YOLO (reading order) |
-| OCR | Speech bubbles: `manga-ocr` (Japanese) / PaddleOCR-VL 1.6 (other languages). Text outside bubbles: comic-text-detector finds the individual lines on the whole page, Hayai OCR v2.5 Nova reads each line (see below) |
+| OCR | Speech bubbles: `manga-ocr` (Japanese) / PaddleOCR-VL 1.6 (other languages). Text outside bubbles: Hayai OCR v2.5 Nova, line by line using comic-text-detector lines for multi-line blocks (see below) |
 | Cleaning | Flat fill inside bubbles, Koharu SAM-TS-L glyph masks, LaMa-manga inpainting |
 | Translation | Gemma 4 26B-A4B QAT (MoE, experts in system RAM) via `llama-server` (llama.cpp, CUDA), thinking off, 3 pages of story context + auto glossary |
 | Typesetting | MangaTranslator renderer: per-page font size matching, hyphenation, markdown italics/bold for emphasis |
@@ -83,8 +83,9 @@ manga-ocr reads a region by squashing it into 224×224 px, which turns such a bl
 per glyph and makes it invent text. So, like manga-image-translator and BallonsTranslator,
 these blocks are read line by line: comic-text-detector (page-level line detector) finds the lines,
 Hayai OCR v2.5 Nova (aspect-ratio preserving manga OCR, JA/ZH/KO/EN) reads each one, and they are
-joined in reading order. Regions with fewer than 2 detected lines (sound effects, short asides) and
-all speech bubbles keep upstream's path. This lives in `osb_ocr.py`, installed into MangaTranslator
+joined in reading order. Regions with fewer than 2 detected lines (sound effects, short asides) are
+read whole by Hayai, which was trained on onomatopoeia (manga-ocr misread most stylized SFX in tests).
+Speech bubbles keep manga-ocr (Hayai and manga-ocr tied on the benchmark bubbles: 1.68% CER). This lives in `osb_ocr.py`, installed into MangaTranslator
 at runtime by `mt_upstream.py` (the submodule stays untouched).
 
 Pages that print a Chinese translation next to the Japanese (common in `[中国翻訳]` releases): the
