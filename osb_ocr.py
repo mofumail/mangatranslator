@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import itertools
 import os
+import re
 import threading
 from collections import OrderedDict
 from pathlib import Path
 
-MIN_LINES = 2  # regions with fewer detected lines keep upstream's read
+MIN_LINES = 2  # regions with at least this many detected lines are read line by line
 
 
 def _script_ratios(text: str) -> tuple[int, float, float]:
@@ -94,8 +95,10 @@ def _lines_in(lines: list, box) -> list:
 
 
 def read_region(meta: dict, models_dir: Path, rtl: bool = True) -> str | None:
-    """Line-by-line OCR of one outside-text region. None (keep upstream's read) if the page is
-    unknown or the region holds fewer than MIN_LINES detected lines."""
+    """Hayai OCR of one outside-text region: line by line when it holds MIN_LINES or more
+    detected lines, otherwise the whole region in one pass (sound effects, short asides; Hayai
+    was trained on onomatopoeia, manga-ocr was not). None (keep upstream's read) if the page
+    is unknown."""
     import hayai_ocr
     import text_lines
 
@@ -105,9 +108,14 @@ def read_region(meta: dict, models_dir: Path, rtl: bool = True) -> str | None:
     if page is None or not box or len(box) != 4:
         return None
     lines = text_lines.reading_order(_lines_in(_page_lines(token, models_dir), box), rtl=rtl)
-    if len(lines) < MIN_LINES:
-        return None
     W, H = page.size
+    if len(lines) < MIN_LINES:
+        x1, y1, x2, y2 = (int(v) for v in box)
+        if x2 - x1 < 4 or y2 - y1 < 4:
+            return None
+        text = hayai_ocr.get(models_dir).read([page.crop((max(0, x1), max(0, y1), min(W, x2), min(H, y2)))],
+                                             max_patches=512, max_new_tokens=64)[0].strip()
+        return text or None
     pieces = []
     for line in lines:
         pad = max(2, int(0.1 * line.thickness))
@@ -181,6 +189,12 @@ def install() -> None:
 
     def call_translation_api_batch(*args, **kwargs):
         texts = original_batch(*args, **kwargs)
+        for i, t in enumerate(texts):
+            # Upstream fills items the LLM skipped with "[<provider>-Translate: missing item N]",
+            # which its renderer doesn't recognize as an error and draws onto the page.
+            # Mark them as failed instead, so the original lettering is restored.
+            if isinstance(t, str) and re.fullmatch(r"\s*\[[^\]]*missing item \d+\]\s*", t, re.I):
+                texts[i] = "[OCR FAILED]"
         for i, m in enumerate(kwargs.get("bubble_metadata") or []):
             if m.get("mt_skip") and i < len(texts):
                 texts[i] = ""  # rendered as "erase only"
