@@ -122,6 +122,8 @@ bin/llama.cpp/        prebuilt llama.cpp b11972, CUDA 13.4
 models/llm/           translator GGUFs
 models/…              detection / OCR / inpainting weights (auto-downloaded)
 fonts/                Comic Neue (dialogue), Bangers (OSB/SFX) — both SIL OFL
+                      Add your own as fonts/<Name>/ with -Regular/-Bold/-Italic in the file names
+                      (e.g. CC Wild Words, Anime Ace; git-ignored, as their licenses forbid redistribution)
                       (model licenses: Hayai Apache-2.0; comic-text-detector weights GPL-3.0)
 eval/                 OpenMantra benchmark pages used to check quality
 logs/llama-server.log
