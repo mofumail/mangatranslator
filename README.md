@@ -34,7 +34,7 @@ Output pages are written as `<name>_translated.png`, plus a `glossary.txt` of na
 | Stage | Model (local) |
 |---|---|
 | Bubble detection | YOLOv8 manga109 bubble seg + RT-DETR conjoined-bubble detector + manga109 panel YOLO (reading order) |
-| OCR | `manga-ocr` (Japanese) / PaddleOCR-VL 1.6 (other languages) |
+| OCR | Speech bubbles: `manga-ocr` (Japanese) / PaddleOCR-VL 1.6 (other languages). Text outside bubbles: comic-text-detector finds the individual lines on the whole page, Hayai OCR v2.5 Nova reads each line (see below) |
 | Cleaning | Flat fill inside bubbles, Koharu SAM-TS-L glyph masks, LaMa-manga inpainting |
 | Translation | Gemma 4 26B-A4B QAT (MoE, experts in system RAM) via `llama-server` (llama.cpp, CUDA), thinking off, 3 pages of story context + auto glossary |
 | Typesetting | MangaTranslator renderer: per-page font size matching, hyphenation, markdown italics/bold for emphasis |
@@ -66,6 +66,9 @@ the llama-server start adds ~5-10 s per run.
 --osb on|off|auto                    # text outside bubbles (narration/SFX) — see below
 --offline                            # hard-forbid network access (all models must be downloaded)
 --skip-existing                      # resume: only translate pages without an output yet
+--adult                              # 18+ content: translate explicit lines fully (web UI: checkbox)
+--keep-other-language                # don't erase other-script blocks (e.g. Chinese next to Japanese)
+--no-ocr-correction                  # don't let the LLM repair lines the OCR obviously misread
 --llm-url http://host:port/v1 --llm-model-name X   # use another OpenAI-compatible server
 --model 12b                          # faster dense translator, fully on GPU
 --gguf models/llm/other.gguf [--cpu-moe N]         # use another GGUF (MoE: N layers' experts in RAM)
@@ -74,6 +77,19 @@ the llama-server start adds ~5-10 s per run.
 ```
 
 ## Text outside speech bubbles (OSB)
+
+Narration and chat text printed on the art often comes in large blocks of many vertical lines.
+manga-ocr reads a region by squashing it into 224×224 px, which turns such a block into a few pixels
+per glyph and makes it invent text. So, like manga-image-translator and BallonsTranslator,
+these blocks are read line by line: comic-text-detector (page-level line detector) finds the lines,
+Hayai OCR v2.5 Nova (aspect-ratio preserving manga OCR, JA/ZH/KO/EN) reads each one, and they are
+joined in reading order. Regions with fewer than 2 detected lines (sound effects, short asides) and
+all speech bubbles keep upstream's path. This lives in `osb_ocr.py`, installed into MangaTranslator
+at runtime by `mt_upstream.py` (the submodule stays untouched).
+
+Pages that print a Chinese translation next to the Japanese (common in `[中国翻訳]` releases): the
+Chinese block is erased and not translated, so the English appears once (`--keep-other-language`
+turns this off).
 
 Narration boxes / text drawn on the art need the gated `deepghs/AnimeText_yolo` model.
 Accept its terms at <https://huggingface.co/deepghs/AnimeText_yolo> with the account whose token is in
@@ -84,12 +100,17 @@ once the model is accessible/downloaded.
 
 ```
 translate.py          wrapper / entry point (CLI)
+mt_upstream.py        runs MangaTranslator's CLI with the patches below installed
+osb_ocr.py            line-by-line OCR for text outside bubbles, full-res crops, other-language erase
+text_lines.py         comic-text-detector (ONNX, CPU) line detection
+hayai_ocr.py          Hayai OCR v2.5 Nova loader (code vendored in vendor/hayai, audited, pinned)
 webui.py, webui/      browser UI + reader (state in webui_data/, default output in translated/)
 MangaTranslator/      upstream pipeline (git pull to update, then `uv sync`)
 bin/llama.cpp/        prebuilt llama.cpp b11972, CUDA 13.4
 models/llm/           translator GGUFs
 models/…              detection / OCR / inpainting weights (auto-downloaded)
 fonts/                Comic Neue (dialogue), Bangers (OSB/SFX) — both SIL OFL
+                      (model licenses: Hayai Apache-2.0; comic-text-detector weights GPL-3.0)
 eval/                 OpenMantra benchmark pages used to check quality
 logs/llama-server.log
 ```

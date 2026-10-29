@@ -105,7 +105,7 @@ def worker() -> None:
 def run_job(job_id: str, job: dict[str, Any]) -> None:
     o = job["options"]
     cmd = [sys.executable, str(ROOT / "translate.py"),
-           "--input", job["input_dir"], "--output", job["output_dir"], "--skip-existing",
+           "--input", job["input_dir"], "--output", job["output_dir"],
            "--source", o.get("source") or "Japanese", "--target", o.get("target") or "English",
            "--model", o.get("model") or "26b", "--osb", o.get("osb") or "auto",
            "--context-pages", str(o.get("context_pages", 3))]
@@ -115,6 +115,10 @@ def run_job(job_id: str, job: dict[str, Any]) -> None:
         cmd += ["--instructions", o["instructions"]]
     if o.get("offline"):
         cmd += ["--offline"]
+    if o.get("adult"):
+        cmd += ["--adult"]
+    if job.get("resume"):  # only Resume skips pages that already have output
+        cmd += ["--skip-existing"]
 
     Path(job["output_dir"]).mkdir(parents=True, exist_ok=True)
     log_path = job_dir(job_id) / "log.txt"
@@ -450,7 +454,7 @@ def resume(job_id: str) -> dict[str, Any]:
     job = store.get(job_id)
     if job["kind"] != "translate" or job["status"] not in FINAL:
         raise HTTPException(409, "cannot resume this job")
-    store.update(job_id, status="queued", error=None)
+    store.update(job_id, status="queued", error=None, resume=True)
     work_queue.put(job_id)
     return job_summary(store.get(job_id))
 

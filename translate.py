@@ -231,6 +231,12 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
                    help="Glossary file to reuse/update for consistent names (default: <output>/glossary.txt; "
                    "pass the previous chapter's to carry names over)")
     p.add_argument("--instructions", default=None, help="Extra instructions for the translator LLM")
+    p.add_argument("--adult", action="store_true",
+                   help="18+ content: translate explicit lines fully instead of softening them")
+    p.add_argument("--keep-other-language", action="store_true",
+                   help="Don't erase blocks in another script (e.g. a Chinese translation printed beside the Japanese)")
+    p.add_argument("--no-ocr-correction", dest="ocr_correction", action="store_false",
+                   help="Don't let the LLM fix lines that OCR obviously misread")
     p.add_argument("--format", choices=["auto", "png", "jpeg"], default="png", help="Output format")
     p.add_argument("--vertical-text", action="store_true",
                    help="Allow stacking short text vertically in tall bubbles (default: on only for CJK targets)")
@@ -276,10 +282,12 @@ def main() -> None:
                PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True")
     if args.offline:
         env.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
+    if args.keep_other_language:
+        env["MT_KEEP_OTHER_LANGUAGE"] = "1"
 
-    upstream_main = [sys.executable, str(UPSTREAM / "main.py")]
+    upstream_main = [sys.executable, str(ROOT / "mt_upstream.py")]  # upstream CLI + local OCR patch
     if args.upstream_help:
-        sys.exit(subprocess.call(upstream_main + ["--help"], cwd=UPSTREAM, env=env))
+        sys.exit(subprocess.call([sys.executable, str(UPSTREAM / "main.py"), "--help"], cwd=UPSTREAM, env=env))
     if not args.input or not args.output:
         sys.exit("error: --input and --output are required")
 
@@ -348,6 +356,10 @@ def main() -> None:
         cmd += ["--translation-mode", "one-step", "--ocr-method", "LLM"]
     else:
         cmd += ["--translation-mode", "two-step", "--ocr-method", ocr]
+    if args.adult:
+        cmd += ["--ero-doujinshi-mode"]
+    if args.ocr_correction and not vision:
+        cmd += ["--ocr-correction"]
     if osb:
         cmd += ["--osb-enable", "--osb-font-dir", font_pack(args.osb_font)]
     else:
@@ -359,6 +371,9 @@ def main() -> None:
     if not (args.vertical_text or cjk_target):
         cmd += ["--no-auto-vertical-text"]  # letter-stacked Latin text ("H/u/h/?") reads badly
     notes = [args.instructions] if args.instructions else []
+    # Outside-bubble fonts often lack italics, so emphasis markup must not replace quote marks
+    notes.append("Render quoted speech in 「」 and 『』 with quotation marks (\"...\" and '...'); "
+                 "never use * or ** markdown in place of quotation marks.")
     if batch:
         # Local models tend to write the English name on both sides of the new-terms block,
         # which upstream rejects ("source not on page"), leaving the glossary empty.
