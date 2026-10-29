@@ -256,3 +256,116 @@ def install_no_downscale() -> None:
 
     for module in (image_utils, image_pkg, osb, tr):
         module.process_bubble_image_cached = process_bubble_image_cached
+
+
+NARRATION_MIN_WORDS = 6  # outside-bubble translations this long are narration, not SFX
+
+
+def utterance_lines(text: str) -> str:
+    """One line per quoted utterance / narration sentence run, like the source's columns."""
+    t = re.sub(r'(["”’\'])\s+(?=["“‘\'])', r"\1\n", text)       # "…" "…"
+    t = re.sub(r'([.!?~…♡])\s+(?=["“‘]|\'[A-Z])', r"\1\n", t)   # narration. "…" / 'Comment
+    t = re.sub(r'(["”])\s+(?=[A-Z])', r"\1\n", t)               # "…" Narration
+    return t
+
+
+def install_narration_style() -> None:
+    """Upstream sets every outside-bubble text like a sound effect: upper case, display font
+    (Bangers), following the region's tilt. Long ones are narration/dialogue, which reads far
+    better in the dialogue font, normal case, upright, one utterance per line."""
+    import dataclasses
+
+    import core.pipeline as pipeline
+
+    original_batch = pipeline.call_translation_api_batch
+
+    def call_translation_api_batch(*args, **kwargs):
+        texts = original_batch(*args, **kwargs)
+        for i, m in enumerate(kwargs.get("bubble_metadata") or []):
+            if i < len(texts) and m.get("is_outside_text") and isinstance(texts[i], str):
+                t = texts[i].strip()
+                if len(t.split()) >= NARRATION_MIN_WORDS and not t.startswith("["):
+                    m["mt_narration"] = True
+                    m["mt_text"] = utterance_lines(t)
+        return texts
+
+    pipeline.call_translation_api_batch = call_translation_api_batch
+
+    original_attempts = pipeline._osb_render_attempts
+
+    def _osb_render_attempts(bubble, config, sizes):
+        if bubble.get("mt_narration"):
+            return [(0.0, False, None), (0.0, True, None)]  # upright
+        return original_attempts(bubble, config, sizes)
+
+    pipeline._osb_render_attempts = _osb_render_attempts
+
+    original_render = pipeline._render_osb_attempt
+
+    def _render_osb_attempt(image, bubble, text, bubble_id, config, sizes, attempt, layout_only=False):
+        if bubble.get("mt_narration"):
+            text = bubble.get("mt_text", text)  # upstream passes text.upper()
+            config = dataclasses.replace(
+                config, outside_text=dataclasses.replace(config.outside_text, osb_font_dir=None))
+        return original_render(image, bubble, text, bubble_id, config, sizes, attempt, layout_only)
+
+    pipeline._render_osb_attempt = _render_osb_attempt
+
+
+def install_keep_line_breaks() -> None:
+    """Upstream's renderer collapses all whitespace (newlines included) right before layout,
+    although its layout engine honors explicit line breaks. Rebuild render_text_skia from its
+    own source with that one line changed to keep newlines. If upstream changes the line, the
+    patch is skipped (narration then wraps as one paragraph, as before)."""
+    import inspect
+    import textwrap
+
+    import core
+    import core.pipeline as pipeline
+    import core.text as text_pkg
+    import core.text.placeholders as placeholders
+    from core.text import text_renderer
+    from utils.logging import log_message
+
+    old = 'clean_text = " ".join(normalized_text.split())'
+    new = 'clean_text = "\\n".join(" ".join(l.split()) for l in normalized_text.split("\\n")).strip()'
+    src = textwrap.dedent(inspect.getsource(text_renderer.render_text_skia))
+    if src.count(old) != 1:
+        log_message("Note: line-break patch for the text renderer no longer applies; skipped",
+                    always_print=True)
+        return
+    namespace = text_renderer.__dict__
+    exec(compile(src.replace(old, new), text_renderer.__file__, "exec"), namespace)
+    patched = namespace["render_text_skia"]
+    for module in (text_renderer, pipeline, placeholders, text_pkg, core):
+        module.render_text_skia = patched
+
+
+def install_wrapped_paragraphs() -> None:
+    """Upstream's layout keeps explicit newlines but never wraps inside those lines, so long
+    utterances shrink the whole block. Wrap each paragraph with upstream's own line breaker
+    at the same font size, then stack them."""
+    from core.text import layout_engine as le
+
+    original = le.check_fit
+
+    def check_fit(font_size, text, max_render_width, max_render_height, *args, **kwargs):
+        if "\n" not in text or kwargs.get("vertical_stack"):
+            return original(font_size, text, max_render_width, max_render_height, *args, **kwargs)
+        lines, metrics, line_height, widest = [], None, None, 0.0
+        for para in (p for p in text.split("\n") if p.strip()):
+            fit = original(font_size, para, max_render_width, float("inf"), *args, **kwargs)
+            if fit is None:
+                return None  # a word doesn't fit the width at this size
+            lines += fit["lines"]
+            metrics, line_height = fit["metrics"], fit["line_height"]
+            widest = max(widest, fit["max_line_width"])
+        if not lines:
+            return None
+        block_height = (-metrics.fAscent + metrics.fDescent) + (len(lines) - 1) * line_height
+        if block_height > max_render_height:
+            return None
+        return {"lines": lines, "metrics": metrics, "max_line_width": widest,
+                "line_height": line_height, "block_height": block_height}
+
+    le.check_fit = check_fit

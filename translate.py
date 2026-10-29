@@ -351,6 +351,8 @@ def main() -> None:
         "--output-format", args.format,
         "--batch-previous-context-texts", str(args.context_pages),
         "--osb-inpainting-method", args.inpaint,
+        # narrow/tall regions (vertical Japanese asides) may grow so English fits
+        "--osb-render-expansion-narrow", "2.0",
     ]
     if vision:
         cmd += ["--translation-mode", "one-step", "--ocr-method", "LLM"]
