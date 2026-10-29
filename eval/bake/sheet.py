@@ -29,8 +29,11 @@ def parse(log: Path) -> dict[str, list[tuple[str, str]]]:
         elif line.startswith("Raw response"):
             tr, mode = [], "tr"
         elif mode and re.match(r"^\d+: ", line):
-            text = line.split(": ", 1)[1].strip()
-            (ocr if mode == "ocr" else tr).append(re.sub(r"^\[(Bubble|OSB)\] ", "", text))
+            num, text = line.split(": ", 1)
+            target = ocr if mode == "ocr" else tr
+            if int(num) <= len(target):  # repeated number in the response: the parser keeps one
+                continue
+            target.append(re.sub(r"^\[(Bubble|OSB)\] ", "", text.strip()))
         elif line.startswith("---") and mode and (ocr if mode == "ocr" else tr):
             mode = None
     if page:

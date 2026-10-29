@@ -38,6 +38,9 @@ def is_japanese(text: str) -> bool:
 # Characters that are everyday Chinese but (almost) never appear in Japanese text:
 # sentence particles and simplified-only forms.
 ZH_MARKERS = set("们呢吧吗么这嗯哦啊呀您她说让没还对给吃过时间样边见")
+# Simplified forms Japanese never uses (Japanese writes 這説話時過対開関門見譲還発気...)
+ZH_SIMPLIFIED = set("们这说话时过对开关门见让还发气车东经书长问间听现实认识应该样边头动从觉为无么个给吗呢吧"
+                    "爱乐欢够难变种进远连级员单层战视请谁论读课谢买卖脑脸点儿哪")
 
 
 def is_other_cjk(text: str) -> bool:
@@ -47,7 +50,10 @@ def is_other_cjk(text: str) -> bool:
     if n < 6 or han < 0.4:
         return False
     markers = sum(1 for c in text if c in ZH_MARKERS)
-    return (kana < 0.08 and n >= 12) or (kana < 0.25 and markers >= 2)
+    simplified = sum(1 for c in text if c in ZH_SIMPLIFIED or c in ZH_MARKERS)
+    # No kana alone is not enough: Japanese status screens and labels are often all kanji
+    # (状態：乳房開発完了 人格消失), so also ask for characters only Chinese writes this way.
+    return (kana < 0.08 and n >= 8 and simplified >= 2) or (kana < 0.25 and markers >= 2)
 
 
 # CTD is a page-level detector (trained on whole pages at 1024 px), so it runs once per page,
@@ -94,6 +100,38 @@ def _lines_in(lines: list, box) -> list:
     return out
 
 
+def _pad_mean(im, frac: float = 0.25):
+    """Margin in the crop's mean color. Hayai misreads tight crops of hand-drawn sound effects
+    (むに -> むり, ん -> き); a margin fixes most. Not used for clean lines, where it can hurt."""
+    from PIL import ImageOps
+
+    fill = tuple(int(v) for v in im.resize((1, 1)).getpixel((0, 0)))
+    return ImageOps.expand(im, int(max(im.size) * frac), fill=fill)
+
+
+def pick_read(other: str, preferred: str) -> str:
+    """Two OCR reads of one region: keep the longer when one contains the other (the usual
+    failure is stopping early: ドクッ -> ド, 十年後ーー夏 -> 十年後), else the preferred one."""
+    import unicodedata
+
+    def letters(t: str) -> str:  # a read of only "..." must not count as contained
+        t = unicodedata.normalize("NFKC", t or "")
+        return "".join(c for c in t if unicodedata.category(c)[0] in "LN")
+
+    a, b = letters(other), letters(preferred)
+    if a and b and (a in b or b in a):
+        if len(a) == len(b):  # same letters: keep the punctuation too (はい、 "here" vs はい "yes")
+            return other if len((other or "").strip()) > len((preferred or "").strip()) else preferred
+        return other if len(a) > len(b) else preferred
+    return preferred if (preferred or "").strip() else other
+
+
+def pick_sfx_read(tight: str, padded: str) -> str:
+    """Hayai on the tight crop misreads hand-drawn sound effects (むに -> むり); the padded crop
+    fixes most of those but sometimes stops early (ドクッ -> ド)."""
+    return pick_read(tight, padded)
+
+
 def read_region(meta: dict, models_dir: Path, rtl: bool = True) -> str | None:
     """Hayai OCR of one outside-text region: line by line when it holds MIN_LINES or more
     detected lines, otherwise the whole region in one pass (sound effects, short asides; Hayai
@@ -113,9 +151,10 @@ def read_region(meta: dict, models_dir: Path, rtl: bool = True) -> str | None:
         x1, y1, x2, y2 = (int(v) for v in box)
         if x2 - x1 < 4 or y2 - y1 < 4:
             return None
-        text = hayai_ocr.get(models_dir).read([page.crop((max(0, x1), max(0, y1), min(W, x2), min(H, y2)))],
-                                             max_patches=512, max_new_tokens=64)[0].strip()
-        return text or None
+        crop = page.crop((max(0, x1), max(0, y1), min(W, x2), min(H, y2))).convert("RGB")
+        tight, padded = (t.strip() for t in hayai_ocr.get(models_dir).read(
+            [crop, _pad_mean(crop)], max_patches=512, max_new_tokens=64))
+        return pick_sfx_read(tight, padded) or None
     pieces = []
     for line in lines:
         pad = max(2, int(0.1 * line.thickness))
@@ -125,8 +164,22 @@ def read_region(meta: dict, models_dir: Path, rtl: bool = True) -> str | None:
     texts = [t for t in texts if t]
     if not texts:
         return None
+    if is_list(lines, texts):
+        return LIST_SEP.join(texts)
     cjk = sum(_script_ratios(t)[1] + _script_ratios(t)[2] for t in texts) / len(texts) > 0.5
     return ("" if cjk else " ").join(texts)
+
+
+LIST_SEP = " / "  # line breaks the translator keeps (chat comments, credits, status screens)
+
+
+def is_list(lines: list, texts: list[str]) -> bool:
+    """Horizontal lines that mostly start with a "name:" / "label:" prefix are a list (stream
+    comments, credits, status readouts): one entry per line, never one flowing sentence."""
+    if len(texts) < 2 or any(getattr(l, "vertical", False) for l in lines):
+        return False
+    labeled = sum(bool(re.match(r"^[^:：]{1,12}[:：]", t)) for t in texts)
+    return labeled * 2 >= len(texts)
 
 
 _SKIPPED_BBOXES: set[tuple] = set()  # blocks erased on purpose; not "left empty" errors
@@ -166,6 +219,24 @@ def install() -> None:
                 texts[i] = text
                 changed = True
 
+        # Bubbles: Hayai matches manga-ocr on regular dialogue (OpenMantra ground truth: 0.9%
+        # character error rate for both) but reads hand-drawn moans that manga-ocr turns into
+        # unrelated words ("ぅ" -> "そして、").
+        bubble_idx = [i for i, m in enumerate(bubble_metadata)
+                      if i < len(texts) and not m.get("is_outside_text")]
+        if bubble_idx and os.environ.get("MT_BUBBLE_OCR", "hayai") == "hayai":
+            import hayai_ocr
+
+            crops = tr._prepare_images_for_ocr([images_b64[i] for i in bubble_idx])
+            ok = [(i, c) for i, c in zip(bubble_idx, crops) if c is not None]
+            reads = hayai_ocr.get(models_dir).read([c.convert("RGB") for _, c in ok],
+                                                   max_patches=512, max_new_tokens=160)
+            for (i, _), t in zip(ok, reads):
+                picked = pick_read(texts[i] if texts[i] != "[OCR FAILED]" else "", t.strip())
+                if picked and picked != texts[i]:
+                    texts[i] = picked
+                    changed = True
+
         # Pages carrying both the Japanese text and a Chinese translation of it: erase the
         # Chinese block without rendering anything, and keep it away from the translator.
         if not os.environ.get("MT_KEEP_OTHER_LANGUAGE") and any(is_japanese(t) for t in texts):
@@ -178,7 +249,7 @@ def install() -> None:
                     log_message(f"Skipping block {i + 1}: not in the source language "
                                 "(erased, not translated)", always_print=True)
         if changed:
-            log_message("Text outside bubbles re-read line by line (comic-text-detector + Hayai OCR):",
+            log_message("Text re-read with Hayai OCR (outside bubbles: line by line via comic-text-detector):",
                         always_print=True)
             tr._format_ocr_results(texts, bubble_metadata)
         return texts
@@ -263,9 +334,16 @@ NARRATION_MIN_WORDS = 6  # outside-bubble translations this long are narration, 
 
 def utterance_lines(text: str) -> str:
     """One line per quoted utterance / narration sentence run, like the source's columns."""
+    # (thoughts) are marked by the parentheses already; italic markers around them only leave
+    # a gap ("( I'm") in fonts without an italic
+    text = text.replace(LIST_SEP.strip().join("  "), "\n")  # list lines (see is_list)
+    text = re.sub(r"\(\s*\*+\s*", "(", text)
+    text = re.sub(r"\s*\*+\s*\)", ")", text)
     t = re.sub(r'(["”’\'])\s+(?=["“‘\'])', r"\1\n", text)       # "…" "…"
     t = re.sub(r'([.!?~…♡])\s+(?=["“‘]|\'[A-Z])', r"\1\n", t)   # narration. "…" / 'Comment
     t = re.sub(r'(["”])\s+(?=[A-Z])', r"\1\n", t)               # "…" Narration
+    t = re.sub(r'\)\s+(?=[(*"“‘A-Z])', ")\n", t)                # (thought) next
+    t = re.sub(r'([.!?~…♡♥"”*])\s+(?=\()', r"\1\n", t)          # … (thought)
     return t
 
 
@@ -330,6 +408,9 @@ def install_keep_line_breaks() -> None:
     old = 'clean_text = " ".join(normalized_text.split())'
     new = 'clean_text = "\\n".join(" ".join(l.split()) for l in normalized_text.split("\\n")).strip()'
     src = textwrap.dedent(inspect.getsource(text_renderer.render_text_skia))
+    preload = 'preload_hb_faces = {"regular": regular_hb_face}'
+    if "_mt_symbol_hb" in text_renderer.__dict__ and src.count(preload) == 1:
+        src = src.replace(preload, 'preload_hb_faces = {"regular": regular_hb_face, **_mt_symbol_hb()}')
     if src.count(old) != 1:
         log_message("Note: line-break patch for the text renderer no longer applies; skipped",
                     always_print=True)
@@ -445,7 +526,192 @@ def install_glyph_substitutes() -> None:
                     options = options + [plain]
                 out.append(next((o for o in options if all(ord(c) in supported for c in o)), ch))
             text = "".join(out)
+        if _symbols_active and SYMBOL_CHARS & set(text):
+            text = text.replace("♡", "♥")  # the outline heart is too thin next to lettering
+            return "".join(seg if is_sym else original(seg, font_path, verbose)
+                           for is_sym, seg in ((k, "".join(g)) for k, g in
+                                               itertools.groupby(text, key=lambda c: c in SYMBOL_CHARS)))
         return original(text, font_path, verbose)
 
     font_manager.sanitize_text_for_font = substitute
     text_renderer.sanitize_text_for_font = substitute
+
+
+def install_no_empty_bubbles() -> None:
+    """Bubble rendering fixes. Upstream erases a bubble and leaves it blank when the translation
+    does not fit at the minimum font size (tall, narrow bubbles, often after an OCR misread):
+    retry at half the minimum size, and if it still does not fit, put the original lettering
+    back. Colored / see-through bubbles also get outlined text."""
+    import dataclasses
+
+    import core.pipeline as pipeline
+    from utils.logging import log_message
+
+    original = pipeline._render_bubble
+    original_config = pipeline._text_render_config
+    outlined = threading.local()
+
+    def text_render_config(config, sizes, is_outside_text):
+        cfg = original_config(config, sizes, is_outside_text)
+        if getattr(outlined, "on", False) and not is_outside_text:
+            cfg = dataclasses.replace(cfg, outline_ratio=sizes.osb_outline_ratio)
+        return cfg
+
+    pipeline._text_render_config = text_render_config
+
+    def render_bubble(image, bubble, text, bubble_id, render_info, page_cv, config, sizes,
+                      processing_scale):
+        # Colored / see-through bubbles (outline-only bubbles over the art, common in doujin CG)
+        # are inpainted, not filled, so their text needs an outline like text on the art.
+        outlined.on = bool(render_info and render_info.get("is_colored"))
+        try:
+            return _render(image, bubble, text, bubble_id, render_info, page_cv, config, sizes,
+                           processing_scale)
+        finally:
+            outlined.on = False
+
+    def _render(image, bubble, text, bubble_id, render_info, page_cv, config, sizes,
+                processing_scale):
+        rendered = original(image, bubble, text, bubble_id, render_info, page_cv, config,
+                            sizes, processing_scale)
+        if rendered is not None:
+            return rendered
+        smaller = sizes._replace(main_min_font=max(4, sizes.main_min_font // 2))
+        rendered = original(image, bubble, text, bubble_id, render_info, page_cv, config,
+                            smaller, processing_scale)
+        if rendered is not None:
+            log_message(f"Bubble {bubble_id}: fitted below the minimum font size",
+                        always_print=True)
+            return rendered
+        if "original_crop_pil" in bubble:
+            log_message(f"Bubble {bubble_id}: translation does not fit, kept the original "
+                        f"lettering ('{text[:30]}')", always_print=True)
+            return pipeline._paste_original_crop(image, bubble)
+        return None
+
+    pipeline._render_bubble = render_bubble
+
+
+SYMBOL_FONT = Path(__file__).resolve().parent / "assets" / "symbols" / "DejaVuSans-Bold.ttf"
+SYMBOL_CHARS = set("♡♥❤♪♫☆★♂♀→←↑↓⇒■□▶◀▲▼△▽●○◆◇※✓")
+_symbols_active = False
+
+
+def _split_symbols(text: str, style: str) -> list[tuple[str, str]]:
+    runs = []
+    for is_sym, chunk in itertools.groupby(text, key=lambda c: c in SYMBOL_CHARS):
+        runs.append(("".join(chunk), "symbol" if is_sym else style))
+    return runs
+
+
+def install_symbol_fallback() -> None:
+    """Hearts, notes and stars are everywhere in doujin text, but lettering fonts rarely have
+    them, so upstream deletes them. Give those characters their own "symbol" style run, drawn
+    and measured with DejaVu Sans Bold (bundled, free license); the dialogue font is used as
+    is, never modified. Must run before install_keep_line_breaks (it re-executes the renderer)."""
+    global _symbols_active
+    import inspect
+    import textwrap
+
+    import core.text as text_pkg
+    from core.text import drawing_engine, layout_engine, text_processing, text_renderer
+    from core.text.drawing_engine import load_font_resources
+    from utils.logging import log_message
+
+    if not SYMBOL_FONT.exists():
+        return
+
+    def patch(module, func_name: str, old: str, new: str) -> bool:
+        src = textwrap.dedent(inspect.getsource(getattr(module, func_name)))
+        if src.count(old) != 1:
+            log_message(f"Note: symbol-font patch for {func_name} no longer applies; skipped",
+                        always_print=True)
+            return False
+        exec(compile(src.replace(old, new), module.__file__, "exec"), module.__dict__)
+        return True
+
+    styles = '("regular", "italic", "bold", "bold_italic")'
+    resolve_end = "            return regular_typeface, regular_hb_face"
+    ok = (patch(layout_engine, "calculate_styled_line_width", styles, styles[:-1] + ', "symbol")')
+          and patch(layout_engine, "_styled_line_ink_path", styles, styles[:-1] + ', "symbol")')
+          and patch(drawing_engine, "draw_layout", resolve_end,
+                    '            if loaded_typefaces.get(style_name) is not None and '
+                    'loaded_hb_faces.get(style_name) is not None:\n'
+                    '                return loaded_typefaces[style_name], loaded_hb_faces[style_name]\n'
+                    + resolve_end))
+    if not ok:
+        return
+    text_renderer.draw_layout = text_pkg.draw_layout = drawing_engine.draw_layout
+
+    original_parse = text_processing.parse_styled_segments
+
+    def parse_styled_segments(text: str) -> list[tuple[str, str]]:
+        out = []
+        for seg, style in original_parse(text):
+            out += _split_symbols(seg, style) if SYMBOL_CHARS & set(seg) else [(seg, style)]
+        return out
+
+    for module in (text_processing, text_renderer, drawing_engine, layout_engine, text_pkg):
+        module.parse_styled_segments = parse_styled_segments
+
+    def symbol_resources():
+        _, typeface, hb_face = load_font_resources(str(SYMBOL_FONT), style="regular")
+        return typeface, hb_face
+
+    original_load = text_renderer._load_style_variants
+
+    def load_style_variants(*args, **kwargs):
+        typefaces, hb_faces = original_load(*args, **kwargs)
+        typefaces["symbol"], hb_faces["symbol"] = symbol_resources()
+        return typefaces, hb_faces
+
+    text_renderer._load_style_variants = load_style_variants
+    text_renderer._mt_symbol_hb = lambda: {"symbol": symbol_resources()[1]}
+    _symbols_active = True
+
+
+def install_keep_inner_quotes() -> None:
+    """Upstream's response parser drops a leading and a trailing '"' from every item. That is
+    right for an item the model wrapped in quotes, but narration items like
+    '"Ah..." she said. "Hey."' lose their first and last quote. Put them back when the item
+    contains further quotes (so they belong to the text)."""
+    from core.services import translation as tr
+
+    original = tr._parse_llm_response_unified
+    item = re.compile(r'^\s*(\d+)\s*[:.]\s*(.*?)\s*(?=\s*\n\s*\d+\s*[:.]|\n\s*\n|\s*\Z)',
+                      re.MULTILINE | re.DOTALL)
+
+    def parse(response_text, total_elements, provider, debug=False):
+        texts = original(response_text, total_elements, provider, debug)
+        raw = {int(n): t for n, t in item.findall(tr._strip_code_fences(response_text or ""))}
+        for i, t in enumerate(texts):
+            r = raw.get(i + 1, "")
+            if r.startswith('"') and r.endswith('"') and r.count('"') > 2 and t == r[1:-1].strip():
+                texts[i] = r
+        return texts
+
+    tr._parse_llm_response_unified = parse
+
+
+def install_page_image() -> None:
+    """With local OCR, upstream sends the translator text only. When MT_PAGE_IMAGE=1 (the model
+    runs with its vision projector), attach the full page as well, so the translator sees who
+    speaks, what is happening, and can catch OCR misreads (upstream's OCR-correction prompt
+    already refers to the page image). Must run before anything wraps call_translation_api_batch."""
+    import inspect
+    import textwrap
+
+    import core.pipeline as pipeline
+    from core.services import translation as tr
+    from utils.logging import log_message
+
+    if os.environ.get("MT_PAGE_IMAGE") != "1":
+        return
+    old = "page_attached = has_full_page and llm_ocr"
+    src = textwrap.dedent(inspect.getsource(tr.call_translation_api_batch))
+    if src.count(old) != 1:
+        log_message("Note: page-image patch no longer applies; translating from text only",
+                    always_print=True)
+        return
+    exec(compile(src.replace(old, "page_attached = has_full_page"), tr.__file__, "exec"), tr.__dict__)
+    pipeline.call_translation_api_batch = tr.call_translation_api_batch

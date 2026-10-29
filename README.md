@@ -34,10 +34,10 @@ Output pages are written as `<name>_translated.png`, plus a `glossary.txt` of na
 | Stage | Model (local) |
 |---|---|
 | Bubble detection | YOLOv8 manga109 bubble seg + RT-DETR conjoined-bubble detector + manga109 panel YOLO (reading order) |
-| OCR | Speech bubbles: `manga-ocr` (Japanese) / PaddleOCR-VL 1.6 (other languages). Text outside bubbles: Hayai OCR v2.5 Nova, line by line using comic-text-detector lines for multi-line blocks (see below) |
+| OCR | Japanese: Hayai OCR v2.5 Nova everywhere. Speech bubbles: Hayai, cross-checked with `manga-ocr`. Text outside bubbles: line by line using comic-text-detector lines for multi-line blocks (see below). Other languages: PaddleOCR-VL 1.6 |
 | Cleaning | Flat fill inside bubbles, Koharu SAM-TS-L glyph masks, LaMa-manga inpainting |
 | Translation | Gemma 4 26B-A4B QAT (MoE, experts in system RAM) via `llama-server` (llama.cpp, CUDA), thinking off, 3 pages of story context + auto glossary |
-| Typesetting | MangaTranslator renderer: per-page font size matching, hyphenation, markdown italics/bold for emphasis |
+| Typesetting | MangaTranslator renderer: per-page font size matching, hyphenation, markdown italics/bold for emphasis; ♥ ♪ ★ drawn from a bundled symbol font when the lettering font lacks them |
 
 The engine is [MangaTranslator](https://github.com/meangrinch/MangaTranslator) (`./MangaTranslator`, untouched upstream checkout);
 `translate.py` starts/stops llama-server, picks local defaults and forwards everything else.
@@ -64,6 +64,12 @@ the llama-server start adds ~5-10 s per run.
 - If a long source line comes back implausibly short (the model sometimes drops the rest of a
   block), the page is translated once more and the fuller answer kept.
 - A same-model "polish" pass was tested and changed little; not enabled.
+- `--vision` (page image for the translator, local OCR kept) costs no time but ~2 GB VRAM. On doujin CG
+  pages it fixed some he/she and sound-effect mistakes and caused about as many new ones; on the
+  OpenMantra pages it read stiffer and added a meaning error. Off by default. (`--ocr llm`, where Gemma
+  also reads the text, is worse: it "corrects" the Japanese into nonsense, e.g. キャンセル -> マンセル.)
+- Doujin CG test set (17 pages from 8 works, `eval/djn/run.sh <label>`, pages not in git): no pages with
+  empty bubbles or dropped hearts; ~17 s/page.
 
 ## Common options
 
@@ -79,6 +85,7 @@ the llama-server start adds ~5-10 s per run.
 --skip-existing                      # resume: only translate pages without an output yet
 --adult                              # 18+ content: translate explicit lines fully (web UI: checkbox)
 --keep-other-language                # don't erase other-script blocks (e.g. Chinese next to Japanese)
+--vision                             # also show the translator the page image (experimental, +2 GB VRAM)
 --no-ocr-correction                  # don't let the LLM repair lines the OCR obviously misread
 --llm-url http://host:port/v1 --llm-model-name X   # use another OpenAI-compatible server
 --model 12b                          # faster dense translator, fully on GPU
@@ -96,12 +103,22 @@ these blocks are read line by line: comic-text-detector (page-level line detecto
 Hayai OCR v2.5 Nova (aspect-ratio preserving manga OCR, JA/ZH/KO/EN) reads each one, and they are
 joined in reading order. Regions with fewer than 2 detected lines (sound effects, short asides) are
 read whole by Hayai, which was trained on onomatopoeia (manga-ocr misread most stylized SFX in tests).
-Speech bubbles keep manga-ocr (Hayai and manga-ocr tied on the benchmark bubbles: 1.68% CER). This lives in `osb_ocr.py`, installed into MangaTranslator
-at runtime by `mt_upstream.py` (the submodule stays untouched).
+Sound effects are read twice (tight crop and with a margin, which fixes most misreads of hand-drawn
+kana) and the fuller read kept. Speech bubbles are read by Hayai too: on the OpenMantra bubbles it and
+manga-ocr are about equal (0.9% / 0.7% character errors), but manga-ocr turns hand-drawn moans in doujin
+bubbles into unrelated words (ぅ -> そして、). When one read contains the other the longer is kept.
+This lives in `osb_ocr.py`, installed into MangaTranslator at runtime by `mt_upstream.py` (the
+submodule stays untouched).
 
 Pages that print a Chinese translation next to the Japanese (common in `[中国翻訳]` releases): the
 Chinese block is erased and not translated, so the English appears once (`--keep-other-language`
-turns this off).
+turns this off). A kana-free block only counts as Chinese when it uses simplified-only characters, so
+all-kanji Japanese labels (status screens like 状態：乳房開発完了) are translated.
+
+Typesetting outside bubbles: long text (narration, dialogue printed on the art) uses the dialogue font,
+upright, one quoted line or (thought) per line; lists (stream comments, credits, `Name: text` lines) keep
+one entry per line. Short text stays sound-effect style (Bangers, caps, follows the tilt). A bubble whose
+translation can't fit even at a smaller size gets its original lettering back instead of staying blank.
 
 Narration boxes / text drawn on the art need the gated `deepghs/AnimeText_yolo` model.
 Accept its terms at <https://huggingface.co/deepghs/AnimeText_yolo> with the account whose token is in
@@ -113,7 +130,8 @@ once the model is accessible/downloaded.
 ```
 translate.py          wrapper / entry point (CLI)
 mt_upstream.py        runs MangaTranslator's CLI with the patches below installed
-osb_ocr.py            line-by-line OCR for text outside bubbles, full-res crops, other-language erase
+osb_ocr.py            runtime patches: OCR (Hayai, line by line), other-language erase, narration
+                      typesetting, symbol fallback, no empty bubbles, list line breaks, --vision
 text_lines.py         comic-text-detector (ONNX, CPU) line detection
 hayai_ocr.py          Hayai OCR v2.5 Nova loader (code vendored in vendor/hayai, audited, pinned)
 webui.py, webui/      browser UI + reader (state in webui_data/, default output in translated/)
@@ -121,10 +139,11 @@ MangaTranslator/      upstream pipeline (git pull to update, then `uv sync`)
 bin/llama.cpp/        prebuilt llama.cpp b11972, CUDA 13.4
 models/llm/           translator GGUFs
 models/…              detection / OCR / inpainting weights (auto-downloaded)
+assets/symbols/       DejaVu Sans Bold for ♥ ♪ ★ (free license, see LICENSE-DejaVu.txt)
 fonts/                Comic Neue (dialogue), Bangers (OSB/SFX) — both SIL OFL
                       Add your own as fonts/<Name>/ with -Regular/-Bold/-Italic in the file names
                       (e.g. CC Wild Words, Anime Ace; git-ignored, as their licenses forbid redistribution)
+eval/                 OpenMantra benchmark pages used to check quality; eval/djn/ doujin test runner
                       (model licenses: Hayai Apache-2.0; comic-text-detector weights GPL-3.0)
-eval/                 OpenMantra benchmark pages used to check quality
 logs/llama-server.log
 ```

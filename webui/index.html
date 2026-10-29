@@ -259,6 +259,7 @@ a.btn, a.rb { text-decoration: none; color: inherit; }
             <label for="ctx">Story context (previous pages)</label>
             <input class="inp" id="ctx" type="number" min="0" max="20" value="3" style="width:90px">
           </div>
+          <label class="check"><input type="checkbox" id="vision"> Show the translator each page (experimental: fixes some he/she and sound-effect mistakes, adds others; +2 GB VRAM)</label>
           <label class="check"><input type="checkbox" id="adult"> Adult content (18+): translate explicit lines fully</label>
           <label class="check"><input type="checkbox" id="offline"> Offline (no network access at all)</label>
         </details>
@@ -373,6 +374,7 @@ async function loadConfig() {
   if (prefs.instr) $("#instr").value = prefs.instr;
   if (prefs.osb) $("#osb").value = prefs.osb;
   if (prefs.adult) $("#adult").checked = true;
+  if (prefs.vision) $("#vision").checked = true;
   $("#osbHint").textContent = CFG.osb_ready ? "Model installed." :
     "Needs the gated deepghs/AnimeText_yolo model (accept its terms on huggingface.co).";
   document.querySelectorAll("#modelSeg button").forEach((b) => {
@@ -514,9 +516,9 @@ $("#go").onclick = async () => {
   if (!sel) return;
   const options = {
     source: $("#src").value, target: $("#tgt").value, model, osb: $("#osb").value, font: $("#font").value,
-    instructions: $("#instr").value.trim(), context_pages: +$("#ctx").value || 0, offline: $("#offline").checked, adult: $("#adult").checked,
+    instructions: $("#instr").value.trim(), context_pages: +$("#ctx").value || 0, offline: $("#offline").checked, adult: $("#adult").checked, vision: $("#vision").checked,
   };
-  store.set("mt-prefs", { src: options.source, tgt: options.target, font: options.font, instr: options.instructions, osb: options.osb, adult: options.adult });
+  store.set("mt-prefs", { src: options.source, tgt: options.target, font: options.font, instr: options.instructions, osb: options.osb, adult: options.adult, vision: options.vision });
   const body = { mode: sel.mode, name: sel.name, path: sel.path, output_dir: $("#outDir").value.trim(), options };
   $("#go").disabled = true; $("#err").textContent = "";
   try {
@@ -638,7 +640,8 @@ async function pollReader(first) {
     $("#rChap").innerHTML = chaps.map((c) => `<option value="${esc(c)}">${esc(c || "Pages")}</option>`).join("");
   const act = ACTIVE.has(j.status);
   $("#rProg").innerHTML = act ? `<span class="spin"></span>${j.status === "queued" ? "Waiting for GPU" : `Translating ${j.done}/${j.total}`}${j.stage ? " · " + esc(j.stage.slice(0, 60)) : ""}`
-    : j.status === "failed" ? `<span style="color:#ef6b5d">Failed — see Log</span>` : j.status === "cancelled" || j.status === "interrupted" ? `<span style="color:#ef6b5d">${j.status} · ${j.done}/${j.total}</span>` : "";
+    : j.status === "failed" ? `<span style="color:#ef6b5d">Failed — see Log</span>` : j.status === "cancelled" || j.status === "interrupted" ? `<span style="color:#ef6b5d">${j.status} · ${j.done}/${j.total}</span>`
+    : j.issues?.length ? `<span style="color:#d9a440" title="${esc(j.issues.join("\n"))}">${j.issues.length} page${j.issues.length > 1 ? "s" : ""} with issues: ${esc(j.issues.map((s) => s.split(":")[0]).slice(0, 4).join(", "))}${j.issues.length > 4 ? "…" : ""}</span>` : "";
   $("#logbox").textContent = (j.log || []).join("\n");
   if (!first && before !== R.pages.map((p) => p.tr).join("|")) updateImages();
   R.timer = setTimeout(pollReader, act ? 2000 : 15000);

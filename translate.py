@@ -241,6 +241,9 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
                    help="18+ content: translate explicit lines fully instead of softening them")
     p.add_argument("--keep-other-language", action="store_true",
                    help="Don't erase blocks in another script (e.g. a Chinese translation printed beside the Japanese)")
+    p.add_argument("--vision", action="store_true",
+                   help="Show the translator the whole page too (who speaks, what happens; catches OCR "
+                   "misreads). Loads the model's vision projector: ~2 GB more VRAM, slower")
     p.add_argument("--no-ocr-correction", dest="ocr_correction", action="store_false",
                    help="Don't let the LLM fix lines that OCR obviously misread")
     p.add_argument("--format", choices=["auto", "png", "jpeg"], default="png", help="Output format")
@@ -254,7 +257,7 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     g.add_argument("--model", choices=list(MODEL_PRESETS), default="26b",
                    help="Translator: 26b (default, best, ~2.4 GB VRAM) or 12b (faster, all on GPU)")
     g.add_argument("--gguf", default=None, help="Custom GGUF weights for llama-server (overrides --model)")
-    g.add_argument("--mmproj", default=None, help="Vision projector (only for --ocr llm)")
+    g.add_argument("--mmproj", default=None, help="Vision projector (for --vision / --ocr llm)")
     g.add_argument("--port", type=int, default=8080)
     g.add_argument("--ctx", type=int, default=16384, help="LLM context size")
     g.add_argument("--llm-server-args", default="", metavar="ARGS",
@@ -309,7 +312,9 @@ def main() -> None:
     ocr = args.ocr
     if ocr == "auto":
         ocr = "manga-ocr" if args.source.lower() == "japanese" else "paddleocr-vl-1.6"
-    vision = ocr == "llm"
+    vision = ocr == "llm"  # one-step: Gemma reads the text itself
+    if args.vision and not vision:
+        env["MT_PAGE_IMAGE"] = "1"  # local OCR, plus the page image for the translator
     reading_dir = args.reading_direction or ("rtl" if args.source.lower() == "japanese" else "ltr")
 
     if args.osb == "auto":
@@ -387,6 +392,8 @@ def main() -> None:
     # Outside-bubble fonts often lack italics, so emphasis markup must not replace quote marks
     notes.append("Render quoted speech in 「」 and 『』 with quotation marks (\"...\" and '...'); "
                  "never use * or ** markdown in place of quotation marks.")
+    notes.append("An item with \" / \" separators is a list (chat comments, credits): translate each entry "
+                 "and keep every \" / \" in place.")
     if batch:
         # Local models tend to write the English name on both sides of the new-terms block,
         # which upstream rejects ("source not on page"), leaving the glossary empty.
@@ -403,7 +410,7 @@ def main() -> None:
         return
 
     if not args.llm_url:
-        start_llama_server(args, vision)
+        start_llama_server(args, vision or args.vision)
 
     log(f"{inp} -> {out}  ({args.source} -> {args.target}, LLM: {Path(args.gguf).stem if not args.llm_url else model_name}, "
         f"OCR: {ocr}, inpaint: {args.inpaint}, "

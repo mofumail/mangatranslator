@@ -117,6 +117,8 @@ def run_job(job_id: str, job: dict[str, Any]) -> None:
         cmd += ["--offline"]
     if o.get("adult"):
         cmd += ["--adult"]
+    if o.get("vision"):
+        cmd += ["--vision"]
     env_extra = {}
     if job.get("resume"):  # only Resume skips pages, and only those this job already wrote
         cmd += ["--skip-existing"]
@@ -139,18 +141,37 @@ def run_job(job_id: str, job: dict[str, Any]) -> None:
         running.pop(job_id, None)
 
     job = store.get(job_id)
+    tail = read_log_tail(log_path, 200)
+    run_tail = tail[max((i for i, l in enumerate(tail) if l.startswith("=== run started")), default=0):]
+    page_issues = page_problems(run_tail)
     if job.get("cancel_requested"):
         status = "cancelled"
-    elif rc == 0:
-        status = "done"
+    elif rc == 0 or (rc == 1 and page_issues is not None):
+        status = "done"  # rc 1 with a batch summary: every page ran, some with issues
     else:
         status = "failed"
     err = None
     if status == "failed":
-        tail = [l for l in read_log_tail(log_path, 80) if "[translate]" in l or "rror" in l]
-        err = tail[-1] if tail else f"exit code {rc}"
+        lines = [l for l in run_tail if "[translate]" in l or "rror" in l]
+        err = lines[-1] if lines else f"exit code {rc}"
     store.update(job_id, status=status, exit_code=rc, finished=time.time(),
-                 cancel_requested=False, error=err)
+                 cancel_requested=False, error=err, issues=page_issues or [])
+
+
+def page_problems(lines: list[str]) -> list[str] | None:
+    """Per-page problems from the batch summary ("  - 007.webp: 1 bubble(s) left empty"),
+    or None if the run never reached the summary."""
+    if not any(l.startswith("Batch complete:") for l in lines):
+        return None
+    issues, in_list = [], False
+    for l in lines:
+        if re.match(r"Failed: \d+ images", l):
+            in_list, issues = True, []
+        elif in_list and l.startswith("  - "):
+            issues.append(l[4:].strip())
+        elif in_list:
+            in_list = False
+    return issues
 
 
 def read_log_tail(path: Path, n: int) -> list[str]:
@@ -268,7 +289,7 @@ def job_summary(job: dict[str, Any], with_pages: bool = False) -> dict[str, Any]
     elif pages and pages[0]["orig"]:
         cover_url = f"/api/jobs/{job['id']}/img?kind=orig&p={pages[0]['orig']}"
     res = {k: job.get(k) for k in ("id", "name", "kind", "status", "input_dir", "output_dir",
-                                    "created", "started", "finished", "error", "options")}
+                                    "created", "started", "finished", "error", "options", "issues")}
     res.update(total=len(pages), done=done, cover=cover_url)
     if with_pages:
         res["pages"] = pages
