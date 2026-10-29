@@ -18,6 +18,7 @@ REVISION = "2803d0dc005fa4396ab1e7c5a472d2c450a247f7"  # matches vendor/hayai
 SIGLIP = "google/siglip2-base-patch16-naflex"
 
 _lock = threading.Lock()
+_gen_lock = threading.Lock()
 _instance: "HayaiOCR | None" = None
 
 
@@ -49,10 +50,14 @@ class HayaiOCR:
             return []
         inp = self.processor(images=[im.convert("RGB") for im in images],
                              max_num_patches=max_patches, return_tensors="pt").to(self.device)
-        return self.model.generate(
-            pixel_values=inp["pixel_values"], pixel_attention_mask=inp["pixel_attention_mask"],
-            spatial_shapes=inp["spatial_shapes"], tokenizer=self.tokenizer,
-            max_new_tokens=max_new_tokens, repetition_penalty=1.0)
+        # Plain PyTorch path: the fused engine records CUDA graphs, which crashed the GPU context
+        # ("illegal memory access") while upstream inpaints from another thread at the same time.
+        with _gen_lock:
+            return self.model.generate(
+                pixel_values=inp["pixel_values"], pixel_attention_mask=inp["pixel_attention_mask"],
+                spatial_shapes=inp["spatial_shapes"], tokenizer=self.tokenizer,
+                max_new_tokens=max_new_tokens, repetition_penalty=1.0,
+                use_cuda_graph=False, fast_engine=False)
 
 
 def get(models_dir: Path, device: str = "cuda") -> HayaiOCR:

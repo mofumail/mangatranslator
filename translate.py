@@ -401,37 +401,70 @@ def main() -> None:
     fatal_markers = ("Error loading", "Failed to download", "Error during detection",
                      "Failed image paths saved to")
     problems: list[str] = []
+    # A CUDA fault poisons the whole process ("sticky" error): every later page would come out
+    # untranslated. Stop at once, drop the page in progress and resume in a fresh process.
+    sticky_markers = ("illegal memory access", "Sticky error detected", "device-side assert")
+    max_gpu_restarts = 2
     rc = 0
     tmp_dirs: list[tempfile.TemporaryDirectory] = []
-    for n, (src, dst) in enumerate(jobs, 1):
+    for n, (src0, dst) in enumerate(jobs, 1):
         if len(jobs) > 1:
-            log(f"[{n}/{len(jobs)}] {src.relative_to(inp) if src != inp else '.'}")
+            log(f"[{n}/{len(jobs)}] {src0.relative_to(inp) if src0 != inp else '.'}")
         if batch:
             dst.mkdir(parents=True, exist_ok=True)
-        if args.skip_existing and src.is_dir():
-            pages = [f for f in src.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTS]
-            todo = [f for f in pages if not (dst / translated_name(f, args.format)).exists()]
-            if not todo:
-                log("  already translated, skipping")
-                continue
-            if len(todo) < len(pages):  # run only the missing pages, via a folder of symlinks
-                log(f"  resuming: {len(todo)}/{len(pages)} pages left")
-                tmp = tempfile.TemporaryDirectory(prefix="mt_resume_")
-                tmp_dirs.append(tmp)
-                for f in todo:
-                    (Path(tmp.name) / f.name).symlink_to(f)
-                src = Path(tmp.name)
-        full = upstream_main + ["--input", str(src), "--output", str(dst)] + cmd
-        proc = subprocess.Popen(full, cwd=UPSTREAM, env=env, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, bufsize=1)
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            if line.startswith("Fontconfig "):  # harmless noise from skia vs. system fontconfig
-                continue
-            sys.stdout.write(line)
-            if any(m in line for m in fatal_markers):
-                problems.append(line.strip())
-        rc = proc.wait() or rc
+        skip_existing, restarts = args.skip_existing, 0
+        while True:
+            src = src0
+            if skip_existing and src0.is_dir():
+                pages = [f for f in src0.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTS]
+                todo = [f for f in pages if not (dst / translated_name(f, args.format)).exists()]
+                if not todo:
+                    log("  already translated, skipping")
+                    break
+                if len(todo) < len(pages):  # run only the missing pages, via a folder of symlinks
+                    log(f"  resuming: {len(todo)}/{len(pages)} pages left")
+                    tmp = tempfile.TemporaryDirectory(prefix="mt_resume_")
+                    tmp_dirs.append(tmp)
+                    for f in todo:
+                        (Path(tmp.name) / f.name).symlink_to(f)
+                    src = Path(tmp.name)
+            full = upstream_main + ["--input", str(src), "--output", str(dst)] + cmd
+            proc = subprocess.Popen(full, cwd=UPSTREAM, env=env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, bufsize=1)
+            assert proc.stdout is not None
+            current, sticky = None, None
+            for line in proc.stdout:
+                if line.startswith("Fontconfig "):  # harmless noise from skia vs. system fontconfig
+                    continue
+                sys.stdout.write(line)
+                m = re.match(r"(?:Processing|Retrying) \d+/\d+: (.+?)(?: \(warming up models\))?$", line.strip())
+                if m:
+                    current = m.group(1)
+                if any(k in line for k in sticky_markers):
+                    sticky = line.strip()
+                    proc.terminate()
+                    break
+                if any(k in line for k in fatal_markers):
+                    problems.append(line.strip())
+            if sticky:
+                try:
+                    proc.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                if current:  # its output (if any) was made with a broken GPU context
+                    (dst / Path(current).parent / translated_name(Path(current), args.format)).unlink(missing_ok=True)
+                if restarts < max_gpu_restarts:
+                    restarts += 1
+                    skip_existing = True
+                    log(f"GPU error on {current or 'a page'} ({sticky[:90]}); "
+                        f"resuming in a fresh process ({restarts}/{max_gpu_restarts})")
+                    continue
+                problems.append(f"GPU error, gave up after {max_gpu_restarts} restarts: {sticky}")
+                rc = rc or 3
+                break
+            rc = proc.wait() or rc
+            break
     if rc == 0 and problems:
         rc = 2
         log("Pipeline reported problems (output may be incomplete):")

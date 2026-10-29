@@ -15,6 +15,7 @@ sys.path.insert(1, str(ROOT))
 import osb_ocr  # noqa: E402
 
 osb_ocr.install()
+osb_ocr.install_flat_fill_check()
 argv = sys.argv[1:]
 vision_ocr = "--ocr-method" in argv and argv[argv.index("--ocr-method") + 1] == "LLM"
 if not vision_ocr:  # keep LLM vision crops small; local OCR needs full resolution

@@ -34,10 +34,19 @@ def is_japanese(text: str) -> bool:
     return n >= 4 and kana >= 0.2
 
 
+# Characters that are everyday Chinese but (almost) never appear in Japanese text:
+# sentence particles and simplified-only forms.
+ZH_MARKERS = set("们呢吧吗么这嗯哦啊呀您她说让没还对给吃过时间样边见")
+
+
 def is_other_cjk(text: str) -> bool:
-    """A long block with (almost) no kana: Chinese, e.g. a translation printed next to the Japanese."""
+    """A block in Chinese, e.g. a translation printed next to the Japanese: little kana
+    (OCR may misread a few glyphs as kana) plus Chinese-only particles, or no kana at all."""
     n, kana, han = _script_ratios(text)
-    return n >= 12 and kana < 0.08 and han > 0.6
+    if n < 6 or han < 0.4:
+        return False
+    markers = sum(1 for c in text if c in ZH_MARKERS)
+    return (kana < 0.08 and n >= 12) or (kana < 0.25 and markers >= 2)
 
 
 # CTD is a page-level detector (trained on whole pages at 1024 px), so it runs once per page,
@@ -188,6 +197,31 @@ def install() -> None:
             raise pipeline.TranslationError(f"{len(real)} bubble(s) left empty")
 
     pipeline._translate_batch_page = _translate_batch_page
+
+
+FLAT_P90_MAX = 6  # paper measured 2-6; blurred dark art 9-10
+
+
+def install_flat_fill_check() -> None:
+    """Upstream paints a flat rectangle when ~95% of the pixels around a text region are
+    within 15 levels of their median, snapping dark medians to pure black. Blurred dark art
+    passes that test, so it got hard black boxes. Only treat a border as solid when it is truly
+    flat (90% of pixels within FLAT_P90_MAX); everything else goes to the inpainting model."""
+    import numpy as np
+
+    import core.outside_text_processor as osb
+
+    original = osb._border_color
+
+    def _border_color(pixels):
+        color, solid_ratio = original(pixels)
+        median = np.median(pixels, axis=0).astype(int)
+        p90 = float(np.percentile(np.max(np.abs(pixels.astype(int) - median), axis=1), 90))
+        if p90 > FLAT_P90_MAX:
+            solid_ratio = min(solid_ratio, osb.OSB_SOLID_RATIO_THRESHOLD - 0.01)
+        return color, solid_ratio
+
+    osb._border_color = _border_color
 
 
 def install_no_downscale() -> None:
