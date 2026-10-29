@@ -381,6 +381,9 @@ def main() -> None:
     if not (args.vertical_text or cjk_target):
         cmd += ["--no-auto-vertical-text"]  # letter-stacked Latin text ("H/u/h/?") reads badly
     notes = [args.instructions] if args.instructions else []
+    notes.append("Localize like a professional manga translator: natural, idiomatic English with contractions "
+                 "and each character's own voice; keep the meaning exact but never translate word for word. "
+                 "Narration reads like a light novel: past tense, flowing sentences.")
     # Outside-bubble fonts often lack italics, so emphasis markup must not replace quote marks
     notes.append("Render quoted speech in 「」 and 『』 with quotation marks (\"...\" and '...'); "
                  "never use * or ** markdown in place of quotation marks.")

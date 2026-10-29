@@ -14,6 +14,7 @@ sys.path.insert(1, str(ROOT))
 
 import osb_ocr  # noqa: E402
 
+osb_ocr.install_truncation_guard()
 osb_ocr.install()
 osb_ocr.install_flat_fill_check()
 osb_ocr.install_narration_style()

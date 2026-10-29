@@ -369,3 +369,45 @@ def install_wrapped_paragraphs() -> None:
                 "line_height": line_height, "block_height": block_height}
 
     le.check_fit = check_fit
+
+
+def _content_len(text: str) -> int:
+    return sum(1 for c in text if c.isalnum())
+
+
+def install_truncation_guard() -> None:
+    """The LLM occasionally returns only the first sentence of a long block (seen: a 120-char
+    narration block came back as "-A little while later."), silently dropping the dialogue.
+    If a long source line gets an implausibly short translation, translate the page once more
+    (bypassing upstream's cache) and keep, per line, the fuller of the two answers."""
+    import core.pipeline as pipeline
+    from core.caching import get_cache
+    from utils.logging import log_message
+
+    original_batch = pipeline.call_translation_api_batch
+
+    def looks_truncated(src: str, tr: str) -> bool:
+        n = _content_len(src)
+        return n >= 30 and isinstance(tr, str) and _content_len(tr) < 0.5 * n
+
+    def call_translation_api_batch(*args, **kwargs):
+        texts = original_batch(*args, **kwargs)
+        ocr = kwargs.get("ocr_texts_output") or []
+        sources = [m.get("ocr_text") or (ocr[i] if i < len(ocr) else "")
+                   for i, m in enumerate(kwargs.get("bubble_metadata") or [])]
+        bad = [i for i, (s, t) in enumerate(zip(sources, texts)) if looks_truncated(s, t)]
+        if not bad:
+            return texts
+        log_message(f"Translation looks truncated for item(s) {[i + 1 for i in bad]}; retrying once",
+                    always_print=True)
+        get_cache().clear_translation_cache()
+        retry_kwargs = dict(kwargs)
+        if "ocr_texts_output" in retry_kwargs:
+            retry_kwargs["ocr_texts_output"] = []
+        again = original_batch(*args, **retry_kwargs)
+        for i in bad:
+            if i < len(again) and _content_len(again[i]) > _content_len(texts[i]):
+                texts[i] = again[i]
+        return texts
+
+    pipeline.call_translation_api_batch = call_translation_api_batch

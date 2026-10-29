@@ -54,6 +54,17 @@ Cleaning (no leftover Japanese in bubbles) and typesetting (fits bubbles, real i
 clean on every page checked, including colour pages. First page of a run is slower (model warm-up), and
 the llama-server start adds ~5-10 s per run.
 
+## Translation quality notes
+
+- Model bake-off on the 10 OpenMantra pages (temperature 0, blind scoring of serious meaning errors):
+  Gemma 4 26B-A4B **0**, Qwen3.6-35B-A3B 4, Ministral-3-14B 18 (output shifted into wrong bubbles).
+  Re-run with `eval/bake/run.sh <label> <translate.py args>` and `eval/bake/sheet.py`.
+- A localization style note is always sent (natural English, contractions, past-tense narration).
+  Per-series choices go in `--instructions` / the web UI field, e.g. `Translate お姉ちゃん as "Sis"`.
+- If a long source line comes back implausibly short (the model sometimes drops the rest of a
+  block), the page is translated once more and the fuller answer kept.
+- A same-model "polish" pass was tested and changed little; not enabled.
+
 ## Common options
 
 ```bash
