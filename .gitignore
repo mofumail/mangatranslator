@@ -1,0 +1,9 @@
+bin/
+eval/out*/
+logs/
+models/
+__pycache__/
+test_out*/
+translated/
+.venv/
+webui_data/

@@ -1,0 +1,3 @@
+[submodule "MangaTranslator"]
+	path = MangaTranslator
+	url = https://github.com/meangrinch/MangaTranslator.git
