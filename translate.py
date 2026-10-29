@@ -417,7 +417,16 @@ def main() -> None:
             src = src0
             if skip_existing and src0.is_dir():
                 pages = [f for f in src0.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTS]
-                todo = [f for f in pages if not (dst / translated_name(f, args.format)).exists()]
+                # --skip-existing (resume): trust outputs since MT_SKIP_EXISTING_SINCE (default: any).
+                # Restart after a GPU fault in a fresh run: only outputs written by this run.
+                since = (float(os.environ.get("MT_SKIP_EXISTING_SINCE", "0") or 0)
+                         if args.skip_existing else t0)
+
+                def finished(f: Path) -> bool:
+                    out_file = dst / translated_name(f, args.format)
+                    return out_file.exists() and out_file.stat().st_mtime >= since
+
+                todo = [f for f in pages if not finished(f)]
                 if not todo:
                     log("  already translated, skipping")
                     break

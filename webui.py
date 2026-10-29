@@ -117,19 +117,23 @@ def run_job(job_id: str, job: dict[str, Any]) -> None:
         cmd += ["--offline"]
     if o.get("adult"):
         cmd += ["--adult"]
-    if job.get("resume"):  # only Resume skips pages that already have output
+    env_extra = {}
+    if job.get("resume"):  # only Resume skips pages, and only those this job already wrote
         cmd += ["--skip-existing"]
+        env_extra["MT_SKIP_EXISTING_SINCE"] = str(job.get("first_started") or 0)
 
     Path(job["output_dir"]).mkdir(parents=True, exist_ok=True)
     log_path = job_dir(job_id) / "log.txt"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    store.update(job_id, status="running", started=time.time(), finished=None, exit_code=None, error=None)
+    now = time.time()
+    store.update(job_id, status="running", started=now, first_started=job.get("first_started") or now,
+                 finished=None, exit_code=None, error=None)
     with open(log_path, "a") as logf:
         logf.write(f"\n=== run started {time.ctime()} ===\n")
         logf.flush()
         proc = subprocess.Popen(cmd, cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT,
                                 start_new_session=True,
-                                env={**os.environ, "PYTHONUNBUFFERED": "1"})
+                                env={**os.environ, "PYTHONUNBUFFERED": "1", **env_extra})
         running[job_id] = proc
         rc = proc.wait()
         running.pop(job_id, None)
@@ -182,13 +186,15 @@ def list_pages(job: dict[str, Any]) -> list[dict[str, Any]]:
     in_dir = Path(job["input_dir"])
     if not in_dir.is_dir():
         return []
+    # Outputs left in the folder by older runs don't count; only this job's own work does
+    since = job.get("first_started") or 0
     for d in tr.image_dirs(in_dir):
         imgs = sorted((p for p in d.iterdir() if is_image(p)), key=lambda p: tr.natural_key(p.name))
         for p in imgs:
             rel = p.relative_to(in_dir)
             out_rel = rel.parent / tr.translated_name(p, "png")
             out_path = out_dir / out_rel
-            done = out_path.exists()
+            done = out_path.exists() and out_path.stat().st_mtime >= since
             pages.append({"chapter": str(rel.parent) if str(rel.parent) != "." else "",
                           "name": p.name, "orig": str(rel),
                           "tr": str(out_rel) if done else None,
