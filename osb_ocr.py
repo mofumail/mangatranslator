@@ -411,3 +411,41 @@ def install_truncation_guard() -> None:
         return texts
 
     pipeline.call_translation_api_batch = call_translation_api_batch
+
+
+# Closest stand-ins for characters lettering fonts often lack, tried in order
+GLYPH_SUBSTITUTES = {
+    "—": ["–", "--"], "–": ["-"], "―": ["—", "–", "--"], "~": ["〜", "-"], "〜": ["~", "-"],
+    "‘": ["'"], "’": ["'"], "“": ['"'], "”": ['"'], "…": ["..."],
+    "♥": ["♡"], "♡": ["♥"], "★": ["☆"], "☆": ["★"],
+}
+
+
+def install_glyph_substitutes() -> None:
+    """Upstream drops every character the font has no glyph for (so "I—I" becomes "II" in fonts
+    without an em dash). Swap such characters for a supported stand-in first; accented letters
+    fall back to their plain form. Anything still unsupported is dropped as before."""
+    import unicodedata
+
+    from core.text import font_manager, text_renderer
+
+    original = font_manager.sanitize_text_for_font
+
+    def substitute(text: str, font_path: str, verbose: bool = False) -> str:
+        supported = font_manager.get_font_cmap(font_path)
+        if text and supported:
+            out = []
+            for ch in text:
+                if ord(ch) in supported or ch.isspace():
+                    out.append(ch)
+                    continue
+                options = GLYPH_SUBSTITUTES.get(ch, [])
+                plain = "".join(c for c in unicodedata.normalize("NFKD", ch) if not unicodedata.combining(c))
+                if plain and plain != ch:
+                    options = options + [plain]
+                out.append(next((o for o in options if all(ord(c) in supported for c in o)), ch))
+            text = "".join(out)
+        return original(text, font_path, verbose)
+
+    font_manager.sanitize_text_for_font = substitute
+    text_renderer.sanitize_text_for_font = substitute

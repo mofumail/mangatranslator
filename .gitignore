@@ -11,3 +11,7 @@ eval/bake/out/
 eval/bake/sheet.md
 eval/bake/key.json
 eval/bake/summary.txt
+# Licensed fonts the user supplies (not redistributable)
+fonts/Anime Ace/
+fonts/CC Wild Words/
+fonts/*.zip
