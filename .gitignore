@@ -7,3 +7,7 @@ test_out*/
 translated/
 .venv/
 webui_data/
+eval/bake/out/
+eval/bake/sheet.md
+eval/bake/key.json
+eval/bake/summary.txt

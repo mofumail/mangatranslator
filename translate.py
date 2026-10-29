@@ -23,6 +23,7 @@ import argparse
 import atexit
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -109,6 +110,11 @@ def start_llama_server(args: argparse.Namespace, vision: bool) -> subprocess.Pop
         cmd += ["--no-mmproj"]
     if args.cpu_moe:  # MoE models: keep expert weights of the first N layers in system RAM
         cmd += ["--n-cpu-moe", str(args.cpu_moe)]
+    extra = shlex.split(args.llm_server_args)
+    if "--fit" in extra or "-fit" in extra:  # let llama.cpp choose the GPU layer count
+        i = cmd.index("-ngl")
+        del cmd[i:i + 2]
+    cmd += extra
 
     LOG_DIR.mkdir(exist_ok=True)
     log_path = LOG_DIR / "llama-server.log"
@@ -251,6 +257,8 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     g.add_argument("--mmproj", default=None, help="Vision projector (only for --ocr llm)")
     g.add_argument("--port", type=int, default=8080)
     g.add_argument("--ctx", type=int, default=16384, help="LLM context size")
+    g.add_argument("--llm-server-args", default="", metavar="ARGS",
+                   help='Extra llama-server flags, e.g. "--fit on --fit-target 4500 -ctk q8_0 -ctv q8_0"')
     g.add_argument("--cpu-moe", type=int, default=None, metavar="N",
                    help="MoE models only: keep experts of the first N layers in system RAM to save VRAM")
 
