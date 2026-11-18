@@ -25,6 +25,13 @@ osb_ocr.install_glyph_substitutes()
 osb_ocr.install_no_empty_bubbles()
 osb_ocr.install_keep_line_breaks()
 osb_ocr.install_wrapped_paragraphs()
+osb_ocr.install_emphasis_sizes()
+osb_ocr.install_layout_preferences()
+osb_ocr.install_min_line_height()
+osb_ocr.install_vertical_only_if_much_bigger()
+osb_ocr.install_keep_junk_osb()
+osb_ocr.install_text_dump()
+osb_ocr.install_llm_cache()
 argv = sys.argv[1:]
 vision_ocr = "--ocr-method" in argv and argv[argv.index("--ocr-method") + 1] == "LLM"
 if not vision_ocr:  # keep LLM vision crops small; local OCR needs full resolution

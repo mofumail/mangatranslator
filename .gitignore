@@ -17,3 +17,11 @@ fonts/CC Wild Words/
 fonts/*.zip
 eval/djn/in/
 eval/djn/out*
+eval/openmantra/
+eval/detect/out*/
+eval/ch6/jp/
+eval/ch6/en/
+eval/ch6/out/
+eval/ch6/ref_cache.json
+eval/ch6/llm_cache/
+eval/djn/llm_cache/

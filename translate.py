@@ -384,7 +384,9 @@ def main() -> None:
         cmd += ["--batch-glossary-file", str(glossary)]
     cjk_target = any(k in args.target.lower() for k in ("chinese", "japanese", "korean"))
     if not (args.vertical_text or cjk_target):
-        cmd += ["--no-auto-vertical-text"]  # letter-stacked Latin text ("H/u/h/?") reads badly
+        # letter-stacked Latin text ("H/u/h/?") reads badly in bubbles; outside them it's
+        # allowed when it makes text much bigger (osb_ocr.install_vertical_only_if_much_bigger)
+        cmd += ["--no-auto-vertical-text"]
     notes = [args.instructions] if args.instructions else []
     notes.append("Localize like a professional manga translator: natural, idiomatic English with contractions "
                  "and each character's own voice; keep the meaning exact but never translate word for word. "

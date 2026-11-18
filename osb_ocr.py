@@ -515,6 +515,13 @@ def install_glyph_substitutes() -> None:
     def substitute(text: str, font_path: str, verbose: bool = False) -> str:
         supported = font_manager.get_font_cmap(font_path)
         if text and supported:
+            # A wave dash ("PLEASE~!", "Ahh~♡") has no good stand-in in the font: as "-" it
+            # reads as a cut-off word and the line breaker splits there ("LIFE---" / "!!").
+            # Draw it from the symbol font (as the tilde operator, which lettering fonts lack,
+            # so it always takes that route), or drop it if there is no symbol font.
+            if ord("~") not in supported:
+                text = re.sub(r"[~〜]+", lambda m: "∼" * min(len(m.group()), 2) if _symbols_active else "",
+                              text)
             out = []
             for ch in text:
                 if ord(ch) in supported or ch.isspace():
@@ -593,7 +600,7 @@ def install_no_empty_bubbles() -> None:
 
 
 SYMBOL_FONT = Path(__file__).resolve().parent / "assets" / "symbols" / "DejaVuSans-Bold.ttf"
-SYMBOL_CHARS = set("♡♥❤♪♫☆★♂♀→←↑↓⇒■□▶◀▲▼△▽●○◆◇※✓")
+SYMBOL_CHARS = set("♡♥❤♪♫☆★♂♀→←↑↓⇒■□▶◀▲▼△▽●○◆◇※✓∼")
 _symbols_active = False
 
 
@@ -715,3 +722,304 @@ def install_page_image() -> None:
         return
     exec(compile(src.replace(old, "page_attached = has_full_page"), tr.__file__, "exec"), tr.__dict__)
     pipeline.call_translation_api_batch = tr.call_translation_api_batch
+
+
+def install_text_dump() -> None:
+    """Evaluation aid: with MT_DUMP_TEXT=<dir>, write <dir>/<page>.json listing every text
+    region (box, outside-bubble flag, OCR read, translation) in reading order."""
+    import json
+
+    import core.pipeline as pipeline
+
+    out_dir = os.environ.get("MT_DUMP_TEXT")
+    if not out_dir:
+        return
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    current = {"page": None}
+    original_tr = pipeline.translate_and_render
+
+    def translate_and_render(image_path, *args, **kwargs):
+        current["page"] = Path(image_path).stem
+        return original_tr(image_path, *args, **kwargs)
+
+    pipeline.translate_and_render = translate_and_render
+    original_batch = pipeline.call_translation_api_batch
+
+    def call_translation_api_batch(*args, **kwargs):
+        texts = original_batch(*args, **kwargs)
+        meta = kwargs.get("bubble_metadata") or []
+        ocr = kwargs.get("ocr_texts_output") or []
+        items = [{"bbox": [int(v) for v in (m.get("original_bbox") or m.get("bbox") or [])],
+                  "osb": bool(m.get("is_outside_text")),
+                  "ocr": ocr[i] if i < len(ocr) else None,
+                  "tl": texts[i] if i < len(texts) else None}
+                 for i, m in enumerate(meta)]
+        if current["page"]:
+            (Path(out_dir) / f"{current['page']}.json").write_text(
+                json.dumps(items, ensure_ascii=False, indent=1))
+        return texts
+
+    pipeline.call_translation_api_batch = call_translation_api_batch
+
+
+EMPHASIS_MIN_RATIO = 1.4  # source lettering this much above the page's typical size is emphasis
+EMPHASIS_MAX_SCALE = float(os.environ.get("MT_EMPHASIS_MAX", 3.0))
+
+
+def install_emphasis_sizes() -> None:
+    """Upstream caps every bubble at one page-wide size taken from the typical source glyph,
+    so a shout lettered three times bigger gets the same small English as a whisper, lost in
+    its big bubble. Professional letterers follow the source: measure each bubble's own
+    lettering and let bubbles with clearly bigger glyphs grow by the same ratio."""
+    import types
+
+    import cv2
+
+    import core.pipeline as pipeline
+    from core.image.image_utils import estimate_glyph_size
+    from utils.logging import log_message
+
+    if os.environ.get("MT_EMPHASIS", "1") == "0":
+        return
+    state = types.SimpleNamespace(page=None, own={})
+    original_tr = pipeline.translate_and_render
+
+    def translate_and_render(*args, **kwargs):
+        # long strips reuse the first page's size and skip _page_glyph_size: forget the
+        # previous page's boxes, so they can't match bubbles on this one
+        state.page, state.own = None, {}
+        return original_tr(*args, **kwargs)
+
+    pipeline.translate_and_render = translate_and_render
+    original_page = pipeline._page_glyph_size
+
+    def _page_glyph_size(page_image, bubbles_info, full_width):
+        size = original_page(page_image, bubbles_info, full_width)
+        gray = page_image if page_image.ndim == 2 else cv2.cvtColor(page_image, cv2.COLOR_BGR2GRAY)
+        own = {}
+        for info in bubbles_info:
+            if info.get("mask") is None or not info.get("bbox"):
+                continue
+            est = estimate_glyph_size(gray, info["bbox"], info["mask"], full_width)
+            if est:
+                own[tuple(int(v) for v in info["bbox"])] = est
+        state.page, state.own = size, own
+        return size
+
+    pipeline._page_glyph_size = _page_glyph_size
+    original_render = pipeline._render_bubble
+
+    def _lookup(bbox):
+        own = state.own
+        key = tuple(int(v) for v in bbox)
+        if key in own:
+            return own[key]
+        best, best_d = None, 1e9
+        for k, v in own.items():
+            d = sum(abs(a - b) for a, b in zip(k, key))
+            if d < best_d:
+                best, best_d = v, d
+        return best if best_d <= 8 else None
+
+    def _render_bubble(image, bubble, text, bubble_id, render_info, page_cv, config, sizes,
+                       processing_scale):
+        page = state.page
+        est = _lookup(bubble.get("bbox", ())) if page else None
+        # A lone "..." or "!!" is a few strokes; trust only measurements from enough ink
+        if est and est[1] >= 3 and est[0] >= EMPHASIS_MIN_RATIO * page:
+            # a letterer exaggerates a little: shouts read bigger than their glyph ratio
+            scale = min((est[0] / page) ** 1.5, EMPHASIS_MAX_SCALE)
+            bigger = round(sizes.main_max_font * scale)
+            log_message(f"Bubble {bubble_id}: source lettering {est[0] / page:.1f}x the page's, "
+                        f"max font {sizes.main_max_font} -> {bigger}", verbose=config.verbose)
+            sizes = sizes._replace(main_max_font=bigger)
+        return original_render(image, bubble, text, bubble_id, render_info, page_cv, config,
+                               sizes, processing_scale)
+
+    pipeline._render_bubble = _render_bubble
+
+
+LAYOUT_KEEP_SHARE = 0.6  # a less clean layout must allow 1/0.6 = 1.67x bigger text to win
+
+
+def install_layout_preferences() -> None:
+    """Upstream's size search takes any trick that lets text grow: it hyphenates long words
+    ("NEUROTOX-/IN") and moves trailing punctuation to its own line ("MOTHER" / "!!"). A
+    letterer avoids both unless the text would otherwise get much smaller (a short "Fu..." in
+    a narrow bubble). Lay out without the tricks first and only accept them when they allow
+    clearly bigger text."""
+    from core.text import text_renderer
+
+    original = text_renderer.find_optimal_layout
+    MAX, HYPH, DETACH = 8, 10, 17  # positional indexes in find_optimal_layout
+    names = {HYPH: "hyphenate_before_scaling", DETACH: "detach_trailing_punctuation"}
+
+    def get(args, kwargs, i, default):
+        return kwargs.get(names.get(i, ""), args[i] if len(args) > i else default)
+
+    def run(args, kwargs, hyph, detach):
+        a, k = list(args), dict(kwargs)
+        for i, v in ((HYPH, hyph), (DETACH, detach)):
+            if len(a) > i:
+                a[i] = v
+            else:
+                k[names[i]] = v
+        try:
+            return original(*a, **k)
+        except Exception:
+            return None
+
+    def find_optimal_layout(*args, **kwargs):
+        may_hyph = get(args, kwargs, HYPH, True)
+        may_detach = get(args, kwargs, DETACH, True)
+        max_font = get(args, kwargs, MAX, 16)
+        clean = run(args, kwargs, False, False)
+        if clean is not None and clean.get("font_size", 0) >= max_font:
+            return clean
+        options = [clean]
+        if may_hyph:
+            options.append(run(args, kwargs, True, False))
+        if may_detach:
+            options.append(run(args, kwargs, False, True))
+        if may_hyph and may_detach:
+            options.append(run(args, kwargs, True, True))
+        valid = [o for o in options if o is not None]
+        if not valid:
+            return original(*args, **kwargs)  # raises upstream's own error
+        best = max(o.get("font_size", 0) for o in valid)
+        for o in valid:  # in order of preference
+            if o.get("font_size", 0) >= LAYOUT_KEEP_SHARE * best:
+                return o
+        return valid[0]
+
+    text_renderer.find_optimal_layout = find_optimal_layout
+
+
+def install_llm_cache() -> None:
+    """Evaluation aid: with MT_LLM_CACHE=<dir>, LLM responses are stored by request content and
+    replayed when the identical request comes again. llama.cpp isn't bit-exact between runs
+    and one changed line changes the next pages' context, so without this, two runs of a
+    typesetting change also differ in a third of their translations."""
+    import hashlib
+    import json
+    import types
+
+    from utils.endpoints import _http
+
+    cache_dir = os.environ.get("MT_LLM_CACHE")
+    if not cache_dir:
+        return
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    real = _http.requests
+
+    class _Cached:
+        status_code = 200
+
+        def __init__(self, body):
+            self._body = body
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._body
+
+    def post(url, headers=None, json=None, timeout=None, **kwargs):  # noqa: A002
+        key = hashlib.sha256(_json.dumps([url, json], sort_keys=True).encode()).hexdigest()
+        f = Path(cache_dir) / f"{key}.json"
+        if f.exists():
+            return _Cached(_json.loads(f.read_text()))
+        response = real.post(url, headers=headers, json=json, timeout=timeout, **kwargs)
+        response.raise_for_status()
+        f.write_text(_json.dumps(response.json(), ensure_ascii=False))
+        return response
+
+    _json = json
+    _http.requests = types.SimpleNamespace(post=post, exceptions=real.exceptions)
+
+
+def _junk_read(ocr: str) -> bool:
+    """An outside-text "read" with no Japanese and at most 3 letters is speed lines or
+    artwork the detector mistook for lettering ("H")."""
+    t = re.sub(r"^\[(OSB|Bubble)\]\s*", "", ocr or "").strip()
+    if not t or t.startswith("["):
+        return False
+    _, kana, han = _script_ratios(t)
+    return kana + han == 0 and sum(c.isalnum() for c in t) <= 3 and not set(t) <= set("!?.…")
+
+
+def install_keep_junk_osb() -> None:
+    """Leave outside-text regions whose OCR is junk untouched (original art pasted back)
+    instead of drawing the junk on the page."""
+    import core.pipeline as pipeline
+
+    original = pipeline._render_action
+
+    def _render_action(bubble, text, provider_tag):
+        action = original(bubble, text, provider_tag)
+        if (action == "render" and bubble.get("is_outside_text") and "original_crop_pil" in bubble
+                and _junk_read(bubble.get("ocr_text", ""))):
+            return "keep_original"
+        return action
+
+    pipeline._render_action = _render_action
+
+
+LINE_HEIGHT_EM = 1.0  # minimum baseline-to-baseline distance, in font sizes
+
+
+def install_min_line_height() -> None:
+    """Lettering fonts disagree on built-in line spacing: CC Wild Words is 0.86 em (lines of
+    capitals nearly touch), Comic Neue and Anime Ace are 1.15-1.25. Open tight fonts up to
+    LINE_HEIGHT_EM so every font gets the airy leading of hand lettering."""
+    import skia
+
+    from core.text import text_renderer
+
+    original = text_renderer.find_optimal_layout
+    TYPEFACE, SPACING, VERTICAL = 4, 9, 18  # positional indexes in find_optimal_layout
+    cache: dict = {}
+
+    def line_em(typeface) -> float:
+        key = id(typeface)
+        if key not in cache:
+            m = skia.Font(typeface, 100).getMetrics()
+            cache[key] = (-m.fAscent + m.fDescent + m.fLeading) / 100 or 1.0
+        return cache[key]
+
+    def find_optimal_layout(*args, **kwargs):
+        args = list(args)
+        vertical = kwargs.get("vertical_stack", args[VERTICAL] if len(args) > VERTICAL else False)
+        typeface = kwargs.get("regular_typeface", args[TYPEFACE] if len(args) > TYPEFACE else None)
+        if not vertical and typeface is not None:
+            factor = max(1.0, LINE_HEIGHT_EM / line_em(typeface))
+            if len(args) > SPACING:
+                args[SPACING] *= factor
+            else:
+                kwargs["line_spacing_mult"] = kwargs.get("line_spacing_mult", 1.0) * factor
+        return original(*args, **kwargs)
+
+    text_renderer.find_optimal_layout = find_optimal_layout
+
+
+VERTICAL_MIN_GAIN = 1.8  # stack letters vertically only if that allows text this much bigger
+
+
+def install_vertical_only_if_much_bigger() -> None:
+    """Upstream stacks short Latin text letter by letter ("W/H/A/T") in tall regions whenever
+    that is at least as big as a horizontal line. Letterers set English horizontally and only
+    stack when a horizontal line would be tiny (a long moan along a narrow strip)."""
+    from core.text import text_renderer
+
+    original = text_renderer._auto_vertical_layout_is_better
+
+    from utils.logging import log_message
+
+    def better(horizontal_layout, vertical_layout, max_render_height):
+        if not original(horizontal_layout, vertical_layout, max_render_height):
+            return False
+        h, v = horizontal_layout.get("font_size", 0), vertical_layout.get("font_size", 0)
+        log_message(f"Vertical stacking candidate: size {v} vs horizontal {h}", verbose=False)
+        return v >= VERTICAL_MIN_GAIN * h
+
+    text_renderer._auto_vertical_layout_is_better = better
