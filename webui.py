@@ -119,6 +119,8 @@ def run_job(job_id: str, job: dict[str, Any]) -> None:
         cmd += ["--adult"]
     if o.get("vision"):
         cmd += ["--vision"]
+    if o.get("honorifics"):
+        cmd += ["--honorifics", "keep"]
     env_extra = {}
     if job.get("resume"):  # only Resume skips pages, and only those this job already wrote
         cmd += ["--skip-existing"]

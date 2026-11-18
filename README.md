@@ -64,9 +64,15 @@ the llama-server start adds ~5-10 s per run.
 - If a long source line comes back implausibly short (the model sometimes drops the rest of a
   block), the page is translated once more and the fuller answer kept.
 - A same-model "polish" pass was tested and changed little; not enabled.
-- `--vision` (page image for the translator, local OCR kept) costs no time but ~2 GB VRAM. On doujin CG
-  pages it fixed some he/she and sound-effect mistakes and caused about as many new ones; on the
-  OpenMantra pages it read stiffer and added a meaning error. Off by default. (`--ocr llm`, where Gemma
+- `--vision` (page image for the translator, local OCR kept) costs no time but ~2 GB VRAM. Re-measured
+  with repeatable runs on three sets: on a shounen chapter checked against its English scanlation it fixed
+  OCR misreads (title, names), speaker mix-ups and sound effects; on an OpenMantra book it added meaning
+  errors and turned a boyish narrator into "she"; on doujin CG pages it dropped the " / " line separators
+  of text blocks and rewrote credits. Off by default; try it on action-heavy series.
+- Prompt rules on top of upstream's: honorifics dropped like a professional localization
+  (`--honorifics keep` to keep them), Western spelling for katakana Western names (プリシラ → Priscilla),
+  a vowel-only bubble that continues the previous word is that word drawn out (死ねェ / エ / エエエ!! →
+  Die! / Die... / DIEEEE!!), and sound effects never enter the name glossary. (`--ocr llm`, where Gemma
   also reads the text, is worse: it "corrects" the Japanese into nonsense, e.g. キャンセル -> マンセル.)
 - Doujin CG test set (17 pages from 8 works, `eval/djn/run.sh <label>`, pages not in git): no pages with
   empty bubbles or dropped hearts; ~17 s/page.
@@ -85,7 +91,8 @@ the llama-server start adds ~5-10 s per run.
 --skip-existing                      # resume: only translate pages without an output yet
 --adult                              # 18+ content: translate explicit lines fully (web UI: checkbox)
 --keep-other-language                # don't erase other-script blocks (e.g. Chinese next to Japanese)
---vision                             # also show the translator the page image (experimental, +2 GB VRAM)
+--vision                             # also show the translator the page image (+2 GB VRAM; see notes)
+--honorifics keep                    # keep -san/-sama/... (default: drop them, as pro localizations do)
 --no-ocr-correction                  # don't let the LLM repair lines the OCR obviously misread
 --llm-url http://host:port/v1 --llm-model-name X   # use another OpenAI-compatible server
 --model 12b                          # faster dense translator, fully on GPU
@@ -143,7 +150,10 @@ assets/symbols/       DejaVu Sans Bold for ♥ ♪ ★ (free license, see LICENS
 fonts/                Comic Neue (dialogue), Bangers (OSB/SFX) — both SIL OFL
                       Add your own as fonts/<Name>/ with -Regular/-Bold/-Italic in the file names
                       (e.g. CC Wild Words, Anime Ace; git-ignored, as their licenses forbid redistribution)
-eval/                 OpenMantra benchmark pages used to check quality; eval/djn/ doujin test runner
+eval/                 OpenMantra benchmark pages used to check quality; eval/djn/ doujin test runner;
+                      eval/ch6/ a chapter vs its English scanlation (refs.py reads the pro lettering,
+                      compare.py / checklist.py side by side); eval/om/ OpenMantra books vs their
+                      pro English. Runs set MT_LLM_FRESH=1, which makes temperature-0 output repeatable
                       (model licenses: Hayai Apache-2.0; comic-text-detector weights GPL-3.0)
 logs/llama-server.log
 ```

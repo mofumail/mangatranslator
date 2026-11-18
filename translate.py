@@ -237,13 +237,17 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
                    help="Glossary file to reuse/update for consistent names (default: <output>/glossary.txt; "
                    "pass the previous chapter's to carry names over)")
     p.add_argument("--instructions", default=None, help="Extra instructions for the translator LLM")
+    p.add_argument("--honorifics", choices=["drop", "keep"], default="drop",
+                   help="Japanese honorifics (-san, -sama, ...): drop them like a professional localization "
+                   "(default) or keep them")
     p.add_argument("--adult", action="store_true",
                    help="18+ content: translate explicit lines fully instead of softening them")
     p.add_argument("--keep-other-language", action="store_true",
                    help="Don't erase blocks in another script (e.g. a Chinese translation printed beside the Japanese)")
     p.add_argument("--vision", action="store_true",
-                   help="Show the translator the whole page too (who speaks, what happens; catches OCR "
-                   "misreads). Loads the model's vision projector: ~2 GB more VRAM, slower")
+                   help="Show the translator the whole page too: better at who speaks, sound effects and "
+                   "OCR misreads, but it also adds meaning errors and guesses gender from looks. Loads "
+                   "the model's vision projector (~2 GB more VRAM)")
     p.add_argument("--no-ocr-correction", dest="ocr_correction", action="store_false",
                    help="Don't let the LLM fix lines that OCR obviously misread")
     p.add_argument("--format", choices=["auto", "png", "jpeg"], default="png", help="Output format")
@@ -396,11 +400,25 @@ def main() -> None:
                  "never use * or ** markdown in place of quotation marks.")
     notes.append("An item with \" / \" separators is a list (chat comments, credits): translate each entry "
                  "and keep every \" / \" in place.")
+    if args.honorifics == "drop":
+        notes.append("Drop Japanese honorifics (-san, -kun, -chan, -sama, -dono, -senpai). Where one carries "
+                     "meaning, say it the English way instead (Lady Priscilla, Master, big sis).")
+    else:
+        notes.append("Keep Japanese honorifics on names as written (Leaf-san, Priscilla-sama).")
+    notes.append("A personal name in katakana that is a Western or fantasy name gets its natural Western "
+                 "spelling (プリシラ → Priscilla), not a syllable-by-syllable romanization.")
+    # A bubble that is only エ / エエエ!! after 死ねェ is the same shout drawn out, not a new sound.
+    # Guarded on the previous item so standalone あ/ん bubbles (moans, gasps) stay vocalizations.
+    notes.append("When an item is only a drawn-out vowel (エ, ェェ, エエエ!!, ーー) and the previous item ends "
+                 "on that same vowel, it is the previous word stretched across bubbles: repeat that English "
+                 "word drawn out (死ねェ / エ / エエエ!! → Die! / Die... / DIEEEE!!). Otherwise a lone vowel "
+                 "is a vocalization as usual.")
     if batch:
         # Local models tend to write the English name on both sides of the new-terms block,
         # which upstream rejects ("source not on page"), leaving the glossary empty.
         notes.append(f"In the new-terms block, the left side of each line must be the term copied "
-                     f"verbatim from the {args.source} transcription (original script), never its translation.")
+                     f"verbatim from the {args.source} transcription (original script), never its translation. "
+                     f"Sound effects and interjections are never terms.")
     if notes:
         cmd += ["--special-instructions", "\n".join(notes)]
     cmd = [c for c in cmd if c] + passthrough

@@ -262,6 +262,7 @@ a.btn, a.rb { text-decoration: none; color: inherit; }
           </div>
           <label class="check"><input type="checkbox" id="vision"> Show the translator each page (experimental: fixes some he/she and sound-effect mistakes, adds others; +2 GB VRAM)</label>
           <label class="check"><input type="checkbox" id="adult"> Adult content (18+): translate explicit lines fully</label>
+          <label class="check"><input type="checkbox" id="honorifics"> Keep honorifics (Leaf-san, Priscilla-sama) instead of dropping them</label>
           <label class="check"><input type="checkbox" id="offline"> Offline (no network access at all)</label>
         </details>
 
@@ -376,6 +377,7 @@ async function loadConfig() {
   if (prefs.osb) $("#osb").value = prefs.osb;
   if (prefs.adult) $("#adult").checked = true;
   if (prefs.vision) $("#vision").checked = true;
+  if (prefs.honorifics) $("#honorifics").checked = true;
   $("#osbHint").textContent = CFG.osb_ready ? "Model installed." :
     "Needs the gated deepghs/AnimeText_yolo model (accept its terms on huggingface.co).";
   document.querySelectorAll("#modelSeg button").forEach((b) => {
@@ -517,9 +519,9 @@ $("#go").onclick = async () => {
   if (!sel) return;
   const options = {
     source: $("#src").value, target: $("#tgt").value, model, osb: $("#osb").value, font: $("#font").value,
-    instructions: $("#instr").value.trim(), context_pages: +$("#ctx").value || 0, offline: $("#offline").checked, adult: $("#adult").checked, vision: $("#vision").checked,
+    instructions: $("#instr").value.trim(), context_pages: +$("#ctx").value || 0, offline: $("#offline").checked, adult: $("#adult").checked, vision: $("#vision").checked, honorifics: $("#honorifics").checked,
   };
-  store.set("mt-prefs", { src: options.source, tgt: options.target, font: options.font, instr: options.instructions, osb: options.osb, adult: options.adult, vision: options.vision });
+  store.set("mt-prefs", { src: options.source, tgt: options.target, font: options.font, instr: options.instructions, osb: options.osb, adult: options.adult, vision: options.vision, honorifics: options.honorifics });
   const body = { mode: sel.mode, name: sel.name, path: sel.path, output_dir: $("#outDir").value.trim(), options };
   $("#go").disabled = true; $("#err").textContent = "";
   try {

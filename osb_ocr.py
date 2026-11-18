@@ -899,7 +899,12 @@ def install_llm_cache() -> None:
     """Evaluation aid: with MT_LLM_CACHE=<dir>, LLM responses are stored by request content and
     replayed when the identical request comes again. llama.cpp isn't bit-exact between runs
     and one changed line changes the next pages' context, so without this, two runs of a
-    typesetting change also differ in a third of their translations."""
+    typesetting change also differ in a third of their translations.
+
+    With MT_LLM_FRESH=1, every request is sent with cache_prompt=false: llama.cpp then evaluates
+    the whole prompt anew instead of reusing the previous request's prefix, which makes
+    temperature-0 output repeatable (the reused prefix is what changes the floating-point
+    results). Slower prompt processing; for prompt A/B runs."""
     import hashlib
     import json
     import types
@@ -907,9 +912,11 @@ def install_llm_cache() -> None:
     from utils.endpoints import _http
 
     cache_dir = os.environ.get("MT_LLM_CACHE")
-    if not cache_dir:
+    fresh = os.environ.get("MT_LLM_FRESH") == "1"
+    if not (cache_dir or fresh):
         return
-    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    if cache_dir:
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
     real = _http.requests
 
     class _Cached:
@@ -925,6 +932,10 @@ def install_llm_cache() -> None:
             return self._body
 
     def post(url, headers=None, json=None, timeout=None, **kwargs):  # noqa: A002
+        if fresh and isinstance(json, dict):
+            json = {**json, "cache_prompt": False}
+        if not cache_dir:
+            return real.post(url, headers=headers, json=json, timeout=timeout, **kwargs)
         key = hashlib.sha256(_json.dumps([url, json], sort_keys=True).encode()).hexdigest()
         f = Path(cache_dir) / f"{key}.json"
         if f.exists():
@@ -932,7 +943,19 @@ def install_llm_cache() -> None:
         response = real.post(url, headers=headers, json=json, timeout=timeout, **kwargs)
         response.raise_for_status()
         f.write_text(_json.dumps(response.json(), ensure_ascii=False))
+        # the request too, minus image data, to see exactly what the model was asked
+        f.with_suffix(".req.json").write_text(
+            _json.dumps(_strip_images(json), ensure_ascii=False, indent=1))
         return response
+
+    def _strip_images(obj):
+        if isinstance(obj, dict):
+            return {k: _strip_images(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_strip_images(v) for v in obj]
+        if isinstance(obj, str) and obj.startswith("data:image"):
+            return obj[:40] + "...(image)"
+        return obj
 
     _json = json
     _http.requests = types.SimpleNamespace(post=post, exceptions=real.exceptions)
