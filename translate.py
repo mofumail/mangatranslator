@@ -237,17 +237,26 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
                    help="Glossary file to reuse/update for consistent names (default: <output>/glossary.txt; "
                    "pass the previous chapter's to carry names over)")
     p.add_argument("--instructions", default=None, help="Extra instructions for the translator LLM")
+    p.add_argument("--character-notes", nargs="?", const="auto", default=None, metavar="FILE",
+                   help="Keep running notes on the characters (stated gender, pronoun, way of speaking) and "
+                   "send them with every page, for consistent pronouns and voices. Default file: "
+                   "<output>/characters.txt; pass the previous chapter's to carry them over")
     p.add_argument("--honorifics", choices=["drop", "keep"], default="drop",
                    help="Japanese honorifics (-san, -sama, ...): drop them like a professional localization "
                    "(default) or keep them")
+    p.add_argument("--sfx", choices=["label", "redraw"], default="label",
+                   help="Sound effects outside bubbles: keep the artist's lettering and add a small English "
+                   "label beside it, like a scanlation (default), or erase it and draw the English instead")
     p.add_argument("--adult", action="store_true",
                    help="18+ content: translate explicit lines fully instead of softening them")
     p.add_argument("--keep-other-language", action="store_true",
                    help="Don't erase blocks in another script (e.g. a Chinese translation printed beside the Japanese)")
-    p.add_argument("--vision", action="store_true",
-                   help="Show the translator the whole page too: better at who speaks, sound effects and "
-                   "OCR misreads, but it also adds meaning errors and guesses gender from looks. Loads "
-                   "the model's vision projector (~2 GB more VRAM)")
+    p.add_argument("--vision", nargs="?", const="full", default=None, choices=["off", "short", "full"],
+                   help="Show the translator the page image. short (default): translate from text, then redo "
+                   "only short items (sound effects, gasps, one-word lines, names read from furigana) with the "
+                   "page in view; full (bare --vision): the page for every line, which also adds meaning errors "
+                   "and guesses gender from looks; off. Loads the model's vision projector (~2 GB more VRAM). "
+                   "Default off with --model 12b (no VRAM left on 12 GB), --gguf and --llm-url")
     p.add_argument("--no-ocr-correction", dest="ocr_correction", action="store_false",
                    help="Don't let the LLM fix lines that OCR obviously misread")
     p.add_argument("--format", choices=["auto", "png", "jpeg"], default="png", help="Output format")
@@ -285,6 +294,9 @@ def main() -> None:
     args, passthrough = parse_args()
     preset = MODEL_PRESETS[args.model]
     args.repo = preset["repo"]
+    # short vision by default only where it is measured to fit: the 26B with experts in RAM.
+    # The 12B is all on the GPU; with the projector the page runs out of VRAM (12 GB card).
+    vision_fits = args.gguf is None and args.model == "26b" and not args.llm_url
     if args.gguf is None:
         args.gguf = str(preset["gguf"])
         args.cpu_moe = preset["cpu_moe"] if args.cpu_moe is None else args.cpu_moe
@@ -299,6 +311,7 @@ def main() -> None:
         env.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
     if args.keep_other_language:
         env["MT_KEEP_OTHER_LANGUAGE"] = "1"
+    env["MT_SFX"] = args.sfx
 
     upstream_main = [sys.executable, str(ROOT / "mt_upstream.py")]  # upstream CLI + local OCR patch
     if args.upstream_help:
@@ -317,8 +330,15 @@ def main() -> None:
     if ocr == "auto":
         ocr = "manga-ocr" if args.source.lower() == "japanese" else "paddleocr-vl-1.6"
     vision = ocr == "llm"  # one-step: Gemma reads the text itself
-    if args.vision and not vision:
+    if args.vision is None:
+        args.vision = "short" if vision_fits else "off"
+        if args.vision != "off" and not Path(args.mmproj).exists():
+            log(f"Vision projector not found ({args.mmproj}); translating without the page image")
+            args.vision = "off"
+    if args.vision == "full" and not vision:
         env["MT_PAGE_IMAGE"] = "1"  # local OCR, plus the page image for the translator
+    elif args.vision == "short" and not vision:
+        env["MT_VISION_SHORT"] = "1"  # text first, then the page image for short items only
     reading_dir = args.reading_direction or ("rtl" if args.source.lower() == "japanese" else "ltr")
 
     if args.osb == "auto":
@@ -383,6 +403,10 @@ def main() -> None:
         cmd += ["--osb-enable", "--osb-font-dir", font_pack(args.osb_font)]
     else:
         cmd += ["--no-osb-text-verification"]
+    if args.character_notes:
+        notes = (out / "characters.txt" if args.character_notes == "auto"
+                 else Path(args.character_notes).expanduser().resolve())
+        env["MT_CHAR_NOTES"] = str(notes)
     if batch:  # names/terms memory, shared by all chapters; reuse it later with --glossary
         glossary = Path(args.glossary).expanduser().resolve() if args.glossary else out / "glossary.txt"
         cmd += ["--batch-glossary-file", str(glossary)]
@@ -430,11 +454,11 @@ def main() -> None:
         return
 
     if not args.llm_url:
-        start_llama_server(args, vision or args.vision)
+        start_llama_server(args, vision or args.vision != "off")
 
     log(f"{inp} -> {out}  ({args.source} -> {args.target}, LLM: {Path(args.gguf).stem if not args.llm_url else model_name}, "
         f"OCR: {ocr}, inpaint: {args.inpaint}, "
-        f"OSB: {'on' if osb else 'off'})")
+        f"OSB: {'on' if osb else 'off'}, page image: {args.vision})")
     t0 = time.time()
     # Upstream logs model-loading problems but still exits 0 (and writes untranslated
     # pages), so watch its output and turn those into a failing exit code.

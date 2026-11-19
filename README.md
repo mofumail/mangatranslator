@@ -37,7 +37,7 @@ Output pages are written as `<name>_translated.png`, plus a `glossary.txt` of na
 | OCR | Japanese: Hayai OCR v2.5 Nova everywhere. Speech bubbles: Hayai, cross-checked with `manga-ocr`. Text outside bubbles: line by line using comic-text-detector lines for multi-line blocks (see below). Other languages: PaddleOCR-VL 1.6 |
 | Cleaning | Flat fill inside bubbles, Koharu SAM-TS-L glyph masks, LaMa-manga inpainting |
 | Translation | Gemma 4 26B-A4B QAT (MoE, experts in system RAM) via `llama-server` (llama.cpp, CUDA), thinking off, 3 pages of story context + auto glossary |
-| Typesetting | MangaTranslator renderer: per-page font size matching, hyphenation, markdown italics/bold for emphasis; ♥ ♪ ★ drawn from a bundled symbol font when the lettering font lacks them |
+| Typesetting | MangaTranslator renderer: per-page font size matching, hyphenation, markdown italics/bold for emphasis; ♥ ♪ ★ drawn from a bundled symbol font when the lettering font lacks them; sound effects keep the artist's lettering with a small English label beside it, sized to the effect (`--sfx redraw` to replace them) |
 
 The engine is [MangaTranslator](https://github.com/meangrinch/MangaTranslator) (`./MangaTranslator`, untouched upstream checkout);
 `translate.py` starts/stops llama-server, picks local defaults and forwards everything else.
@@ -46,7 +46,7 @@ The engine is [MangaTranslator](https://github.com/meangrinch/MangaTranslator) (
 
 | Translator | Peak VRAM (whole pipeline, incl. ~1.4 GB desktop) | Speed | Notes |
 |---|---|---|---|
-| `--model 26b` (default) | 6.1 GB | ~10 s/page | fewest meaning errors, most natural English |
+| `--model 26b` (default) | 8.8 GB (6.1 with `--vision off`) | ~12 s/page | fewest meaning errors, most natural English |
 | `--model 12b` | 11.1 GB | ~6 s/page | ~3-4 % lines with meaning errors (subject mix-ups, idioms) |
 | `--model 12b --ocr llm` (vision) | 11.9 GB | ~8 s/page | **not recommended**: Gemma misreads Japanese more than manga-ocr (wrong names, failed crops) |
 
@@ -64,11 +64,19 @@ the llama-server start adds ~5-10 s per run.
 - If a long source line comes back implausibly short (the model sometimes drops the rest of a
   block), the page is translated once more and the fuller answer kept.
 - A same-model "polish" pass was tested and changed little; not enabled.
-- `--vision` (page image for the translator, local OCR kept) costs no time but ~2 GB VRAM. Re-measured
-  with repeatable runs on three sets: on a shounen chapter checked against its English scanlation it fixed
-  OCR misreads (title, names), speaker mix-ups and sound effects; on an OpenMantra book it added meaning
-  errors and turned a boyish narrator into "she"; on doujin CG pages it dropped the " / " line separators
-  of text blocks and rewrote credits. Off by default; try it on action-heavy series.
+- Page image for the translator (`--vision`, local OCR kept, ~2 GB VRAM). Showing it for every line
+  (`--vision full`) was measured on three sets with repeatable runs: on a shounen chapter checked against
+  its English scanlation it fixed OCR misreads, speaker mix-ups and sound effects; on an OpenMantra book it
+  added meaning errors and turned a boyish narrator into "she"; on doujin CG pages it dropped the " / "
+  line separators of text blocks and rewrote credits. So the default is `--vision short`: translate from
+  text, then redo only short items (outside-bubble text up to 10 characters, bubbles up to 5) with the page
+  in view. That kept the gains (sound effects, the speaker of a short reply, the chapter number on a title,
+  names read from furigana: 和音 Kanon → Kazune, 宏也 Futoshi → Hiroya on a held-out OpenMantra book)
+  without touching long lines; ~2-3 s/page more. Restyle-only answers (*Huff* → **HUFF**) are ignored.
+  Off by default for `--model 12b` (out of VRAM on 12 GB), `--gguf` and `--llm-url`.
+- `--character-notes` (running notes on characters, sent with every page) was measured and is off by
+  default: built from text alone, the notes attribute lines to the wrong speakers (a polite character noted
+  as "rough") and changed as much for the worse as for the better.
 - Prompt rules on top of upstream's: honorifics dropped like a professional localization
   (`--honorifics keep` to keep them), Western spelling for katakana Western names (プリシラ → Priscilla),
   a vowel-only bubble that continues the previous word is that word drawn out (死ねェ / エ / エエエ!! →
@@ -91,7 +99,9 @@ the llama-server start adds ~5-10 s per run.
 --skip-existing                      # resume: only translate pages without an output yet
 --adult                              # 18+ content: translate explicit lines fully (web UI: checkbox)
 --keep-other-language                # don't erase other-script blocks (e.g. Chinese next to Japanese)
---vision                             # also show the translator the page image (+2 GB VRAM; see notes)
+--vision short|full|off              # page image for the translator (default short; see notes)
+--sfx label|redraw                   # sound effects: keep the art + small label (default), or redraw
+--character-notes [FILE]             # running character notes (measured: no net gain; see notes)
 --honorifics keep                    # keep -san/-sama/... (default: drop them, as pro localizations do)
 --no-ocr-correction                  # don't let the LLM repair lines the OCR obviously misread
 --llm-url http://host:port/v1 --llm-model-name X   # use another OpenAI-compatible server
@@ -138,7 +148,8 @@ once the model is accessible/downloaded.
 translate.py          wrapper / entry point (CLI)
 mt_upstream.py        runs MangaTranslator's CLI with the patches below installed
 osb_ocr.py            runtime patches: OCR (Hayai, line by line), other-language erase, narration
-                      typesetting, symbol fallback, no empty bubbles, list line breaks, --vision
+                      typesetting, symbol fallback, no empty bubbles, list line breaks, --vision,
+                      sound-effect labels, character notes
 text_lines.py         comic-text-detector (ONNX, CPU) line detection
 hayai_ocr.py          Hayai OCR v2.5 Nova loader (code vendored in vendor/hayai, audited, pinned)
 webui.py, webui/      browser UI + reader (state in webui_data/, default output in translated/)

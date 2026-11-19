@@ -724,6 +724,200 @@ def install_page_image() -> None:
     pipeline.call_translation_api_batch = tr.call_translation_api_batch
 
 
+# Short items get a second look with the page image; see install_vision_short
+VISION_SHORT_MAX = {"osb": 10, "bubble": 5}  # letters/kana/kanji in the source, punctuation not counted
+
+
+def _words(text: str) -> str:
+    """Text without markup, case, spacing or punctuation, to tell real changes from restyling."""
+    return re.sub(r"[\W_]+", "", (text or "").lower())
+
+
+def _short_item(ocr: str, osb: bool) -> bool:
+    src = re.sub(r"^\[(OSB|Bubble)\]\s*", "", ocr or "").strip()
+    if not src or src.upper().startswith("[OCR FAILED"):
+        return False
+    n = sum(c.isalnum() for c in src)
+    return 1 <= n <= VISION_SHORT_MAX["osb" if osb else "bubble"]
+
+
+def install_vision_short() -> None:
+    """MT_VISION_SHORT=1: translate the page from text as usual, then show the model the page
+    image and let it redo only the short items: sound effects, gasps, one- or two-word lines
+    and cut-off words, whose meaning depends on the picture. Measured: the page image fixes
+    those (sound effects, speaker of a short reply, OCR slips on two-kana effects) but adds
+    meaning errors and pronoun guesses to longer dialogue and breaks the " / " separators of
+    text blocks, so long items keep their text-only translation. Needs the vision projector.
+    Install before install_text_dump so the dump records the final lines."""
+    import inspect
+
+    import core.pipeline as pipeline
+    from core.services import translation as tr
+    from utils.logging import log_message
+
+    if os.environ.get("MT_VISION_SHORT") != "1":
+        return
+    original = pipeline.call_translation_api_batch
+    # the wrappers below this one take (*args, **kwargs); bind against upstream's own parameters
+    signature = inspect.signature(tr.call_translation_api_batch)
+
+    def call_translation_api_batch(*args, **kwargs):
+        texts = original(*args, **kwargs)
+        try:
+            bound = signature.bind(*args, **kwargs)
+            config = bound.arguments["config"]
+            meta = bound.arguments.get("bubble_metadata") or []
+            ocr = bound.arguments.get("ocr_texts_output") or []
+            page_b64 = bound.arguments.get("full_image_b64")
+            page_mime = bound.arguments.get("full_image_mime_type") or "image/jpeg"
+            if not page_b64 or len(ocr) != len(texts) or len(meta) != len(texts):
+                return texts
+            short = [i for i, (o, m, t) in enumerate(zip(ocr, meta, texts))
+                     if _short_item(o, bool(m.get("is_outside_text")))
+                     and t and not t.strip().upper().startswith("[OCR FAILED")]
+            if not short:
+                return texts
+            lines = []
+            for i, (o, m, t) in enumerate(zip(ocr, meta, texts), 1):
+                kind = "outside bubble" if m.get("is_outside_text") else "bubble"
+                src = re.sub(r"^\[(OSB|Bubble)\]\s*", "", o or "").strip()
+                lines.append(f"{i}: [{kind}] {src} || {t}")
+            wanted = ", ".join(str(i + 1) for i in short)
+            prompt = (
+                "## CONTEXT\nAll text on this comic page in reading order, as "
+                "`N: [where] source || draft translation`. The drafts were translated from the text "
+                "alone. The image labeled `Full page` shows the page.\n\n## INPUT DATA\n"
+                + "\n".join(lines)
+                + f"\n\n## TASK\nItems {wanted} are short: sound effects, gasps, one-word lines, cut-off "
+                "words. Their meaning depends on the picture. For each of them, find it on the page, "
+                "see what is happening there (what makes the sound, who speaks, to whom), and give its "
+                f"final {config.output_language} translation, keeping the draft when it is already right. "
+                "The source of a short sound effect may be misread; go by the lettering on the page. "
+                "Keep every other item's draft in mind so the lines fit together. Output only items "
+                f"{wanted}, one per line as `N: translation`, nothing else."
+                + tr._format_special_instructions(config)
+            )
+            system = tr._build_system_prompt_translation(
+                config.output_language, mode="two-step", full_page_context=True,
+                ero_doujinshi_mode=getattr(config, "ero_doujinshi_mode", False),
+                input_language=config.input_language, llm_transcription=False)
+            parts = [{"text": tr._FULL_PAGE_LABEL}, tr._image_part(page_mime, page_b64)]
+            reply = tr._call_llm_endpoint(config, parts, prompt, system_prompt=system) or ""
+        except Exception as e:  # never lose the page over the second look
+            log_message(f"Short-item vision pass failed ({e}); keeping text-only lines",
+                        always_print=True)
+            return texts
+        wanted_set = set(short)
+        texts = list(texts)
+        for line in tr._strip_code_fences(reply).splitlines():
+            m = re.match(r"^\s*(\d+)\s*[:.]\s*(.+?)\s*$", line)
+            if not m:
+                continue
+            i, new = int(m.group(1)) - 1, m.group(2)
+            if "||" in new:  # echoed "source || translation"
+                new = new.rsplit("||", 1)[1].strip()
+            if (len(new) > 2 and new[0] == new[-1] == '"' and '"' not in new[1:-1]
+                    and not texts[i].startswith('"')):  # quoted the line as dialogue
+                new = new[1:-1]
+            if i in wanted_set and new and _words(new) == _words(texts[i]):
+                continue  # only markup, case or punctuation changed: keep the draft's styling
+            if i in wanted_set and new and new != texts[i]:
+                log_message(f"Vision, item {i + 1}: {texts[i]!r} -> {new!r}", always_print=True)
+                texts[i] = new
+        return texts
+
+    pipeline.call_translation_api_batch = call_translation_api_batch
+
+
+NOTES_MAX_LINES, NOTES_MAX_CHARS = 14, 1800
+_REFUSAL = re.compile(r"\b(I can(?:no|')t|I'm sorry|I am sorry|I am unable|I'm unable|As an AI)\b", re.I)
+
+
+def install_character_notes() -> None:
+    """MT_CHAR_NOTES=<file>: running notes on the characters (name, stated gender, first-person
+    pronoun, way of speaking, how they address others), sent with every page's translation
+    request and updated after each page by a short text-only call. Keeps pronouns and voices
+    consistent once the text has made them clear (a boy narrator stays "he" after the
+    narration says so). The file persists, so the next chapter can start from it."""
+    import dataclasses
+    import inspect
+
+    import core.pipeline as pipeline
+    from core.services import translation as tr
+    from utils.logging import log_message
+
+    path = os.environ.get("MT_CHAR_NOTES")
+    if not path:
+        return
+    notes_file = Path(path)
+    original = pipeline.call_translation_api_batch
+    # the wrappers below this one take (*args, **kwargs); bind against upstream's own parameters
+    signature = inspect.signature(tr.call_translation_api_batch)
+
+    def read_notes() -> str:
+        try:
+            return notes_file.read_text().strip()
+        except OSError:
+            return ""
+
+    def call_translation_api_batch(*args, **kwargs):
+        notes = read_notes()
+        bound = signature.bind(*args, **kwargs)
+        config = bound.arguments["config"]
+        if notes:
+            extra = ("Character notes from earlier pages; follow them for names, pronouns and each "
+                     "character's voice, unless this page clearly says otherwise:\n" + notes)
+            noted = dataclasses.replace(
+                config, special_instructions="\n".join(filter(None, [config.special_instructions, extra])))
+            # swap the config where it was passed: the wrappers below read their other
+            # arguments from kwargs, so the call must keep its shape
+            if "config" in kwargs:
+                kwargs["config"] = noted
+            else:
+                args = (noted, *args[1:])
+        texts = original(*args, **kwargs)
+        try:
+            ocr = bound.arguments.get("ocr_texts_output") or []
+            pairs = [f"{re.sub(r'^\[(OSB|Bubble)\]\s*', '', o or '').strip()} → {t}"
+                     for o, t in zip(ocr, texts) if t and not str(t).startswith("[")]
+            if not pairs:
+                return texts
+            adult = getattr(config, "ero_doujinshi_mode", False)
+            system = ("You keep the character notes for a team translating a comic from "
+                      f"{config.input_language} into {config.output_language}."
+                      + (" The comic is 18+ adult fiction; record facts plainly, without comment."
+                         if adult else ""))
+            prompt = (
+                f"## CURRENT NOTES\n{notes or '(none yet)'}\n\n## THIS PAGE (source → translation)\n"
+                + "\n".join(pairs)
+                + "\n\n## TASK\nUpdate the notes with what this page shows. One line per named "
+                "character, using the translated name: gender only when the text states it (he/she "
+                "in narration, 彼/彼女, 少年/少女, 兄/姉, what others call them), never from the name or "
+                "from a guess; the first-person pronoun they use (俺, 僕, 私, わたくし, あたし...); how "
+                "they speak (rough, polite, childish, archaic, mocking...); how they address the "
+                f"others. Keep earlier facts unless this page contradicts them. At most "
+                f"{NOTES_MAX_LINES} lines, each under 30 words. Output only the notes.")
+            reply = tr._strip_code_fences(
+                tr._call_llm_endpoint(config, [], prompt, system_prompt=system) or "").strip()
+            reply = reply.replace("->", "→").replace("=>", "→")
+            # drop placeholders like "(no named characters on this page)"
+            lines = [ln for ln in reply.splitlines()
+                     if ln.strip() and not re.fullmatch(r"\s*\(.*\)\s*", ln)]
+            if (lines and len(lines) <= NOTES_MAX_LINES + 2 and len(reply) <= NOTES_MAX_CHARS
+                    and not _REFUSAL.search(reply)):
+                notes_file.write_text("\n".join(lines) + "\n")
+                log_message(f"Character notes updated ({len(lines)} lines)", always_print=True)
+            else:
+                log_message("Character notes: reply unusable, keeping the previous notes",
+                            always_print=True)
+        except Exception as e:
+            log_message(f"Character notes update failed ({e}); keeping the previous notes",
+                        always_print=True)
+        return texts
+
+    pipeline.call_translation_api_batch = call_translation_api_batch
+
+
 def install_text_dump() -> None:
     """Evaluation aid: with MT_DUMP_TEXT=<dir>, write <dir>/<page>.json listing every text
     region (box, outside-bubble flag, OCR read, translation) in reading order."""
@@ -986,6 +1180,148 @@ def install_keep_junk_osb() -> None:
         return action
 
     pipeline._render_action = _render_action
+
+
+# Sound effects: source all kana (plus small-tsu, long marks, hearts, punctuation)
+_KANA_SFX = re.compile(r"^[ぁ-ゖァ-ヺーヽヾ・ッっー〜~♡♥!！?？.…、。\s]+$")
+SFX_LABEL_SCALE = (1.1, 2.2)  # label size range, relative to the page's dialogue font size
+SFX_LABEL_SHARE = 0.28  # ...within which it follows the effect's size (share of its longer side)
+
+
+def _sfx_label(ocr: str, translation: str) -> str | None:
+    """The label for an outside-bubble sound effect, or None for anything else. The translator
+    styles sound effects as **BOLD** and mimetic effects as *italic* (upstream's prompt); a
+    label needs that styling, a kana-only source, and one English word (possibly repeated:
+    "twitch twitch"). Spoken short lines ("*No way...*", "*Guh...*") don't qualify."""
+    src = re.sub(r"^\[(OSB|Bubble)\]\s*", "", ocr or "").strip()
+    if not src or not _KANA_SFX.match(src) or not re.search(r"[ぁ-ヺ]", src):
+        return None
+    m = re.fullmatch(r"(\*{1,3})([^*]+)\1[♡♥!]*", (translation or "").strip())
+    if not m:
+        return None
+    inner = m.group(2).strip()
+    if re.search(r"\.\.\.|…|[?!]", inner) or re.sub(r"[A-Za-z'\-\s,]", "", inner):
+        return None
+    words = re.findall(r"[A-Za-z][A-Za-z'-]*", inner)
+    if not words or len({w.lower() for w in words}) != 1:
+        return None
+    return inner.upper()
+
+
+def _place_label(size: tuple[int, int], box, page_wh, taken, gray) -> tuple[int, int]:
+    """Top-left corner for a label of size (w, h) next to box: the side with no other text
+    and the calmest background, preferring right or left of tall effects and below or above
+    wide ones. Falls back to the centre of the effect."""
+    import numpy as np
+
+    w, h = size
+    x0, y0, x1, y1 = box
+    W, H = page_wh
+    cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+    gap = max(4, h // 4)
+    sides = {"right": (x1 + gap, cy - h // 2), "left": (x0 - gap - w, cy - h // 2),
+             "below": (cx - w // 2, y1 + gap), "above": (cx - w // 2, y0 - gap - h)}
+    order = (["right", "left", "below", "above"] if (y1 - y0) > (x1 - x0)
+             else ["below", "above", "right", "left"])
+
+    def overlap(a, b):
+        return max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+
+    def crosses_border(side, x, y) -> bool:
+        """A panel border between the effect and the label: a row (or column) that is dark
+        nearly all the way across the label, in the strip from the effect's edge to the label's
+        far side. Gutters are plain white and would otherwise look like the calmest spot."""
+        if gray is None:
+            return False
+        if side in ("below", "above"):
+            strip = gray[y1:y + h, x:x + w] if side == "below" else gray[y:y0, x:x + w]
+            lines = (strip < 80).mean(axis=1) if strip.size else []
+        else:
+            strip = gray[y:y + h, x1:x + w] if side == "right" else gray[y:y + h, x:x0]
+            lines = (strip < 80).mean(axis=0) if strip.size else []
+        return bool(len(lines)) and float(np.max(lines)) > 0.9
+
+    best, best_score = None, None
+    for rank, side in enumerate(order):
+        x, y = sides[side]
+        if x < 0 or y < 0 or x + w > W or y + h > H:
+            continue
+        r = (x, y, x + w, y + h)
+        if any(overlap(r, t) for t in taken) or crosses_border(side, x, y):
+            continue
+        busy = float(np.std(gray[y:y + h, x:x + w])) if gray is not None else 0.0
+        score = busy + 6 * rank
+        if best_score is None or score < best_score:
+            best, best_score = (x, y), score
+    if best is None:
+        best = (min(max(0, cx - w // 2), W - w), min(max(0, cy - h // 2), H - h))
+    return best
+
+
+def install_sfx_labels() -> None:
+    """MT_SFX=label: like a professional scanlation, keep the artist's sound-effect lettering
+    and add a small outlined English label beside it, instead of erasing it and drawing the
+    English over the cleaned art. Only outside-bubble sound effects (see _sfx_label); speech,
+    moans and narration are drawn as usual."""
+    import numpy as np
+    from PIL import ImageDraw, ImageFont
+
+    import core.pipeline as pipeline
+    from core.text.font_manager import find_font_variants
+    from utils.logging import log_message
+
+    if os.environ.get("MT_SFX") != "label":
+        return
+    original_action = pipeline._render_action
+    original_render = pipeline._render_translations
+
+    def _render_action(bubble, text, provider_tag):
+        action = original_action(bubble, text, provider_tag)
+        if bubble.get("_sfx_label") and action not in ("ocr_failed", "invalid"):
+            return "keep_original"
+        return action
+
+    def _render_translations(image, sorted_bubble_data, translated_texts, processed_bubbles_info,
+                             page_cv, config, sizes, *args, **kwargs):
+        labels = []
+        for bubble, text in zip(sorted_bubble_data, translated_texts):
+            if bubble.get("is_outside_text") and "original_crop_pil" in bubble:
+                label = _sfx_label(bubble.get("ocr_text", ""), text)
+                if label:
+                    bubble["_sfx_label"] = label
+                    labels.append((bubble["bbox"], label))
+        image = original_render(image, sorted_bubble_data, translated_texts, processed_bubbles_info,
+                                page_cv, config, sizes, *args, **kwargs)
+        if not labels:
+            return image
+        font_dir = config.outside_text.osb_font_dir or config.rendering.font_dir
+        variants = find_font_variants(font_dir)
+        font_path = variants.get("bold") or variants.get("regular")
+        base = max(sizes.main_min_font, sizes.main_max_font)
+        mode = image.mode
+        page = image.convert("RGB")
+        gray = np.asarray(page.convert("L"), dtype=np.float32)
+        taken = [tuple(int(v) for v in b["bbox"]) for b in sorted_bubble_data
+                 if not b.get("_sfx_label")]
+        draw = ImageDraw.Draw(page)
+        for bbox, label in labels:
+            box = tuple(int(v) for v in bbox)
+            # big effects get big labels, like a letterer's
+            side = max(box[2] - box[0], box[3] - box[1])
+            size = round(min(max(side * SFX_LABEL_SHARE, base * SFX_LABEL_SCALE[0]),
+                             base * SFX_LABEL_SCALE[1]))
+            font = ImageFont.truetype(str(font_path), size)
+            stroke = max(2, round(size * 0.14))
+            l, t, r, b = draw.textbbox((0, 0), label, font=font, stroke_width=stroke)
+            x, y = _place_label((r - l, b - t), box, page.size, taken, gray)
+            draw.text((x - l, y - t), label, font=font, fill=(0, 0, 0),
+                      stroke_width=stroke, stroke_fill=(255, 255, 255))
+            taken.append((x, y, x + r - l, y + b - t))
+            log_message(f"SFX label {label!r} beside {box}", verbose=config.verbose)
+        return page.convert(mode) if mode != "RGB" else page
+
+    pipeline._render_action = _render_action
+    pipeline._render_translations = _render_translations
 
 
 LINE_HEIGHT_EM = 1.0  # minimum baseline-to-baseline distance, in font sizes

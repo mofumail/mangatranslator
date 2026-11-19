@@ -117,8 +117,13 @@ def run_job(job_id: str, job: dict[str, Any]) -> None:
         cmd += ["--offline"]
     if o.get("adult"):
         cmd += ["--adult"]
-    if o.get("vision"):
-        cmd += ["--vision"]
+    # vision_mode: "" = translate.py's default (short on the 26B, off where it doesn't fit);
+    # jobs from the old checkbox only have vision: true (= every line)
+    vision = o.get("vision_mode", "full" if o.get("vision") is True else "")
+    if vision in ("off", "short", "full"):
+        cmd += ["--vision", vision]
+    if o.get("sfx") in ("label", "redraw"):
+        cmd += ["--sfx", o["sfx"]]
     if o.get("honorifics"):
         cmd += ["--honorifics", "keep"]
     env_extra = {}

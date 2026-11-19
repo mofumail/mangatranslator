@@ -254,13 +254,28 @@ a.btn, a.rb { text-decoration: none; color: inherit; }
           </div>
           <div class="field">
             <label for="instr">Instructions for the translator</label>
-            <textarea class="inp" id="instr" rows="2" placeholder="e.g. Keep honorifics like -san and -senpai"></textarea>
+            <textarea class="inp" id="instr" rows="2" placeholder="e.g. Translate お姉ちゃん as &quot;Sis&quot;"></textarea>
           </div>
           <div class="field">
             <label for="ctx">Story context (previous pages)</label>
             <input class="inp" id="ctx" type="number" min="0" max="20" value="3" style="width:90px">
           </div>
-          <label class="check"><input type="checkbox" id="vision"> Show the translator each page (experimental: fixes some he/she and sound-effect mistakes, adds others; +2 GB VRAM)</label>
+          <div class="field">
+            <label for="vision">Show the translator the page</label>
+            <select class="inp" id="vision">
+              <option value="">Automatic (short lines on the 26B model, never on the 12B)</option>
+              <option value="short">For short lines and sound effects</option>
+              <option value="full">For every line (adds meaning errors on long lines)</option>
+              <option value="off">Never (saves ~2 GB VRAM)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="sfx">Sound effects</label>
+            <select class="inp" id="sfx">
+              <option value="label">Keep the artwork, add a small English label (like scanlations)</option>
+              <option value="redraw">Erase and draw the English instead</option>
+            </select>
+          </div>
           <label class="check"><input type="checkbox" id="adult"> Adult content (18+): translate explicit lines fully</label>
           <label class="check"><input type="checkbox" id="honorifics"> Keep honorifics (Leaf-san, Priscilla-sama) instead of dropping them</label>
           <label class="check"><input type="checkbox" id="offline"> Offline (no network access at all)</label>
@@ -376,7 +391,8 @@ async function loadConfig() {
   if (prefs.instr) $("#instr").value = prefs.instr;
   if (prefs.osb) $("#osb").value = prefs.osb;
   if (prefs.adult) $("#adult").checked = true;
-  if (prefs.vision) $("#vision").checked = true;
+  if (prefs.visionMode) $("#vision").value = prefs.visionMode;
+  if (prefs.sfx) $("#sfx").value = prefs.sfx;
   if (prefs.honorifics) $("#honorifics").checked = true;
   $("#osbHint").textContent = CFG.osb_ready ? "Model installed." :
     "Needs the gated deepghs/AnimeText_yolo model (accept its terms on huggingface.co).";
@@ -519,9 +535,9 @@ $("#go").onclick = async () => {
   if (!sel) return;
   const options = {
     source: $("#src").value, target: $("#tgt").value, model, osb: $("#osb").value, font: $("#font").value,
-    instructions: $("#instr").value.trim(), context_pages: +$("#ctx").value || 0, offline: $("#offline").checked, adult: $("#adult").checked, vision: $("#vision").checked, honorifics: $("#honorifics").checked,
+    instructions: $("#instr").value.trim(), context_pages: +$("#ctx").value || 0, offline: $("#offline").checked, adult: $("#adult").checked, vision_mode: $("#vision").value, vision: $("#vision").value === "full", sfx: $("#sfx").value, honorifics: $("#honorifics").checked,
   };
-  store.set("mt-prefs", { src: options.source, tgt: options.target, font: options.font, instr: options.instructions, osb: options.osb, adult: options.adult, vision: options.vision, honorifics: options.honorifics });
+  store.set("mt-prefs", { src: options.source, tgt: options.target, font: options.font, instr: options.instructions, osb: options.osb, adult: options.adult, visionMode: options.vision_mode, sfx: options.sfx, honorifics: options.honorifics });
   const body = { mode: sel.mode, name: sel.name, path: sel.path, output_dir: $("#outDir").value.trim(), options };
   $("#go").disabled = true; $("#err").textContent = "";
   try {
