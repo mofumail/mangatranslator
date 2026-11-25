@@ -1,0 +1,135 @@
+import json
+from typing import Any
+
+from mangatl.utils.exceptions import ValidationError
+from mangatl.utils.logging import log_message
+from mangatl.utils.model_metadata import is_zai_vision_model
+
+from ._http import COMMON_STATUS_HINTS, api_error, post_with_retries
+from .openai_compatible import build_chat_messages
+
+
+def call_zai_endpoint(
+    api_key: str,
+    model_name: str,
+    parts: list[dict[str, Any]],
+    generation_config: dict[str, Any],
+    system_prompt: str | None = None,
+    debug: bool = False,
+    timeout: int = 300,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    enable_web_search: bool = False,
+) -> str | None:
+    """
+    Calls the Z.ai API endpoint with the provided data and handles retries.
+
+    Args:
+        api_key (str): Z.ai API key.
+        model_name (str): Z.ai model to use.
+        parts (List[Dict[str, Any]]): List of content parts (text, images).
+        generation_config (Dict[str, Any]): Configuration for generation (temp, top_p, max_tokens, thinking, reasoning_effort).
+        system_prompt (Optional[str]): System prompt for the model.
+        debug (bool): Whether to print debugging information.
+        timeout (int): Request timeout in seconds.
+        max_retries (int): Maximum number of retries for rate limiting errors.
+        base_delay (float): Initial delay for retries in seconds.
+        enable_web_search (bool): Enable Z.ai's web search for up-to-date information.
+
+    Returns:
+        Optional[str]: The raw text content from the API response if successful,
+                       None if blocked by content filter or if no content is found after retries.
+
+    Raises:
+        ValueError: If API key is missing or parts format is invalid.
+        RuntimeError: If API call fails after retries for non-rate-limited HTTP errors,
+                      connection errors, or response processing fails.
+    """
+    if not api_key:
+        raise ValidationError("API key is required for Z.ai endpoint")
+
+    # The last text part is the prompt; earlier ones label the image after them
+    text_part = next((p for p in reversed(parts) if "text" in p), None)
+    image_parts = [p for p in parts if p is not text_part]
+    if not text_part:
+        raise ValidationError("Invalid 'parts' format for Z.ai: No text prompt found.")
+
+    url = "https://api.z.ai/api/paas/v4/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept-Language": "en-US,en",
+    }
+
+    if image_parts and is_zai_vision_model(model_name):
+        messages = build_chat_messages(parts, system_prompt, "Z.ai")
+    else:
+        # Non-vision models, and a prompt with nothing else, get plain text content
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": text_part["text"]})
+
+    payload = {
+        "model": model_name,
+        "messages": messages,
+        "temperature": generation_config.get("temperature"),
+        "top_p": generation_config.get("top_p"),
+        "max_tokens": generation_config.get("max_tokens", 4096),
+        "stream": False,
+    }
+
+    thinking_config = generation_config.get("thinking")
+    if thinking_config:
+        payload["thinking"] = thinking_config
+
+    reasoning_effort = generation_config.get("reasoning_effort")
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
+
+    if enable_web_search:
+        payload["tools"] = [
+            {
+                "type": "web_search",
+                "web_search": {
+                    "enable": True,
+                    "search_engine": "search_pro_jina",
+                },
+            }
+        ]
+
+    payload = {k: v for k, v in payload.items() if v is not None}
+
+    def parse(result: dict[str, Any]) -> str | None:
+        finish_reason = "unknown"
+        if "choices" in result and len(result["choices"]) > 0:
+            choice = result["choices"][0]
+            message = choice.get("message", {})
+            content = message.get("content", "")
+            finish_reason = choice.get("finish_reason", "")
+
+            if content and content.strip():
+                return content.strip()
+
+        if "error" in result:
+            raise api_error(result.get("error"), "Z.ai")
+
+        log_message(
+            f"No text content in Z.ai response. Finish reason: {finish_reason}",
+            always_print=True,
+        )
+        log_message(f"Full response: {json.dumps(result, indent=2)}", verbose=debug)
+        return None
+
+    return post_with_retries(
+        url,
+        headers,
+        payload,
+        parse,
+        label="Z.ai",
+        debug=debug,
+        timeout=timeout,
+        max_retries=max_retries,
+        base_delay=base_delay,
+        status_hints=COMMON_STATUS_HINTS,
+    )

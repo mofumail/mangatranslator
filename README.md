@@ -37,10 +37,10 @@ Output pages are written as `<name>_translated.png`, plus a `glossary.txt` of na
 | OCR | Japanese: Hayai OCR v2.5 Nova everywhere. Speech bubbles: Hayai, cross-checked with `manga-ocr`. Text outside bubbles: line by line using comic-text-detector lines for multi-line blocks (see below). Other languages: PaddleOCR-VL 1.6 |
 | Cleaning | Flat fill inside bubbles, Koharu SAM-TS-L glyph masks, LaMa-manga inpainting |
 | Translation | Gemma 4 26B-A4B QAT (MoE, experts in system RAM) via `llama-server` (llama.cpp, CUDA), thinking off, 3 pages of story context + auto glossary |
-| Typesetting | MangaTranslator renderer: per-page font size matching, hyphenation, markdown italics/bold for emphasis; ♥ ♪ ★ drawn from a bundled symbol font when the lettering font lacks them; sound effects keep the artist's lettering with a small English label beside it, sized to the effect (`--sfx redraw` to replace them) |
+| Typesetting | Skia/HarfBuzz renderer: per-page font size matching, hyphenation, markdown italics/bold for emphasis; ♥ ♪ ★ drawn from a bundled symbol font when the lettering font lacks them; sound effects keep the artist's lettering with a small English label beside it, sized to the effect (`--sfx redraw` to replace them) |
 
-The engine is [MangaTranslator](https://github.com/meangrinch/MangaTranslator) (`./MangaTranslator`, untouched upstream checkout);
-`translate.py` starts/stops llama-server, picks local defaults and forwards everything else.
+The pipeline lives in `./mangatl`, derived from [MangaTranslator](https://github.com/meangrinch/MangaTranslator)
+(Apache-2.0, see `mangatl/NOTICE`); `translate.py` starts/stops llama-server, picks local defaults and forwards everything else.
 
 ## Measured (RTX 4070 Ti 12 GB, 10 OpenMantra pages, ~110 bubbles)
 
@@ -77,7 +77,7 @@ the llama-server start adds ~5-10 s per run.
 - `--character-notes` (running notes on characters, sent with every page) was measured and is off by
   default: built from text alone, the notes attribute lines to the wrong speakers (a polite character noted
   as "rough") and changed as much for the worse as for the better.
-- Prompt rules on top of upstream's: honorifics dropped like a professional localization
+- Prompt rules on top of the base prompt: honorifics dropped like a professional localization
   (`--honorifics keep` to keep them), Western spelling for katakana Western names (プリシラ → Priscilla),
   a vowel-only bubble that continues the previous word is that word drawn out (死ねェ / エ / エエエ!! →
   Die! / Die... / DIEEEE!!), and sound effects never enter the name glossary. (`--ocr llm`, where Gemma
@@ -108,7 +108,7 @@ the llama-server start adds ~5-10 s per run.
 --model 12b                          # faster dense translator, fully on GPU
 --gguf models/llm/other.gguf [--cpu-moe N]         # use another GGUF (MoE: N layers' experts in RAM)
 --vertical-text                      # allow stacking short text vertically (default only for CJK targets)
---upstream-help                      # every MangaTranslator option; unknown flags are passed through
+--upstream-help                      # every pipeline (mangatl/cli.py) option; unknown flags are passed through
 ```
 
 ## Text outside speech bubbles (OSB)
@@ -124,8 +124,7 @@ Sound effects are read twice (tight crop and with a margin, which fixes most mis
 kana) and the fuller read kept. Speech bubbles are read by Hayai too: on the OpenMantra bubbles it and
 manga-ocr are about equal (0.9% / 0.7% character errors), but manga-ocr turns hand-drawn moans in doujin
 bubbles into unrelated words (ぅ -> そして、). When one read contains the other the longer is kept.
-This lives in `osb_ocr.py`, installed into MangaTranslator at runtime by `mt_upstream.py` (the
-submodule stays untouched).
+This lives in `osb_ocr.py`, installed into the pipeline at runtime by `mt_upstream.py`.
 
 Pages that print a Chinese translation next to the Japanese (common in `[中国翻訳]` releases): the
 Chinese block is erased and not translated, so the English appears once (`--keep-other-language`
@@ -146,14 +145,14 @@ once the model is accessible/downloaded.
 
 ```
 translate.py          wrapper / entry point (CLI)
-mt_upstream.py        runs MangaTranslator's CLI with the patches below installed
+mt_upstream.py        runs the pipeline CLI (mangatl/cli.py) with the patches below installed
 osb_ocr.py            runtime patches: OCR (Hayai, line by line), other-language erase, narration
                       typesetting, symbol fallback, no empty bubbles, list line breaks, --vision,
                       sound-effect labels, character notes
 text_lines.py         comic-text-detector (ONNX, CPU) line detection
 hayai_ocr.py          Hayai OCR v2.5 Nova loader (code vendored in vendor/hayai, audited, pinned)
 webui.py, webui/      browser UI + reader (state in webui_data/, default output in translated/)
-MangaTranslator/      upstream pipeline (git pull to update, then `uv sync`)
+mangatl/              the pipeline (derived from MangaTranslator at e347a09; see mangatl/NOTICE)
 bin/llama.cpp/        prebuilt llama.cpp b11972, CUDA 13.4
 models/llm/           translator GGUFs
 models/…              detection / OCR / inpainting weights (auto-downloaded)

@@ -3,18 +3,18 @@
 
 Pipeline (all on this machine):
   detection   YOLO speech-bubble seg + RT-DETR conjoined bubbles + panel YOLO (reading order)
-  OCR         manga-ocr (Japanese) or PaddleOCR-VL 1.6 (other languages), or the LLM itself
+  OCR         Hayai OCR v2.5 Nova (+ manga-ocr cross-check) for Japanese, PaddleOCR-VL 1.6 otherwise
   cleaning    flat-fill for bubbles, SAM-TS-L glyph masks + LaMa-manga inpainting for the rest
-  translate   Gemma 4 12B (QAT, Q4_K_XL) served by a local llama.cpp server
-  typeset     MangaTranslator's renderer (auto font size, hyphenation, vertical stacking)
+  translate   Gemma 4 26B-A4B (QAT) served by a local llama.cpp server
+  typeset     auto font size, hyphenation, emphasis, sound-effect labels
 
-The heavy lifting is done by MangaTranslator (./MangaTranslator, upstream checkout).
+The pipeline lives in ./mangatl (derived from MangaTranslator, see NOTICE); osb_ocr.py patches it.
 This wrapper starts/stops llama-server, picks sane local defaults and runs a batch.
 
 Usage:
   uv run python translate.py --input chapter01/ --output chapter01_en/
   uv run python translate.py --input vol1.cbz --output vol1_en/ --target English
-Unknown flags are passed straight through to MangaTranslator (see `--upstream-help`).
+Unknown flags are passed straight through to mangatl/cli.py (see `--upstream-help`).
 """
 
 from __future__ import annotations
@@ -35,7 +35,6 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-UPSTREAM = ROOT / "MangaTranslator"
 MODELS_DIR = ROOT / "models"
 FONTS_DIR = ROOT / "fonts"
 LOG_DIR = ROOT / "logs"
@@ -200,8 +199,8 @@ def translated_name(img: Path, fmt: str) -> str:
 
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
     p = argparse.ArgumentParser(
-        description="Fully local batch manga translator (MangaTranslator + llama.cpp).",
-        epilog="Any other flags are forwarded to MangaTranslator; see --upstream-help.",
+        description="Fully local batch manga translator (mangatl pipeline + llama.cpp).",
+        epilog="Any other flags are forwarded to mangatl/cli.py; see --upstream-help.",
     )
     p.add_argument("--input", "-i", help="Folder of images, a single image, or a .zip/.cbz archive")
     p.add_argument("--output", "-o", help="Output folder")
@@ -283,7 +282,7 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     p.add_argument("--offline", action="store_true",
                    help="Forbid all network access (models must already be downloaded)")
     p.add_argument("--dry-run", action="store_true", help="Print the upstream command and exit")
-    p.add_argument("--upstream-help", action="store_true", help="Show all MangaTranslator options")
+    p.add_argument("--upstream-help", action="store_true", help="Show all pipeline (mangatl/cli.py) options")
     return p.parse_known_args()
 
 
@@ -315,7 +314,7 @@ def main() -> None:
 
     upstream_main = [sys.executable, str(ROOT / "mt_upstream.py")]  # upstream CLI + local OCR patch
     if args.upstream_help:
-        sys.exit(subprocess.call([sys.executable, str(UPSTREAM / "main.py"), "--help"], cwd=UPSTREAM, env=env))
+        sys.exit(subprocess.call([sys.executable, "-m", "mangatl.cli", "--help"], cwd=ROOT, env=env))
     if not args.input or not args.output:
         sys.exit("error: --input and --output are required")
 
@@ -503,7 +502,7 @@ def main() -> None:
                         (Path(tmp.name) / f.name).symlink_to(f)
                     src = Path(tmp.name)
             full = upstream_main + ["--input", str(src), "--output", str(dst)] + cmd
-            proc = subprocess.Popen(full, cwd=UPSTREAM, env=env, stdout=subprocess.PIPE,
+            proc = subprocess.Popen(full, cwd=ROOT, env=env, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True, bufsize=1)
             assert proc.stdout is not None
             current, sticky = None, None

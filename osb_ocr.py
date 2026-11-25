@@ -1,5 +1,5 @@
 """OCR for text outside speech bubbles (narration, captions, chat lines), installed into
-MangaTranslator at runtime by mt_upstream.py; the submodule itself stays untouched.
+the pipeline (mangatl/, derived from MangaTranslator) at runtime by mt_upstream.py.
 
 Upstream reads every text region with manga-ocr in one pass. manga-ocr squashes its input to
 224x224, so a narration block with many lines turns into a few pixels per glyph and it
@@ -186,12 +186,12 @@ _SKIPPED_BBOXES: set[tuple] = set()  # blocks erased on purpose; not "left empty
 
 
 def install() -> None:
-    import core.pipeline as pipeline
-    from core.ml.model_manager import get_model_manager
-    from core.services import translation as tr
-    from utils.logging import log_message
+    import mangatl.core.pipeline as pipeline
+    from mangatl.core.ml.model_manager import get_model_manager
+    from mangatl.core.services import translation as tr
+    from mangatl.utils.logging import log_message
 
-    import core.outside_text_processor as osb
+    import mangatl.core.outside_text_processor as osb
 
     original_build = osb._build_outside_text_data
 
@@ -294,7 +294,7 @@ def install_flat_fill_check() -> None:
     flat (90% of pixels within FLAT_P90_MAX); everything else goes to the inpainting model."""
     import numpy as np
 
-    import core.outside_text_processor as osb
+    import mangatl.core.outside_text_processor as osb
 
     original = osb._border_color
 
@@ -312,10 +312,10 @@ def install_flat_fill_check() -> None:
 def install_no_downscale() -> None:
     """Upstream resizes every crop to a 128 px short side for cloud LLMs, shrinking big
     narration blocks to unreadable thumbnails. For local OCR only upscale, never downscale."""
-    import core.image as image_pkg
-    import core.outside_text_processor as osb
-    from core.image import image_utils
-    from core.services import translation as tr
+    import mangatl.core.image as image_pkg
+    import mangatl.core.outside_text_processor as osb
+    from mangatl.core.image import image_utils
+    from mangatl.core.services import translation as tr
 
     original = image_utils.process_bubble_image_cached
 
@@ -353,7 +353,7 @@ def install_narration_style() -> None:
     better in the dialogue font, normal case, upright, one utterance per line."""
     import dataclasses
 
-    import core.pipeline as pipeline
+    import mangatl.core.pipeline as pipeline
 
     original_batch = pipeline.call_translation_api_batch
 
@@ -398,12 +398,12 @@ def install_keep_line_breaks() -> None:
     import inspect
     import textwrap
 
-    import core
-    import core.pipeline as pipeline
-    import core.text as text_pkg
-    import core.text.placeholders as placeholders
-    from core.text import text_renderer
-    from utils.logging import log_message
+    import mangatl.core as core
+    import mangatl.core.pipeline as pipeline
+    import mangatl.core.text as text_pkg
+    import mangatl.core.text.placeholders as placeholders
+    from mangatl.core.text import text_renderer
+    from mangatl.utils.logging import log_message
 
     old = 'clean_text = " ".join(normalized_text.split())'
     new = 'clean_text = "\\n".join(" ".join(l.split()) for l in normalized_text.split("\\n")).strip()'
@@ -426,7 +426,7 @@ def install_wrapped_paragraphs() -> None:
     """Upstream's layout keeps explicit newlines but never wraps inside those lines, so long
     utterances shrink the whole block. Wrap each paragraph with upstream's own line breaker
     at the same font size, then stack them."""
-    from core.text import layout_engine as le
+    from mangatl.core.text import layout_engine as le
 
     original = le.check_fit
 
@@ -461,9 +461,9 @@ def install_truncation_guard() -> None:
     narration block came back as "-A little while later."), silently dropping the dialogue.
     If a long source line gets an implausibly short translation, translate the page once more
     (bypassing upstream's cache) and keep, per line, the fuller of the two answers."""
-    import core.pipeline as pipeline
-    from core.caching import get_cache
-    from utils.logging import log_message
+    import mangatl.core.pipeline as pipeline
+    from mangatl.core.caching import get_cache
+    from mangatl.utils.logging import log_message
 
     original_batch = pipeline.call_translation_api_batch
 
@@ -508,7 +508,7 @@ def install_glyph_substitutes() -> None:
     fall back to their plain form. Anything still unsupported is dropped as before."""
     import unicodedata
 
-    from core.text import font_manager, text_renderer
+    from mangatl.core.text import font_manager, text_renderer
 
     original = font_manager.sanitize_text_for_font
 
@@ -551,8 +551,8 @@ def install_no_empty_bubbles() -> None:
     back. Colored / see-through bubbles also get outlined text."""
     import dataclasses
 
-    import core.pipeline as pipeline
-    from utils.logging import log_message
+    import mangatl.core.pipeline as pipeline
+    from mangatl.utils.logging import log_message
 
     original = pipeline._render_bubble
     original_config = pipeline._text_render_config
@@ -620,10 +620,10 @@ def install_symbol_fallback() -> None:
     import inspect
     import textwrap
 
-    import core.text as text_pkg
-    from core.text import drawing_engine, layout_engine, text_processing, text_renderer
-    from core.text.drawing_engine import load_font_resources
-    from utils.logging import log_message
+    import mangatl.core.text as text_pkg
+    from mangatl.core.text import drawing_engine, layout_engine, text_processing, text_renderer
+    from mangatl.core.text.drawing_engine import load_font_resources
+    from mangatl.utils.logging import log_message
 
     if not SYMBOL_FONT.exists():
         return
@@ -682,7 +682,7 @@ def install_keep_inner_quotes() -> None:
     right for an item the model wrapped in quotes, but narration items like
     '"Ah..." she said. "Hey."' lose their first and last quote. Put them back when the item
     contains further quotes (so they belong to the text)."""
-    from core.services import translation as tr
+    from mangatl.core.services import translation as tr
 
     original = tr._parse_llm_response_unified
     item = re.compile(r'^\s*(\d+)\s*[:.]\s*(.*?)\s*(?=\s*\n\s*\d+\s*[:.]|\n\s*\n|\s*\Z)',
@@ -708,9 +708,9 @@ def install_page_image() -> None:
     import inspect
     import textwrap
 
-    import core.pipeline as pipeline
-    from core.services import translation as tr
-    from utils.logging import log_message
+    import mangatl.core.pipeline as pipeline
+    from mangatl.core.services import translation as tr
+    from mangatl.utils.logging import log_message
 
     if os.environ.get("MT_PAGE_IMAGE") != "1":
         return
@@ -751,9 +751,9 @@ def install_vision_short() -> None:
     Install before install_text_dump so the dump records the final lines."""
     import inspect
 
-    import core.pipeline as pipeline
-    from core.services import translation as tr
-    from utils.logging import log_message
+    import mangatl.core.pipeline as pipeline
+    from mangatl.core.services import translation as tr
+    from mangatl.utils.logging import log_message
 
     if os.environ.get("MT_VISION_SHORT") != "1":
         return
@@ -842,9 +842,9 @@ def install_character_notes() -> None:
     import dataclasses
     import inspect
 
-    import core.pipeline as pipeline
-    from core.services import translation as tr
-    from utils.logging import log_message
+    import mangatl.core.pipeline as pipeline
+    from mangatl.core.services import translation as tr
+    from mangatl.utils.logging import log_message
 
     path = os.environ.get("MT_CHAR_NOTES")
     if not path:
@@ -923,7 +923,7 @@ def install_text_dump() -> None:
     region (box, outside-bubble flag, OCR read, translation) in reading order."""
     import json
 
-    import core.pipeline as pipeline
+    import mangatl.core.pipeline as pipeline
 
     out_dir = os.environ.get("MT_DUMP_TEXT")
     if not out_dir:
@@ -954,7 +954,7 @@ _PAGE: dict = {"name": None, "tracking": False}
 
 def _track_pages() -> None:
     """Remember which page is being processed (for text dumps and replay-miss logs)."""
-    import core.pipeline as pipeline
+    import mangatl.core.pipeline as pipeline
 
     if _PAGE["tracking"]:
         return
@@ -986,9 +986,9 @@ def install_emphasis_sizes() -> None:
 
     import cv2
 
-    import core.pipeline as pipeline
-    from core.image.image_utils import estimate_glyph_size
-    from utils.logging import log_message
+    import mangatl.core.pipeline as pipeline
+    from mangatl.core.image.image_utils import estimate_glyph_size
+    from mangatl.utils.logging import log_message
 
     if os.environ.get("MT_EMPHASIS", "1") == "0":
         return
@@ -1059,7 +1059,7 @@ def install_layout_preferences() -> None:
     letterer avoids both unless the text would otherwise get much smaller (a short "Fu..." in
     a narrow bubble). Lay out without the tricks first and only accept them when they allow
     clearly bigger text."""
-    from core.text import text_renderer
+    from mangatl.core.text import text_renderer
 
     original = text_renderer.find_optimal_layout
     MAX, HYPH, DETACH = 8, 10, 17  # positional indexes in find_optimal_layout
@@ -1124,7 +1124,7 @@ def install_llm_cache() -> None:
     import json
     import types
 
-    from utils.endpoints import _http
+    from mangatl.utils.endpoints import _http
 
     cache_dir = os.environ.get("MT_LLM_CACHE")
     fresh = os.environ.get("MT_LLM_FRESH") == "1"
@@ -1202,7 +1202,7 @@ def _junk_read(ocr: str) -> bool:
 def install_keep_junk_osb() -> None:
     """Leave outside-text regions whose OCR is junk untouched (original art pasted back)
     instead of drawing the junk on the page."""
-    import core.pipeline as pipeline
+    import mangatl.core.pipeline as pipeline
 
     original = pipeline._render_action
 
@@ -1300,9 +1300,9 @@ def install_sfx_labels() -> None:
     import numpy as np
     from PIL import ImageDraw, ImageFont
 
-    import core.pipeline as pipeline
-    from core.text.font_manager import find_font_variants
-    from utils.logging import log_message
+    import mangatl.core.pipeline as pipeline
+    from mangatl.core.text.font_manager import find_font_variants
+    from mangatl.utils.logging import log_message
 
     if os.environ.get("MT_SFX") != "label":
         return
@@ -1367,7 +1367,7 @@ def install_min_line_height() -> None:
     LINE_HEIGHT_EM so every font gets the airy leading of hand lettering."""
     import skia
 
-    from core.text import text_renderer
+    from mangatl.core.text import text_renderer
 
     original = text_renderer.find_optimal_layout
     TYPEFACE, SPACING, VERTICAL = 4, 9, 18  # positional indexes in find_optimal_layout
@@ -1402,11 +1402,11 @@ def install_vertical_only_if_much_bigger() -> None:
     """Upstream stacks short Latin text letter by letter ("W/H/A/T") in tall regions whenever
     that is at least as big as a horizontal line. Letterers set English horizontally and only
     stack when a horizontal line would be tiny (a long moan along a narrow strip)."""
-    from core.text import text_renderer
+    from mangatl.core.text import text_renderer
 
     original = text_renderer._auto_vertical_layout_is_better
 
-    from utils.logging import log_message
+    from mangatl.utils.logging import log_message
 
     def better(horizontal_layout, vertical_layout, max_render_height):
         if not original(horizontal_layout, vertical_layout, max_render_height):

@@ -1,0 +1,19 @@
+mangatl — the translation pipeline of this project
+
+This directory is derived from MangaTranslator by grinnch
+(https://github.com/meangrinch/MangaTranslator), licensed under the Apache License 2.0
+(see LICENSE-MangaTranslator in this directory).
+
+Copied from upstream commit e347a09 ("chore(ui): increase config status message display
+duration to 6s"):
+  core/            -> mangatl/core/
+  utils/           -> mangatl/utils/   (without update_checker.py)
+  main.py          -> mangatl/cli.py
+The Gradio web UI (app.py, ui/), tests and docs were not copied.
+
+Modifications by this project: imports moved under the `mangatl` package, the file log
+written to <repo>/logs, and further changes recorded in this repository's git history.
+
+core/ml/hi_sam/ contains code vendored by MangaTranslator from Hi-SAM
+(https://github.com/ymy-k/Hi-SAM, Apache-2.0), which in turn includes code from Meta's
+Segment Anything (Apache-2.0); see the headers of those files.
