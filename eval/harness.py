@@ -286,7 +286,7 @@ def diff_png(ia, ib, mask, path: Path) -> None:
     gap = np.full((ia.shape[0], 12, 3), 255, np.uint8)
     im = Image.fromarray(np.concatenate([ia, gap, ib, gap, hl], axis=1))
     if im.height > 1600:
-        im = im.resize((round(im.width * 1600 / im.height), 1600), Image.LANCZOS)
+        im = im.resize((round(im.width * 1600 / im.height), 1600), Image.Resampling.LANCZOS)
     im.save(path, quality=88)
 
 

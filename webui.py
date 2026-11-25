@@ -414,7 +414,7 @@ def index() -> HTMLResponse:
 @app.get("/api/config")
 def config() -> dict[str, Any]:
     fonts = sorted(d.name for d in tr.FONTS_DIR.iterdir() if d.is_dir())
-    models = {k: Path(v["gguf"]).exists() for k, v in tr.MODEL_PRESETS.items()}
+    models = {k: v.gguf.exists() for k, v in tr.presets.MODEL_PRESETS.items()}
     return {
         "languages": LANGUAGES,
         "fonts": fonts,

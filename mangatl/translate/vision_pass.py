@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 
 from mangatl.common.log import log_message
-from mangatl.translate import service as tr
 
 VISION_SHORT_MAX = {"osb": 10, "bubble": 5}  # letters/kana/kanji in the source, punctuation not counted
 
@@ -37,6 +36,8 @@ def revise_short_items(
     those (sound effects, speaker of a short reply, OCR slips on two-kana effects) but adds
     meaning errors and pronoun guesses to longer dialogue and breaks the " / " separators of
     text blocks, so long items keep their text-only translation. Needs the vision projector."""
+    from mangatl.translate import service as tr  # heavy (cv2); only needed for the request
+
     if config.translation.vision != "short":
         return texts
     try:

@@ -58,3 +58,17 @@ known-first-party = ["mangatl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.pyright]
+# Our own modules. The code derived from MangaTranslator still has ~180 basic-mode findings
+# (missing stubs for skia / cv2 / harfbuzz, unchecked Optionals); see the follow-up issue.
+include = [
+    "mangatl/settings.py", "mangatl/presets.py", "mangatl/cli.py", "translate.py", "webui.py",
+    "mangatl/common/eval_hooks.py", "mangatl/ocr/line_ocr.py", "mangatl/typeset/narration.py",
+    "mangatl/typeset/sfx_labels.py", "mangatl/typeset/symbols.py", "mangatl/translate/vision_pass.py",
+    "mangatl/translate/page.py", "eval/harness.py", "tests",
+]
+typeCheckingMode = "basic"
+pythonVersion = "3.13"
+reportMissingImports = "warning"
+reportMissingModuleSource = "none"

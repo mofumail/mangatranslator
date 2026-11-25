@@ -19,6 +19,7 @@ from mangatl.common.scaling import scale_font_size, scale_scalar
 from mangatl.detect.tilt import compute_effective_tilt_angle
 from mangatl.ocr.line_ocr import script_ratios
 from mangatl.settings import PROVIDER, Settings
+from mangatl.translate.page import INVALID_TRANSLATION_VALUES
 from mangatl.typeset import sfx_labels
 from mangatl.typeset.fonts import find_font_variants, get_cap_height_ratio
 from mangatl.typeset.renderer import RenderingConfig, render_text_skia
@@ -26,8 +27,6 @@ from mangatl.typeset.text import supports_long_word_breaking
 
 if TYPE_CHECKING:
     from mangatl.common.cancellation import CancellationManager
-
-INVALID_TRANSLATION_VALUES = {"[OCR FAILED]", "[Empty response / no content]"}
 
 
 # Translated cap height relative to the measured original lettering. CJK glyphs fill the em

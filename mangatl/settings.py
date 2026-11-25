@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
@@ -36,11 +36,11 @@ class RuntimeSettings(_Section):
     models_dir: Path = ROOT / "models"
     device: Literal["auto", "cpu"] = "auto"
     hf_cache: bool = False  # load Hugging Face models from the default HF cache
-    hf_token: str = Field("", exclude=True, repr=False)  # gated downloads; from HF_TOKEN / token file
+    hf_token: str = Field(default="", exclude=True, repr=False)  # gated downloads; from HF_TOKEN / token file
     verbose: bool = False
     cleaning_only: bool = False
     # Parallel requests to the translator (useful with hosted models; llama-server serves one)
-    parallel_requests: int = Field(1, ge=1, le=20)
+    parallel_requests: int = Field(default=1, ge=1, le=20)
     parallel_within_pages: bool = False
     overlap_llm_with_inpaint: bool = True
     retry_failed_once: bool = True  # batch: retry failed pages once at the end
@@ -63,36 +63,36 @@ class OutsideTextDetection(_Section):
     """Text outside speech bubbles (narration, sound effects, signs)."""
 
     enabled: bool = True
-    confidence: float = Field(0.5, ge=0.0, le=1.0)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     text_free_only: bool = False  # use only the RT-DETR text_free class as source
     # Letters the text segmentation model finds outside bubbles and boxes, kept where the
     # detector confirms them on crops
     recover_missed_text: bool = True
     cover_with_bubbles: bool = True  # grow bubble boxes to fully cover detected text
     filter_page_numbers: bool = False
-    page_filter_margin: float = Field(0.1, ge=0.0, le=0.3)
-    page_filter_min_area: float = Field(0.05, ge=0.0, le=0.2)
-    min_area_ignore_ratio: float = Field(0.0, ge=0.0, le=0.05)
-    bbox_expansion_width: float = Field(0.1, ge=0.0, le=1.0)
-    bbox_expansion_height: float = Field(0.1, ge=0.0, le=1.0)
-    text_box_proximity_ratio: float = Field(0.02, ge=0.01, le=0.1)  # share of the shorter image side
+    page_filter_margin: float = Field(default=0.1, ge=0.0, le=0.3)
+    page_filter_min_area: float = Field(default=0.05, ge=0.0, le=0.2)
+    min_area_ignore_ratio: float = Field(default=0.0, ge=0.0, le=0.05)
+    bbox_expansion_width: float = Field(default=0.1, ge=0.0, le=1.0)
+    bbox_expansion_height: float = Field(default=0.1, ge=0.0, le=1.0)
+    text_box_proximity_ratio: float = Field(default=0.02, ge=0.01, le=0.1)  # share of the shorter image side
 
 
 class DetectionSettings(_Section):
     bubble_model: Literal["yolo_1", "yolo_2"] = "yolo_2"
-    confidence: float = Field(0.6, ge=0.1, le=1.0)
+    confidence: float = Field(default=0.6, ge=0.1, le=1.0)
     conjoined: bool = True  # RT-DETR detector for conjoined bubbles
-    conjoined_confidence: float = Field(0.35, ge=0.1, le=1.0)
+    conjoined_confidence: float = Field(default=0.35, ge=0.1, le=1.0)
     panel_sorting: bool = True  # reading order by panels
-    panel_confidence: float = Field(0.25, ge=0.05, le=1.0)
-    outside_text: OutsideTextDetection = Field(default_factory=OutsideTextDetection)
+    panel_confidence: float = Field(default=0.25, ge=0.05, le=1.0)
+    outside_text: OutsideTextDetection = Field(default_factory=lambda: OutsideTextDetection())
 
 
 class OcrSettings(_Section):
     method: Literal["manga-ocr", "paddleocr-vl-1.6"] = "manga-ocr"
     upscale: Literal["model", "model_lite", "lanczos", "none"] = "model_lite"  # small crops
-    bubble_min_side: int = Field(128, ge=64, le=512)
-    outside_min_side: int = Field(128, ge=64, le=512)
+    bubble_min_side: int = Field(default=128, ge=64, le=512)
+    outside_min_side: int = Field(default=128, ge=64, le=512)
     whiteout_neighbors: bool = True  # blank neighbouring bubbles in conjoined crops
     # Pages that print a Chinese translation next to the Japanese: the Chinese block is erased
     # and not translated, unless this is set
@@ -100,10 +100,10 @@ class OcrSettings(_Section):
 
 
 class CleaningSettings(_Section):
-    threshold: int = Field(200, ge=0, le=255)
+    threshold: int = Field(default=200, ge=0, le=255)
     otsu: bool = False
     auto_threshold: bool = True
-    roi_shrink_px: int = Field(5, ge=0, le=10)
+    roi_shrink_px: int = Field(default=5, ge=0, le=10)
     # SAM-TS-L text segmentation; off, fills miss edge-hugging text and erase all ink enclosed
     # by paper (blush lines, frames), tilt and text colour fall back to ink heuristics
     text_segmentation: bool = True
@@ -115,14 +115,14 @@ class CleaningSettings(_Section):
 
 class TranslationSettings(_Section):
     url: str = "http://127.0.0.1:8080/v1"  # any OpenAI-compatible server
-    api_key: str = Field("", exclude=True, repr=False)  # from OPENAI_COMPATIBLE_API_KEY
+    api_key: str = Field(default="", exclude=True, repr=False)  # from OPENAI_COMPATIBLE_API_KEY
     model: str = "default"
-    temperature: float = Field(0.1, ge=0.0, le=2.0)
-    top_p: float = Field(0.95, ge=0.0, le=1.0)
-    top_k: int = Field(40, ge=0, le=64)
+    temperature: float = Field(default=0.1, ge=0.0, le=2.0)
+    top_p: float = Field(default=0.95, ge=0.0, le=1.0)
+    top_k: int = Field(default=40, ge=0, le=64)
     custom_sampling: bool = True
     max_tokens: int | None = Field(
-        None, ge=4096, le=63488
+        default=None, ge=4096, le=63488
     )  # None: 32768 for reasoning models, 4096 otherwise
     reasoning_effort: str | None = None
     effort: str | None = "medium"  # Claude models served through --llm-url
@@ -132,8 +132,8 @@ class TranslationSettings(_Section):
     target_language: str = "English"
     reading_direction: Literal["rtl", "ltr"] = "rtl"
     full_page_context: bool = True  # encode the page image for the translator
-    context_image_max_side: int = Field(1024, ge=512, le=2560)
-    context_pages: int = Field(3, ge=0, le=50)  # previous pages' text sent as context (batch)
+    context_image_max_side: int = Field(default=1024, ge=512, le=2560)
+    context_pages: int = Field(default=3, ge=0, le=50)  # previous pages' text sent as context (batch)
     glossary: bool = True  # names/terms memory (batch)
     glossary_path: Path | None = None
     instructions: str | None = None  # the user's own instructions
@@ -226,10 +226,10 @@ class OutsideText(TextStyle):
     outline_ratio: float = 0.15  # outline around text on the art (and in colored bubbles)
     auto_vertical: bool = True
     # Narrow/tall or tiny regions (vertical Japanese asides) may grow so English fits
-    expansion_narrow: float = Field(2.0, ge=1.0, le=3.0)
-    expansion_tiny: float = Field(1.0, ge=1.0, le=3.0)
-    expansion_aspect_threshold: float = Field(0.4, ge=0.05, le=1.0)
-    expansion_area_threshold: float = Field(0.005, ge=0.0, le=0.05)
+    expansion_narrow: float = Field(default=2.0, ge=1.0, le=3.0)
+    expansion_tiny: float = Field(default=1.0, ge=1.0, le=3.0)
+    expansion_aspect_threshold: float = Field(default=0.4, ge=0.05, le=1.0)
+    expansion_area_threshold: float = Field(default=0.005, ge=0.0, le=0.05)
     follow_tilt: bool = True
     max_tilt: float = 20.0
     min_tilt: float = 3.0
@@ -237,12 +237,12 @@ class OutsideText(TextStyle):
 
 
 class TypesettingSettings(_Section):
-    bubbles: BubbleText = Field(default_factory=BubbleText)
-    outside: OutsideText = Field(default_factory=OutsideText)
+    bubbles: BubbleText = Field(default_factory=lambda: BubbleText())
+    outside: OutsideText = Field(default_factory=lambda: OutsideText())
     hyphenate_before_scaling: bool = True
-    hyphenation_min_word_length: int = Field(8, ge=4, le=10)
-    badness_exponent: float = Field(3.0, ge=2.0, le=4.0)
-    supersampling: int = Field(4, ge=1, le=16)
+    hyphenation_min_word_length: int = Field(default=8, ge=4, le=10)
+    badness_exponent: float = Field(default=3.0, ge=2.0, le=4.0)
+    supersampling: int = Field(default=4, ge=1, le=16)
     detach_trailing_punctuation: bool = True
     # Sound effects: keep the artist's lettering with an English label beside it, or redraw
     sfx: Literal["label", "redraw"] = "label"
@@ -250,13 +250,13 @@ class TypesettingSettings(_Section):
 
 class OutputSettings(_Section):
     format: Literal["auto", "png", "jpeg"] = "png"
-    jpeg_quality: int = Field(95, ge=1, le=100)
-    png_compression: int = Field(2, ge=0, le=6)
+    jpeg_quality: int = Field(default=95, ge=1, le=100)
+    png_compression: int = Field(default=2, ge=0, le=6)
 
 
 class PreprocessingSettings(_Section):
     upscale: bool = False  # upscale source pages before processing
-    upscale_factor: float = Field(2.0, ge=1.0, le=8.0)
+    upscale_factor: float = Field(default=2.0, ge=1.0, le=8.0)
     upscale_model: Literal["model", "model_lite"] = "model_lite"
     auto_scale: bool = True  # scale kernels and font sizes to the page size (relative to 1 MP)
     processing_scale: float = 1.0  # the fixed scale when auto_scale is off
@@ -278,16 +278,16 @@ class DebugSettings(_Section):
 
 
 class Settings(_Section):
-    runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
-    server: ServerSettings = Field(default_factory=ServerSettings)
-    detection: DetectionSettings = Field(default_factory=DetectionSettings)
-    ocr: OcrSettings = Field(default_factory=OcrSettings)
-    cleaning: CleaningSettings = Field(default_factory=CleaningSettings)
-    translation: TranslationSettings = Field(default_factory=TranslationSettings)
-    typesetting: TypesettingSettings = Field(default_factory=TypesettingSettings)
-    output: OutputSettings = Field(default_factory=OutputSettings)
-    preprocessing: PreprocessingSettings = Field(default_factory=PreprocessingSettings)
-    debug: DebugSettings = Field(default_factory=DebugSettings)
+    runtime: RuntimeSettings = Field(default_factory=lambda: RuntimeSettings())
+    server: ServerSettings = Field(default_factory=lambda: ServerSettings())
+    detection: DetectionSettings = Field(default_factory=lambda: DetectionSettings())
+    ocr: OcrSettings = Field(default_factory=lambda: OcrSettings())
+    cleaning: CleaningSettings = Field(default_factory=lambda: CleaningSettings())
+    translation: TranslationSettings = Field(default_factory=lambda: TranslationSettings())
+    typesetting: TypesettingSettings = Field(default_factory=lambda: TypesettingSettings())
+    output: OutputSettings = Field(default_factory=lambda: OutputSettings())
+    preprocessing: PreprocessingSettings = Field(default_factory=lambda: PreprocessingSettings())
+    debug: DebugSettings = Field(default_factory=lambda: DebugSettings())
 
     _device: Any = PrivateAttr(default=None)
     _request_coordinator: Any = PrivateAttr(default=None)
@@ -356,10 +356,10 @@ class Settings(_Section):
         """Copy with changes given as dotted paths, e.g. updated(**{"typesetting.sfx": "redraw"}).
         A cheap nested copy (runtime state carried over, values not re-validated); use
         validated() for values from users."""
-        new = self
+        new: BaseModel = self
         for dotted, value in changes.items():
             new = _with_path(new, dotted.split("."), value, dotted)
-        return new
+        return cast(Settings, new)
 
     def validated(self) -> Settings:
         """Re-validate every value (e.g. after --set), keeping secrets and runtime state."""

@@ -9,10 +9,11 @@ from mangatl.common.caching import get_cache
 from mangatl.common.exceptions import CancellationError, TranslationError
 from mangatl.common.log import log_message
 from mangatl.settings import PROVIDER, Settings
-from mangatl.translate.service import call_translation_api_batch, pair_context_lines
 from mangatl.translate.vision_pass import revise_short_items
 from mangatl.typeset.narration import mark_narration
-from mangatl.typeset.page import INVALID_TRANSLATION_VALUES
+
+# Translations that mean "nothing to draw"
+INVALID_TRANSLATION_VALUES = {"[OCR FAILED]", "[Empty response / no content]"}
 
 # Translation errors that fail the page instead of leaving error text in its bubbles.
 # utils/endpoints/_http.py words its errors to match these.
@@ -62,6 +63,8 @@ def translate_page(
     )
     page_b64 = full_image_b64 or ""
     page_mime = full_image_mime_type if full_image_b64 else "image/jpeg"
+
+    from mangatl.translate.service import call_translation_api_batch  # heavy (cv2)
 
     def translate(ocr_out: list[str]) -> list[str]:
         return call_translation_api_batch(
@@ -185,3 +188,14 @@ def attach_ocr_texts(sorted_bubble_data: list[dict[str, Any]], ocr_texts: list[s
             "OCR/translation count mismatch; OSB unchanged-text restore disabled",
             verbose=verbose,
         )
+
+
+def pair_context_lines(ocr_texts: list[str], translations: list[str]) -> list[str]:
+    """Join each source line to its translation so later pages reuse names and terms."""
+    if len(ocr_texts) != len(translations):
+        return ocr_texts
+    return [
+        # A leading "[" marks a failure placeholder, not a translation
+        ocr if ocr == "[OCR FAILED]" or not tr or tr.startswith("[") else f"{ocr} → {tr}"
+        for ocr, tr in zip(ocr_texts, translations, strict=False)
+    ]

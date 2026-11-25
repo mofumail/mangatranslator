@@ -133,7 +133,7 @@ def main():
         # A failed-paths list writes back into its original run unless --output is set
         output_dir = Path(args.output) if args.output else path_list_run_dir
 
-        if args.output:
+        if args.output and output_dir is not None:
             if not output_dir.exists():
                 log_message(f"Creating output directory: {output_dir}", always_print=True)
                 output_dir.mkdir(parents=True, exist_ok=True)

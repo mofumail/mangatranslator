@@ -129,7 +129,7 @@ def draw_labels(image, labels: list[tuple], sorted_bubble_data: list[dict], conf
         size = round(min(max(side * SFX_LABEL_SHARE, base * SFX_LABEL_SCALE[0]), base * SFX_LABEL_SCALE[1]))
         font = ImageFont.truetype(str(font_path), size)
         stroke = max(2, round(size * 0.14))
-        l, t, r, b = draw.textbbox((0, 0), label, font=font, stroke_width=stroke)
+        l, t, r, b = (int(v) for v in draw.textbbox((0, 0), label, font=font, stroke_width=stroke))
         x, y = _place_label((r - l, b - t), box, page.size, taken, gray)
         draw.text(
             (x - l, y - t), label, font=font, fill=(0, 0, 0), stroke_width=stroke, stroke_fill=(255, 255, 255)

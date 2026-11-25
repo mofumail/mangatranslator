@@ -413,17 +413,6 @@ def _has_failed_items(texts: list[str], provider: str) -> bool:
     return any(t == "[OCR FAILED]" or t.startswith(f"[{provider}") for t in texts)
 
 
-def pair_context_lines(ocr_texts: list[str], translations: list[str]) -> list[str]:
-    """Join each source line to its translation so later pages reuse names and terms."""
-    if len(ocr_texts) != len(translations):
-        return ocr_texts
-    return [
-        # A leading "[" marks a failure placeholder, not a translation
-        ocr if ocr == "[OCR FAILED]" or not tr or tr.startswith("[") else f"{ocr} → {tr}"
-        for ocr, tr in zip(ocr_texts, translations, strict=False)
-    ]
-
-
 def _format_previous_context_texts(
     previous_context_texts: list[list[str]] | None,
 ) -> str:

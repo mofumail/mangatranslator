@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, NamedTuple
 
 from mangatl.settings import ROOT, Settings
 
@@ -11,14 +11,23 @@ LLM_DIR = ROOT / "models" / "llm"
 # Translator presets (Gemma 4 QAT GGUFs from unsloth). Measured on 10 OpenMantra pages, RTX 4070 Ti:
 #   26b: MoE 26B-A4B, experts in system RAM -> ~2.4 GB VRAM, ~10 s/page, best translations
 #   12b: dense 12B fully on GPU            -> ~7.4 GB VRAM,  ~6 s/page, a few more meaning errors
-MODEL_PRESETS = {
-    "26b": dict(
+
+
+class ModelPreset(NamedTuple):
+    gguf: Path
+    cpu_moe: int  # MoE layers whose experts stay in system RAM
+    mmproj: Path  # vision projector
+    repo: str  # Hugging Face repo the files come from
+
+
+MODEL_PRESETS: dict[str, ModelPreset] = {
+    "26b": ModelPreset(
         gguf=LLM_DIR / "gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
         cpu_moe=99,
         mmproj=LLM_DIR / "gemma-4-26B-A4B-mmproj-F16.gguf",
         repo="unsloth/gemma-4-26B-A4B-it-qat-GGUF",
     ),
-    "12b": dict(
+    "12b": ModelPreset(
         gguf=LLM_DIR / "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
         cpu_moe=0,
         mmproj=LLM_DIR / "mmproj-F16.gguf",
@@ -41,25 +50,25 @@ def build(
     outside_text: bool,
     source: str = "Japanese",
     target: str = "English",
-    ocr: str = "auto",
-    inpaint: str = "lama_manga",
+    ocr: Literal["auto", "manga-ocr", "paddleocr-vl-1.6"] = "auto",
+    inpaint: Literal["lama_manga", "opencv", "none"] = "lama_manga",
     font: str = "Comic Neue",
     osb_font: str = "Bangers",
-    reading_direction: str | None = None,
+    reading_direction: Literal["rtl", "ltr"] | None = None,
     context_pages: int = 3,
     glossary: str | None = None,
     instructions: str | None = None,
-    honorifics: str = "drop",
-    sfx: str = "label",
+    honorifics: Literal["drop", "keep"] = "drop",
+    sfx: Literal["label", "redraw"] = "label",
     adult: bool = False,
     keep_other_language: bool = False,
-    vision: str | None = None,
+    vision: Literal["off", "short", "full"] | None = None,
     ocr_correction: bool = True,
-    output_format: str = "png",
+    output_format: Literal["auto", "png", "jpeg"] = "png",
     vertical_text: bool = False,
     llm_url: str | None = None,
     llm_model_name: str | None = None,
-    model: str = "26b",
+    model: Literal["26b", "12b"] = "26b",
     gguf: str | None = None,
     mmproj: str | None = None,
     port: int = 8080,
@@ -76,9 +85,9 @@ def build(
     # The 12B is all on the GPU; with the projector the page runs out of VRAM (12 GB card).
     vision_fits = gguf is None and model == "26b" and not llm_url
     if gguf is None:
-        gguf = str(preset["gguf"])
-        cpu_moe = preset["cpu_moe"] if cpu_moe is None else cpu_moe
-    mmproj = mmproj or str(preset["mmproj"])
+        gguf = str(preset.gguf)
+        cpu_moe = preset.cpu_moe if cpu_moe is None else cpu_moe
+    mmproj = mmproj or str(preset.mmproj)
     if vision is None:
         vision = "short" if vision_fits else "off"
         if vision != "off" and not Path(mmproj).exists():

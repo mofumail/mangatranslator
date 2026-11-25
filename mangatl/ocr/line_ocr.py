@@ -16,6 +16,10 @@ import re
 import threading
 from collections import OrderedDict
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 MIN_LINES = 2  # regions with at least this many detected lines are read line by line
 
@@ -62,11 +66,11 @@ def is_other_cjk(text: str) -> bool:
 # Pages are registered when the outside-text regions are built (same coordinates).
 _page_lock = threading.Lock()
 _page_ids = itertools.count(1)
-_PAGES: "OrderedDict[int, object]" = OrderedDict()
+_PAGES: "OrderedDict[int, Image.Image]" = OrderedDict()
 _PAGE_LINES: dict[int, list] = {}
 
 
-def register_page(pil_image) -> int:
+def register_page(pil_image: Image.Image) -> int:
     with _page_lock:
         token = next(_page_ids)
         _PAGES[token] = pil_image
@@ -144,7 +148,7 @@ def read_region(meta: dict, models_dir: Path, rtl: bool = True) -> str | None:
     token = meta.get("mt_page")
     box = meta.get("original_bbox") or meta.get("bbox")
     page = _PAGES.get(token) if token else None
-    if page is None or not box or len(box) != 4:
+    if token is None or page is None or not box or len(box) != 4:
         return None
     lines = text_lines.reading_order(_lines_in(_page_lines(token, models_dir), box), rtl=rtl)
     W, H = page.size

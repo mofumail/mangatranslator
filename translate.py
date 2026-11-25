@@ -176,7 +176,7 @@ def check_font_pack(name: str) -> None:
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
-def natural_key(path: Path) -> list:
+def natural_key(path: Path | str) -> list:
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", str(path))]
 
 
@@ -195,7 +195,7 @@ def translated_name(img: Path, fmt: str) -> str:
     return f"{img.stem}_translated{ext}"
 
 
-def parse_args() -> tuple[argparse.Namespace, list[str]]:
+def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Fully local batch manga translator (mangatl pipeline + llama.cpp).",
         epilog="Every other setting: --set section.field=value (see --show-settings).",
@@ -495,10 +495,10 @@ def main() -> None:
 
     if settings.server.launch and not settings.debug.llm_replay:
         start_llama_server(
-            settings.server, t.vision != "off", presets.MODEL_PRESETS[settings.server.model]["repo"]
+            settings.server, t.vision != "off", presets.MODEL_PRESETS[settings.server.model].repo
         )
 
-    llm = Path(settings.server.gguf).stem if settings.server.launch else t.model
+    llm = Path(settings.server.gguf or "").stem if settings.server.launch else t.model
     log(
         f"{inp} -> {out}  ({t.source_language} -> {t.target_language}, LLM: {llm}, "
         f"OCR: {settings.ocr.method}, inpaint: {settings.cleaning.inpainter}, "
