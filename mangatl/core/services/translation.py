@@ -1,5 +1,4 @@
 import base64
-import json
 import os
 import re
 import threading
@@ -14,7 +13,7 @@ import numpy as np
 from PIL import Image
 
 from mangatl.core.caching import get_cache
-from mangatl.core.config import TranslationConfig, calculate_reasoning_budget
+from mangatl.core.config import TranslationConfig
 from mangatl.core.image.image_utils import (
     cv2_to_pil,
     pil_to_cv2,
@@ -34,85 +33,29 @@ from mangatl.core.terminology import (
 )
 from mangatl.utils.cancellation import active_manager, pin_thread, raise_if_cancelled
 from mangatl.utils.endpoints import (
-    call_anthropic_endpoint,
-    call_deepseek_endpoint,
-    call_gemini_endpoint,
-    call_meta_model_endpoint,
-    call_mimo_endpoint,
-    call_moonshot_endpoint,
     call_openai_compatible_endpoint,
-    call_openai_endpoint,
-    call_opencode_endpoint,
-    call_openrouter_endpoint,
-    call_qwencloud_endpoint,
-    call_xai_endpoint,
-    call_zai_endpoint,
-    openrouter_is_reasoning_model,
 )
 from mangatl.utils.exceptions import TranslationError
 from mangatl.utils.logging import log_message
 from mangatl.utils.model_metadata import (
-    NO_WEB_SEARCH_PROVIDERS,
-    REASONING_MODEL_CHECKS,
     anthropic_model_flags,
-    clamp_claude_effort,
-    clamp_gemini_reasoning_effort,
     clamp_gpt6_reasoning_effort,
-    clamp_moonshot_reasoning_effort,
-    clamp_openai_reasoning_effort,
-    clamp_xai_reasoning_effort,
-    clamp_zai_reasoning_effort,
     get_max_tokens_cap,
     is_anthropic_model_family,
-    is_anthropic_reasoning_model,
-    is_deepseek_reasoning_model,
-    is_gemini_3_plus_model,
-    is_gemini_25_flash_model,
-    is_gemini_25_pro_model,
     is_gemini_no_sampling_model,
-    is_gemma_model,
-    is_google_model_family,
-    is_google_reasoning_model,
-    is_gpt5_chat_variant,
     is_gpt5_series,
     is_gpt6_series,
-    is_hy_mt2_model,
-    is_mimo_reasoning_model,
-    is_moonshot_reasoning_model,
     is_openai_compatible_reasoning_model,
     is_openai_model_family,
     is_openai_reasoning_model,
-    is_openai_virtual_pro,
-    is_opencode_reasoning_model,
-    is_qwencloud_reasoning_model,
-    is_rosetta_model,
-    is_zai_reasoning_model,
-    supports_gemini_code_execution,
-    supports_meta_reasoning_effort,
-    supports_moonshot_reasoning_effort,
     supports_openai_original_image_detail,
     supports_openai_verbosity,
-    supports_qwencloud_reasoning_effort,
-    supports_xai_reasoning_parameter,
-    supports_zai_reasoning_effort,
 )
 
 T = TypeVar("T")
 
 _FULL_PAGE_LABEL = "Full page (context only):"
-_PREVIOUS_PAGE_LABEL = "Previous page, {} back (context only):"
 _FULL_PAGE_NOTE = " The image labeled `Full page` shows the whole page for context."
-# Gemini zooms on its own but only uses code for other image work when told to
-_CODE_EXECUTION_SECTION = """## CODE EXECUTION
-When text in a crop is too small, faint, or dense to read with confidence, write code to zoom into it, and when it is rotated or tilted, write code to rotate it upright before you transcribe it. Never mention the code in your output."""
-
-
-def _uses_code_execution(config: TranslationConfig) -> bool:
-    return (
-        config.provider == "Google"
-        and bool(getattr(config, "enable_code_execution", False))
-        and supports_gemini_code_execution(config.model_name)
-    )
 
 
 def _lang_label(input_language: str | None) -> str:
@@ -123,72 +66,8 @@ def _lang_label(input_language: str | None) -> str:
     )
 
 
-def _transcription_rules(input_language: str | None) -> str:
-    """Transcription rules shared by the OCR prompt and the one-step prompt."""
-    lang_clean = (input_language or "").strip().lower()
-    primary_code = lang_clean.split("-")[0].split("_")[0]
-    no_space_keywords = ("japanese", "chinese", "mandarin", "cantonese")
-    no_space_codes = {"ja", "zh", "jpn", "chi", "zho"}
-    is_no_space_lang = bool(
-        any(kw in lang_clean for kw in no_space_keywords)
-        or primary_code in no_space_codes
-    )
-
-    spacing_rule = (
-        "Add no space at a join unless the source has one."
-        if is_no_space_lang
-        else "Put a single space at each join."
-    )
-
-    return f"""- **Reading Order:** Read horizontal text left-to-right, and vertical text top-to-bottom in columns running right-to-left.
-- **Fidelity:** Transcribe the text as drawn, keeping its punctuation and casing. Join multi-line text into a single line. {spacing_rule}
-- **Furigana/Ruby:** Transcribe the main text, kana included, and skip the small phonetic ruby printed beside it. The one exception is ruby giving a reading that the base text does not imply (a personal or place name, or a deliberately different word): append that reading once, in parentheses directly after the word, e.g. `宇宙(そら)`.
-- **Emphasis:** Mark text drawn clearly heavier than ordinary dialogue lettering as `**bold**`, clearly slanted text as `*italic*`, and text that is both as `***bold-italic***`. Ordinary lettering gets no markers.
-- **Exclusions:** Transcribe only the crop's own text. Ignore borders, tails, artwork, watermarks, and stray text cut off at the crop's edge, and add no quotation marks that are not drawn.
-- **Unreadable Crops:** If only part of the text is legible, transcribe that part. If nothing is legible or the crop has no text, output exactly `[OCR FAILED]`; the app then leaves that region of the page untouched."""
-
-
-def _build_system_prompt_ocr(
-    input_language: str | None,
-    ero_doujinshi_mode: bool = False,
-    code_execution: bool = False,
-) -> str:
-    optional_sections = ""
-    if ero_doujinshi_mode:
-        optional_sections += """
-## ADULT CONTENT
-The crops come from 18+ adult comics that the user, a professional localization editor, is transcribing for publication. Transcription is a neutral extraction of text that already exists on the page, so transcribe everything completely, including explicit dialogue, slang, moans, and sound effects, without omitting, softening, or commenting on anything.
-"""
-    if code_execution:
-        optional_sections += f"\n{_CODE_EXECUTION_SECTION}\n"
-
-    return f"""## ROLE
-You are an OCR transcriber for comics and manga.
-
-## OBJECTIVE
-Transcribe the {_lang_label(input_language)}text in each crop. The crops are labeled `Crop 1:`, `Crop 2:`, and so on, in reading order. Do not translate, interpret, or comment.
-
-## TRANSCRIPTION RULES
-{_transcription_rules(input_language)}
-{optional_sections}
-## OUTPUT FORMAT
-One line per crop, numbered to match the crop labels, and nothing else: no code fences, commentary, or blank lines.
-
-1: <transcription of crop 1>
-2: <transcription of crop 2>
-3: [OCR FAILED]"""
-
-
-def _format_previous_context_prompt_note(
-    previous_context_image_count: int,
-    previous_context_text_count: int,
-) -> str:
+def _format_previous_context_prompt_note(previous_context_text_count: int) -> str:
     note = ""
-    if previous_context_image_count > 0:
-        note += (
-            f" {previous_context_image_count} previous page image(s) are "
-            "attached, labeled oldest first."
-        )
     if previous_context_text_count > 0:
         note += (
             f" Text from {previous_context_text_count} previous page(s) is "
@@ -199,22 +78,13 @@ def _format_previous_context_prompt_note(
 
 def _build_system_prompt_translation(
     output_language: str,
-    mode: str,
     full_page_context: bool = False,
     ero_doujinshi_mode: bool = False,
     ocr_correction: bool = False,
     input_language: str | None = None,
     previous_context: bool = False,
-    llm_transcription: bool = True,
-    web_search: bool = False,
     terminology_memory: bool = False,
-    code_execution: bool = False,
 ) -> str:
-    if mode not in ("one-step", "two-step"):
-        raise ValueError(
-            f"Invalid mode '{mode}' specified for translation system prompt."
-        )
-    one_step = mode == "one-step"
     lang_label = _lang_label(input_language)
     english = output_language.strip().lower().startswith("english")
 
@@ -235,33 +105,14 @@ You are a professional localization editor translating {lang_label}comics (manga
 Translate each numbered item so that it reads like native {output_language} comic lettering while staying faithful to the source's meaning, tone, and subtext.{visual_ref_note}""",
     ]
 
-    if one_step:
-        sections.append(
-            f"""## TRANSCRIPTION RULES
-The items are image crops labeled `Crop 1:`, `Crop 2:`, and so on. Transcribe each crop before translating it:
-{_transcription_rules(input_language)}"""
-        )
-        # Two-step translation gets text items, so there are no crops to inspect
-        if code_execution:
-            sections.append(_CODE_EXECUTION_SECTION)
-
-    failed_rule = (
-        "- **Failed Crops:** A crop transcribed as `[OCR FAILED]` gets `[OCR FAILED]` as its translation too."
-        if one_step
-        else "- **Failed Items:** Return `[OCR FAILED]` for an item that is marked `[OCR FAILED]` or that is plainly OCR noise rather than text; the app then leaves the original artwork in place."
-    )
-    furigana_rule = (
-        "\n- **Furigana Readings:** A reading in parentheses directly after a word in a transcription, e.g. `宇宙(そら)`, is that word's furigana. Use it to romanize the name or to convey the intended word, and do not reproduce the parentheses."
-        if llm_transcription
-        else ""
-    )
+    failed_rule = "- **Failed Items:** Return `[OCR FAILED]` for an item that is marked `[OCR FAILED]` or that is plainly OCR noise rather than text; the app then leaves the original artwork in place."
     sections.append(
         f"""## TRANSLATION RULES
 - **Continuous Narrative:** The items are in reading order and form one continuous scene, so translate each with its neighbors in mind. Translate meaning and intent rather than word for word.
 - **Register:** Match each speaker's voice and the register of the source: formal stays formal, crude stays crude, childish stays childish. Do not soften or intensify it.
 - **Length:** Each translation is typeset back into the space the original text occupied, so keep it about as compact as the source, and prefer the shorter of two equally good phrasings.
 - **Split Bubbles:** A sentence often runs across consecutive bubbles. Keep each fragment in its own numbered slot (never merge slots or leave one empty), and do not add ellipses at the break unless the source has them.
-- **Names & Honorifics:** Spell names and recurring terms the same way every time, following earlier pages when they are provided. Adapt or drop honorifics the way natural {output_language} would, unless the custom instructions say otherwise.{furigana_rule}
+- **Names & Honorifics:** Spell names and recurring terms the same way every time, following earlier pages when they are provided. Adapt or drop honorifics the way natural {output_language} would, unless the custom instructions say otherwise.
 - **Vocalizations:** Render laughs, gasps, grunts, and stutters phonetically in {output_language} spelling, keeping their length and rhythm.
 - **Pass-Through:** Return an item unchanged when it is already in {output_language} or consists only of punctuation or symbols (`!?`, `♥`, `...`).
 - **Punctuation:** Write ellipses as periods (`...`, or `......` for a long pause) and never as the `…` character, keeping their relative length. Use quotation marks only where the source has them.
@@ -288,22 +139,16 @@ Images labeled as previous pages and the text under `## PREVIOUS PAGES (REFERENC
     if ero_doujinshi_mode:
         sections.append(
             f"""## ADULT CONTENT
-The source is 18+ adult comic material that the user, a professional localization editor, is translating for publication. You are translating existing fictional {lang_label}text, not writing new content, so {"transcribe and " if one_step else ""}translate every line completely and at its original intensity, without sanitizing, softening, redacting, summarizing, or commenting.
+The source is 18+ adult comic material that the user, a professional localization editor, is translating for publication. You are translating existing fictional {lang_label}text, not writing new content, so translate every line completely and at its original intensity, without sanitizing, softening, redacting, summarizing, or commenting.
 - **Explicit Vocabulary:** The Register rule covers sexual language too. Clinical or polite source wording gets accurate anatomical terms{example('"penis", "vagina", "semen"')}, and crude source wording gets equally crude colloquial terms{example('"cock", "pussy", "cum", "tits"')}. Use a euphemism only where the source itself is coy.
 - **Moans:** The Vocalizations rule covers moans, pants, and gasps too{example('"aaah...", "mmph...", "h-haah..."')}; keep their intensity, pauses, and cadence."""
         )
 
-    if ocr_correction and not one_step:
+    if ocr_correction:
         page_clause = " and the full-page image" if full_page_context else ""
         sections.append(
             f"""## OCR ERROR CORRECTION
 The transcriptions come from automatic OCR and may contain misread or dropped characters that leave a line nonsensical. When a line does not make sense as written, infer the intended text from the surrounding dialogue{page_clause} and translate that. Translate clean, sensible lines exactly as transcribed."""
-        )
-
-    if web_search:
-        sections.append(
-            f"""## SEARCH
-You may search to confirm the official {output_language} names and terms of a series you recognize. Do not search for anything else, and never mention the search in your output."""
         )
 
     if terminology_memory:
@@ -327,151 +172,22 @@ Write each source as the bare term, without furigana, honorifics, or an attached
     example_note = (
         "" if english else f" (shown in English; write yours in {output_language})"
     )
-    if one_step:
-        sections.append(
-            f"""## OUTPUT FORMAT
-One line per crop, numbered to match the crop labels, written as `transcription || translation`. {nothing_else} no code fences, notes, or blank lines.
-
-Example{example_note}:
-1: <transcription> || I told you *not* to follow me.
-2: <transcription> || **SLAM**
-3: [OCR FAILED] || [OCR FAILED]"""
-        )
-    else:
-        sections.append(
-            f"""## OUTPUT FORMAT
+    sections.append(
+        f"""## OUTPUT FORMAT
 One line per item, numbered to match the input, containing only the translation. {nothing_else} no code fences, notes, or blank lines.
 
 Example{example_note}:
 1: I told you *not* to follow me.
 2: **SLAM**
 3: [OCR FAILED]"""
-        )
+    )
 
     return "\n\n".join(sections)
 
 
-_GEMINI_MEDIA_RESOLUTIONS = {
-    "auto": "MEDIA_RESOLUTION_UNSPECIFIED",
-    "high": "MEDIA_RESOLUTION_HIGH",
-    "medium": "MEDIA_RESOLUTION_MEDIUM",
-    "low": "MEDIA_RESOLUTION_LOW",
-}
-
-
-def _gemini_media_resolution(media_resolution_ui: str) -> str:
-    """Map a UI media resolution ("auto"/"high"/"medium"/"low") to the Gemini API enum."""
-    return _GEMINI_MEDIA_RESOLUTIONS.get(
-        media_resolution_ui.lower(), "MEDIA_RESOLUTION_UNSPECIFIED"
-    )
-
-
-def _supports_per_part_media_resolution(provider: str, model_name: str) -> bool:
-    """Gemini 3+ and SpaceXAI take media resolution per image part, not per request."""
-    return provider == "SpaceXAI" or (
-        provider == "Google" and is_gemini_3_plus_model(model_name)
-    )
-
-
-def _image_part(
-    mime_type: str, data: str, media_resolution_ui: str | None = None
-) -> dict[str, Any]:
-    """Build an inline image part, tagged with its media resolution when one is given."""
-    part: dict[str, Any] = {"inline_data": {"mime_type": mime_type, "data": data}}
-    if media_resolution_ui is not None:
-        part["media_resolution"] = {
-            "level": _gemini_media_resolution(media_resolution_ui)
-        }
-    return part
-
-
-def _gemini_thinking_config(
-    model_name: str, reasoning_effort: str | None, max_tokens: int
-) -> dict[str, Any] | None:
-    """Build Gemini's thinkingConfig, or None to leave thinking at the model default."""
-    if is_gemini_3_plus_model(model_name) or is_gemma_model(model_name):
-        return {
-            "thinkingLevel": clamp_gemini_reasoning_effort(
-                model_name, reasoning_effort or "medium"
-            )
-        }
-    if not is_google_reasoning_model(model_name):
-        return None
-
-    # Gemini 2.5 takes a token budget instead of a level
-    effort = reasoning_effort or "auto"
-    if effort == "auto":
-        return None
-    if effort == "none":
-        if is_gemini_25_flash_model(model_name):
-            return {"thinkingBudget": 0}
-        # 2.5 Pro cannot turn thinking off, so use its minimum budget
-        if is_gemini_25_pro_model(model_name):
-            return {"thinkingBudget": 128}
-        return None
-    return {"thinkingBudget": calculate_reasoning_budget(max_tokens, effort)}
-
-
-def _claude_thinking_type(flags: dict[str, bool], reasoning_effort: str) -> str | None:
-    """Pick the Claude thinking type for a reasoning effort, or None to send no thinking config."""
-    if flags.get("is_claude_omit_thinking"):
-        return None
-    if flags.get("is_claude_adaptive_default"):
-        # Thinking is on by default, so "none" has to switch it off explicitly
-        if reasoning_effort != "none":
-            return "adaptive"
-        return "between_tools" if flags.get("is_claude_between_tools") else "disabled"
-    if flags.get("is_claude_effort_max"):
-        return "adaptive" if reasoning_effort != "none" else None
-    # Older models think on a token budget
-    return "enabled" if reasoning_effort != "none" else None
-
-
-def _openrouter_reasoning_effort(
-    model_name: str, reasoning_effort: str | None
-) -> str | None:
-    """Pick the reasoning effort to send through OpenRouter, or None to send none.
-
-    Efforts go out unclamped, because OpenRouter maps them onto what each model accepts.
-    """
-    if is_anthropic_reasoning_model(model_name):
-        flags = anthropic_model_flags(model_name)
-        # Unlike the native Anthropic default, Claude 4.6 also thinks unless told not to
-        is_claude_46 = flags.get("is_claude_effort_max") and not flags.get(
-            "is_claude_effort_xhigh"
-        )
-        thinks_by_default = is_claude_46 or flags.get("is_claude_adaptive_default")
-        return reasoning_effort or ("auto" if thinks_by_default else "none")
-    if is_openai_model_family(model_name):
-        if is_gpt6_series(model_name):
-            return reasoning_effort or "medium"
-        if is_gpt5_series(model_name):
-            return reasoning_effort
-    model_lower = (model_name or "").lower()
-    # Grok 4 reasoning models take no effort setting
-    if "grok-4" in model_lower and "non-reasoning" not in model_lower:
-        return None
-    if is_google_model_family(model_name):
-        return reasoning_effort
-    return None
-
-
-def _sampling_config(
-    config: TranslationConfig, max_tokens: int, max_temperature: float | None = None
-) -> dict[str, Any]:
-    """Start a config with max_tokens plus, when custom sampling is on, temperature and top_p."""
-    generation_config: dict[str, Any] = {"max_tokens": max_tokens}
-    if config.use_custom_sampling:
-        temperature = config.temperature
-        if max_temperature is not None:
-            temperature = min(temperature, max_temperature)
-        generation_config.update({"temperature": temperature, "top_p": config.top_p})
-    return generation_config
-
-
-def _thinking_toggle(reasoning_effort: str | None) -> dict[str, str]:
-    """Build the `thinking` on/off switch: every effort except "none" leaves thinking on."""
-    return {"type": "disabled" if reasoning_effort == "none" else "enabled"}
+def _image_part(mime_type: str, data: str) -> dict[str, Any]:
+    """Build an inline image part."""
+    return {"inline_data": {"mime_type": mime_type, "data": data}}
 
 
 def _normalized_image_detail(model_name: str, config: TranslationConfig) -> str:
@@ -516,252 +232,6 @@ def _routed_model_config(
     return generation_config
 
 
-def _google_generation_config(
-    model_name: str,
-    config: TranslationConfig,
-    max_tokens: int,
-    debug: bool,
-) -> dict[str, Any]:
-    generation_config = {"maxOutputTokens": max_tokens}
-    if config.use_custom_sampling and not is_gemini_no_sampling_model(model_name):
-        generation_config.update(
-            {
-                "temperature": config.temperature,
-                "topP": config.top_p,
-                "topK": config.top_k,
-            }
-        )
-    if not _supports_per_part_media_resolution("Google", model_name):
-        generation_config["media_resolution"] = _gemini_media_resolution(
-            config.media_resolution
-        )
-    thinking_config = _gemini_thinking_config(
-        model_name, config.reasoning_effort, max_tokens
-    )
-    if thinking_config:
-        generation_config["thinkingConfig"] = thinking_config
-    log_message(
-        f"Thinking config for {model_name}: {thinking_config or 'model default'}",
-        verbose=debug,
-    )
-    return generation_config
-
-
-def _openai_generation_config(
-    model_name: str,
-    config: TranslationConfig,
-    max_tokens: int,
-) -> dict[str, Any]:
-    generation_config = {
-        "max_output_tokens": max_tokens,
-    }
-    if config.use_custom_sampling:
-        generation_config.update(
-            {
-                "temperature": config.temperature,
-                "top_p": config.top_p,
-            }
-        )  # top_k not supported by OpenAI
-    generation_config["image_detail"] = _normalized_image_detail(model_name, config)
-    is_chat = is_gpt5_chat_variant(model_name)
-    if is_openai_reasoning_model(model_name) and not is_chat:
-        generation_config["reasoning_effort"] = clamp_openai_reasoning_effort(
-            model_name, config.reasoning_effort or "medium"
-        )
-        if is_openai_virtual_pro(model_name):
-            generation_config["reasoning_mode"] = "pro"
-    if supports_openai_verbosity(model_name):
-        generation_config["verbosity"] = config.verbosity or "low"
-    return generation_config
-
-
-def _anthropic_generation_config(
-    model_name: str,
-    config: TranslationConfig,
-    max_tokens: int,
-) -> dict[str, Any]:
-    anthropic_flags = anthropic_model_flags(model_name)
-    generation_config = {
-        "max_tokens": max_tokens,
-        "_metadata": dict(anthropic_flags),
-    }
-    if config.use_custom_sampling:
-        generation_config.update(
-            {
-                "temperature": min(config.temperature, 1.0),
-                "top_k": config.top_k,
-            }
-        )
-    if is_anthropic_reasoning_model(model_name):
-        reasoning_effort = config.reasoning_effort or (
-            "auto" if anthropic_flags.get("is_claude_adaptive_default") else "none"
-        )
-        generation_config["reasoning_effort"] = reasoning_effort
-        thinking_type = _claude_thinking_type(anthropic_flags, reasoning_effort)
-        if thinking_type:
-            generation_config["thinking_type"] = thinking_type
-    if anthropic_flags and config.effort:
-        generation_config["effort"] = clamp_claude_effort(model_name, config.effort)
-    return generation_config
-
-
-def _xai_generation_config(
-    model_name: str,
-    config: TranslationConfig,
-    max_tokens: int,
-    prompt_cache_key: str | None,
-) -> dict[str, Any]:
-    generation_config = _sampling_config(config, max_tokens)
-    generation_config["media_resolution"] = config.media_resolution
-    if prompt_cache_key:
-        generation_config["prompt_cache_key"] = prompt_cache_key
-    if supports_xai_reasoning_parameter(model_name):
-        generation_config["reasoning_effort"] = clamp_xai_reasoning_effort(
-            model_name, config.reasoning_effort or "medium"
-        )
-    return generation_config
-
-
-def _deepseek_generation_config(
-    model_name: str,
-    config: TranslationConfig,
-    max_tokens: int,
-) -> dict[str, Any]:
-    generation_config = _sampling_config(config, max_tokens)
-    if is_deepseek_reasoning_model(model_name):
-        reasoning_effort = config.reasoning_effort or "high"
-        generation_config["thinking"] = _thinking_toggle(reasoning_effort)
-        if reasoning_effort != "none":
-            generation_config["reasoning_effort"] = reasoning_effort
-    return generation_config
-
-
-def _zai_generation_config(
-    model_name: str,
-    config: TranslationConfig,
-    max_tokens: int,
-) -> dict[str, Any]:
-    generation_config = _sampling_config(config, max_tokens, 1.0)
-    if is_zai_reasoning_model(model_name):
-        if "glm-5.3" in model_name.lower():
-            # GLM-5.3 keeps thinking on and takes only "low", "high" and "max"
-            generation_config["thinking"] = {"type": "enabled"}
-            generation_config["reasoning_effort"] = clamp_zai_reasoning_effort(
-                model_name, config.reasoning_effort or "high"
-            )
-        else:
-            takes_effort = supports_zai_reasoning_effort(model_name)
-            reasoning_effort = config.reasoning_effort or (
-                "high" if takes_effort else "auto"
-            )
-            generation_config["thinking"] = _thinking_toggle(reasoning_effort)
-            if takes_effort and reasoning_effort != "none":
-                generation_config["reasoning_effort"] = reasoning_effort
-    return generation_config
-
-
-def _moonshot_generation_config(
-    model_name: str,
-    config: TranslationConfig,
-    max_tokens: int,
-    debug: bool,
-) -> dict[str, Any]:
-    generation_config = _sampling_config(config, max_tokens, 1.0)
-    if supports_moonshot_reasoning_effort(model_name):
-        # Kimi K3 takes an effort instead of the thinking switch
-        reasoning_effort = clamp_moonshot_reasoning_effort(
-            model_name, config.reasoning_effort or "high"
-        )
-        generation_config["reasoning_effort"] = reasoning_effort
-        log_message(
-            f"Using reasoning effort '{reasoning_effort}' for {model_name}",
-            verbose=debug,
-        )
-    elif is_moonshot_reasoning_model(model_name):
-        generation_config["thinking"] = _thinking_toggle(config.reasoning_effort)
-    return generation_config
-
-
-def _mimo_generation_config(
-    model_name: str,
-    config: TranslationConfig,
-    max_tokens: int,
-) -> dict[str, Any]:
-    generation_config = _sampling_config(config, max_tokens, 1.0)
-    if is_mimo_reasoning_model(model_name):
-        generation_config["thinking"] = _thinking_toggle(config.reasoning_effort)
-    return generation_config
-
-
-def _qwencloud_generation_config(
-    model_name: str,
-    config: TranslationConfig,
-    max_tokens: int,
-) -> dict[str, Any]:
-    generation_config = _sampling_config(config, max_tokens, 1.0)
-    if is_qwencloud_reasoning_model(model_name):
-        takes_effort = supports_qwencloud_reasoning_effort(model_name)
-        reasoning_effort = config.reasoning_effort or (
-            "xhigh" if takes_effort else "auto"
-        )
-        generation_config["thinking"] = _thinking_toggle(reasoning_effort)
-        if takes_effort and reasoning_effort not in ("auto", "none"):
-            generation_config["reasoning_effort"] = reasoning_effort
-    return generation_config
-
-
-def _meta_generation_config(
-    model_name: str,
-    config: TranslationConfig,
-    max_tokens: int,
-) -> dict[str, Any]:
-    generation_config = _sampling_config(config, max_tokens, 1.0)
-    reasoning_effort = config.reasoning_effort or "auto"
-    # Meta has no thinking switch, so "auto" and "none" both send no effort
-    if supports_meta_reasoning_effort(model_name) and reasoning_effort not in (
-        "auto",
-        "none",
-    ):
-        generation_config["reasoning_effort"] = reasoning_effort
-    return generation_config
-
-
-def _opencode_generation_config(
-    model_name: str,
-    config: TranslationConfig,
-    max_tokens: int,
-) -> dict[str, Any]:
-    generation_config = _sampling_config(config, max_tokens)
-    if (
-        is_opencode_reasoning_model(model_name)
-        and config.reasoning_effort
-        and config.reasoning_effort != "none"
-    ):
-        generation_config["reasoning_effort"] = config.reasoning_effort
-    return generation_config
-
-
-def _openrouter_generation_config(
-    model_name: str,
-    config: TranslationConfig,
-    max_tokens: int,
-) -> dict[str, Any]:
-    generation_config = _routed_model_config(model_name, config, max_tokens)
-    # The endpoint leaves out the sampling parameters the model's family rejects
-    if config.use_custom_sampling:
-        generation_config.update(
-            {
-                "temperature": config.temperature,
-                "top_p": config.top_p,
-                "top_k": config.top_k,
-            }
-        )
-    reasoning_effort = _openrouter_reasoning_effort(model_name, config.reasoning_effort)
-    if reasoning_effort:
-        generation_config["reasoning_effort"] = reasoning_effort
-    return generation_config
-
-
 def _openai_compatible_generation_config(
     model_name: str,
     config: TranslationConfig,
@@ -789,91 +259,20 @@ def _openai_compatible_generation_config(
     return generation_config
 
 
-# Providers whose config needs only the model, settings, and token limit
-_GENERATION_CONFIG_BUILDERS = {
-    "OpenAI": _openai_generation_config,
-    "Anthropic": _anthropic_generation_config,
-    "DeepSeek": _deepseek_generation_config,
-    "Z.ai": _zai_generation_config,
-    "Xiaomi MiMo": _mimo_generation_config,
-    "QwenCloud": _qwencloud_generation_config,
-    "Meta Model": _meta_generation_config,
-    "OpenCode": _opencode_generation_config,
-    "OpenRouter": _openrouter_generation_config,
-    "OpenAI-Compatible": _openai_compatible_generation_config,
-}
+def _build_generation_config(model_name: str, config: TranslationConfig) -> dict[str, Any]:
+    """Generation config for the OpenAI-compatible endpoint (llama-server or --llm-url).
 
-
-def _build_generation_config(
-    provider: str,
-    model_name: str,
-    config: TranslationConfig,
-    debug: bool = False,
-    prompt_cache_key: str | None = None,
-) -> dict[str, Any]:
+    max_tokens defaults to 32768 for reasoning models and 4096 otherwise, capped where the
+    model family has a lower limit.
     """
-    Build provider-specific generation config dictionary.
-
-    Centralizes logic for:
-    - Base parameters (temperature, top_p, top_k)
-    - Provider-specific parameter names and constraints
-    - Reasoning model detection and token limits
-    - Special features (thinking, reasoning_effort, etc.)
-
-    Args:
-        provider: Provider name (Google, OpenAI, Anthropic, SpaceXAI, OpenRouter, OpenAI-Compatible)
-        model_name: Model identifier
-        config: TranslationConfig with all settings
-        debug: Whether to log debug messages
-
-    Returns:
-        Dictionary with generation config parameters for the specific provider
-    """
-
     if config.max_tokens is not None:
         max_tokens_value = config.max_tokens
     else:
-        is_reasoning = False
-        if provider == "OpenRouter":
-            # Read from OpenRouter's model list rather than from the model name
-            is_reasoning = openrouter_is_reasoning_model(model_name, debug)
-        elif provider in REASONING_MODEL_CHECKS:
-            is_reasoning = REASONING_MODEL_CHECKS[provider](model_name)
-        max_tokens_value = 32768 if is_reasoning else 4096
-
-    max_tokens_cap = get_max_tokens_cap(provider, model_name)
+        max_tokens_value = 32768 if is_openai_compatible_reasoning_model(model_name) else 4096
+    max_tokens_cap = get_max_tokens_cap("OpenAI-Compatible", model_name)
     if max_tokens_cap is not None and max_tokens_value > max_tokens_cap:
         max_tokens_value = max_tokens_cap
-
-    if provider == "Google":
-        return _google_generation_config(model_name, config, max_tokens_value, debug)
-    if provider == "Moonshot AI":
-        return _moonshot_generation_config(model_name, config, max_tokens_value, debug)
-    if provider == "SpaceXAI":
-        return _xai_generation_config(
-            model_name, config, max_tokens_value, prompt_cache_key
-        )
-    builder = _GENERATION_CONFIG_BUILDERS.get(provider)
-    if builder is None:
-        raise TranslationError(f"Unknown provider for generation config: {provider}")
-    return builder(model_name, config, max_tokens_value)
-
-
-# provider: (config field holding its API key, name in the missing-key error, endpoint)
-_PROVIDER_ENDPOINTS = {
-    "Google": ("google_api_key", "Google", call_gemini_endpoint),
-    "OpenAI": ("openai_api_key", "OpenAI", call_openai_endpoint),
-    "Anthropic": ("anthropic_api_key", "Anthropic", call_anthropic_endpoint),
-    "SpaceXAI": ("xai_api_key", "SpaceXAI", call_xai_endpoint),
-    "DeepSeek": ("deepseek_api_key", "DeepSeek", call_deepseek_endpoint),
-    "Z.ai": ("zai_api_key", "Z.ai", call_zai_endpoint),
-    "Moonshot AI": ("moonshot_api_key", "Moonshot", call_moonshot_endpoint),
-    "Xiaomi MiMo": ("mimo_api_key", "MiMo", call_mimo_endpoint),
-    "QwenCloud": ("qwencloud_api_key", "QwenCloud", call_qwencloud_endpoint),
-    "Meta Model": ("meta_api_key", "Meta Model", call_meta_model_endpoint),
-    "OpenCode": ("opencode_api_key", "OpenCode", call_opencode_endpoint),
-    "OpenRouter": ("openrouter_api_key", "OpenRouter", call_openrouter_endpoint),
-}
+    return _openai_compatible_generation_config(model_name, config, max_tokens_value)
 
 
 def _call_llm_endpoint(
@@ -882,61 +281,26 @@ def _call_llm_endpoint(
     prompt_text: str,
     debug: bool = False,
     system_prompt: str | None = None,
-    prompt_cache_key: str | None = None,
 ) -> str | None:
-    """Internal helper to dispatch API calls based on provider."""
-    provider = config.provider
+    """Send one request to the OpenAI-compatible endpoint."""
     model_name = config.model_name
     api_parts = [*parts, {"text": prompt_text}]
     coordinator = getattr(config, "request_coordinator", None)
     if coordinator is not None and not coordinator.in_slot():
         return coordinator.run(
-            _call_llm_endpoint,
-            config,
-            parts,
-            prompt_text,
-            debug,
-            system_prompt,
-            prompt_cache_key,
+            _call_llm_endpoint, config, parts, prompt_text, debug, system_prompt
         )
-
-    if provider == "OpenAI-Compatible":
-        # Reached by URL rather than by key, which is optional
-        if not config.openai_compatible_url:
-            raise TranslationError("OpenAI-Compatible URL is missing.")
-        endpoint = call_openai_compatible_endpoint
-        provider_args = {
-            "base_url": config.openai_compatible_url,
-            "api_key": config.openai_compatible_api_key,
-        }
-    elif provider in _PROVIDER_ENDPOINTS:
-        key_field, key_label, endpoint = _PROVIDER_ENDPOINTS[provider]
-        api_key = getattr(config, key_field)
-        if not api_key:
-            raise TranslationError(f"{key_label} API key is missing.")
-        provider_args = {"api_key": api_key}
-    else:
-        raise TranslationError(f"Unknown translation provider specified: {provider}")
-
-    # Only the SpaceXAI config uses the prompt cache key
-    generation_config = _build_generation_config(
-        provider, model_name, config, debug, prompt_cache_key=prompt_cache_key
-    )
-    if provider not in NO_WEB_SEARCH_PROVIDERS:
-        provider_args["enable_web_search"] = config.enable_web_search
-    if provider == "Google":
-        provider_args["enable_code_execution"] = _uses_code_execution(config)
-    elif provider == "OpenCode":
-        provider_args["tier"] = getattr(config, "opencode_tier", "zen") or "zen"
-
+    if not config.openai_compatible_url:
+        raise TranslationError("OpenAI-Compatible URL is missing.")
     return _run_abandoning_on_cancel(
-        endpoint,
+        call_openai_compatible_endpoint,
         model_name=model_name,
         parts=api_parts,
-        generation_config=generation_config,
+        generation_config=_build_generation_config(model_name, config),
         system_prompt=system_prompt,
         debug=debug,
-        **provider_args,
+        base_url=config.openai_compatible_url,
+        api_key=config.openai_compatible_api_key,
     )
 
 
@@ -1251,161 +615,6 @@ These come from the user and override the translation and styling rules where th
     return ""
 
 
-def _split_special_instructions(
-    special_instructions: str | None,
-) -> tuple[list[str], list[str]]:
-    """Split custom instructions into glossary pairs (`a -> b`) and free-form notes."""
-    glossary_lines, note_lines = [], []
-    for line in (special_instructions or "").splitlines():
-        line = line.strip().removeprefix("- ").strip()
-        if line:
-            is_pair = "->" in line or "=>" in line
-            (glossary_lines if is_pair else note_lines).append(line)
-    return glossary_lines, note_lines
-
-
-def _build_rosetta_instruction(
-    output_language: str,
-    special_instructions: str | None = None,
-    glossary_terms: dict[str, str] | None = None,
-) -> str:
-    """Build instruction prompt for YanoljaNEXT Rosetta translation models.
-
-    Follows the Rosetta chat template format: concise instruction with target
-    language, context, tone, optional glossary, and output format.
-    Special instructions of the form `a -> b` are mapped to the Glossary field;
-    free-form ones are appended to the Context field.
-    """
-    glossary_lines, note_lines = _split_special_instructions(special_instructions)
-    glossary_lines += [f"{src} -> {tr}" for src, tr in (glossary_terms or {}).items()]
-    context = " ".join(["Comic dialogue, sound effects, and narration.", *note_lines])
-    instruction = (
-        f"Translate the user's text to {output_language}. "
-        f"Keep the JSON structure and keys.\n"
-        f"Context: {context}\n"
-        f"Tone: Natural-sounding comic localization"
-    )
-
-    if glossary_lines:
-        instruction += "\nGlossary:\n" + "\n".join(
-            f"- {line}" for line in glossary_lines
-        )
-
-    instruction += (
-        "\nOutput format: JSON\n"
-        "Provide the final translation immediately without any other text."
-    )
-    return instruction
-
-
-def _build_rosetta_source_prompt(extracted_texts: list[str]) -> str:
-    """Format OCR texts as JSON for Rosetta models.
-
-    Returns a JSON object with string keys "1", "2", etc.
-    """
-    data = {str(i + 1): text for i, text in enumerate(extracted_texts)}
-    return json.dumps(data, ensure_ascii=False)
-
-
-def _parse_rosetta_response(
-    response_text: str | None,
-    total_elements: int,
-    provider: str,
-    debug: bool = False,
-) -> list[str]:
-    """Parse JSON response from a Rosetta model.
-
-    Falls back to _parse_llm_response_unified if JSON parsing fails.
-    """
-    if response_text is None:
-        raise TranslationError(f"{provider}: API failed (returned None)")
-    if response_text == "":
-        raise TranslationError(f"{provider}: Empty response")
-
-    log_message(f"Raw response:\n---\n{response_text}\n---", always_print=True)
-
-    cleaned = _strip_code_fences(response_text)
-
-    try:
-        parsed = json.loads(cleaned)
-        if isinstance(parsed, dict):
-            result = []
-            for i in range(1, total_elements + 1):
-                val = parsed.get(str(i))
-                if val is not None:
-                    result.append(str(val).strip())
-                else:
-                    result.append(f"[{provider}: Missing item {i}]")
-            log_message(
-                f"Parsed {len(parsed)} items from JSON (expected {total_elements})",
-                verbose=debug,
-            )
-            return result
-    except (json.JSONDecodeError, TypeError):
-        log_message(
-            "JSON response invalid, falling back to numbered-list parser",
-            verbose=debug,
-        )
-
-    return _parse_llm_response_unified(response_text, total_elements, provider, debug)
-
-
-def _build_system_prompt_hy_mt2(
-    output_language: str,
-    input_language: str | None = None,
-    ero_doujinshi_mode: bool = False,
-    ocr_correction: bool = False,
-    previous_context: bool = False,
-    glossary: bool = False,
-) -> str:
-    """Build the compact system prompt for Hy-MT2.
-
-    The full translation prompt makes this small model invent content and
-    over-style, while no system prompt leaves sound effects romanized.
-    """
-    english = output_language.strip().lower().startswith("english")
-    sfx_example = " (e.g. **THUD**)" if english else ""
-
-    rules = [
-        "- The items are one page in reading order. Translate each one by its meaning in context, not word for word.",
-        "- Keep each translation about as short as the source, because it must fit in the same space.",
-        "- Give exactly one translation per number. Never merge, skip, or reorder items.",
-        f"- Sound effects: write a {output_language} sound word wrapped in double asterisks{sfx_example}. Everything else is plain text.",
-        "- Write an ellipsis as three periods with no spaces (`...`).",
-        "- An item that is only punctuation or symbols (`...`, `!?`, `♥`) stays unchanged.",
-        "- An item marked `[OCR FAILED]` stays `[OCR FAILED]`.",
-    ]
-    if previous_context:
-        rules.append(
-            "- Previous pages are context only. Reuse their names and wording, and do not translate or number them."
-        )
-    if glossary:
-        rules.append(
-            "- Translate each term listed under `## GLOSSARY` exactly as the glossary gives it."
-        )
-    if ocr_correction:
-        rules.append(
-            "- The source text comes from automatic OCR. If a line makes no sense, translate what it most likely says."
-        )
-    if ero_doujinshi_mode:
-        rules.append(
-            "- This is an adult comic. Translate explicit lines completely and at the same intensity, without softening them."
-        )
-
-    example_note = (
-        "" if english else f" (shown in English; write yours in {output_language})"
-    )
-    return f"""You translate {_lang_label(input_language)}comics into natural {output_language}.
-
-Rules:
-{chr(10).join(rules)}
-
-Output one numbered line per item, containing only the translation, and nothing else. Example{example_note}:
-1: I told you not to follow me.
-2: **SLAM**
-3: [OCR FAILED]"""
-
-
 def _perform_manga_ocr(
     images_b64: list[str],
     bubble_metadata: list[dict[str, Any]],
@@ -1609,75 +818,6 @@ def _perform_paddle_ocr_vl(
     return extracted_texts
 
 
-def _perform_llm_ocr(
-    config: TranslationConfig,
-    images_b64: list[str],
-    mime_types: list[str],
-    ocr_prompt: str,
-    provider: str,
-    input_language: str | None,
-    debug: bool = False,
-    prompt_cache_key: str | None = None,
-) -> list[str]:
-    """Perform OCR using vision LLM.
-
-    Args:
-        config: TranslationConfig
-        images_b64: List of base64-encoded images
-        mime_types: List of MIME types for each image
-        ocr_prompt: OCR prompt text
-        provider: Provider name
-        input_language: Input language
-        debug: Whether to print verbose logging
-
-    Returns:
-        List of extracted text strings, or early return with failure list
-    """
-    total_elements = len(images_b64)
-    bubble_res = (
-        config.media_resolution_bubbles
-        if _supports_per_part_media_resolution(provider, config.model_name)
-        else None
-    )
-    ocr_parts = []
-    for i, img_b64 in enumerate(images_b64):
-        mime_type = mime_types[i] if i < len(mime_types) else "image/jpeg"
-        ocr_parts += [
-            {"text": f"Crop {i + 1}:"},
-            _image_part(mime_type, img_b64, bubble_res),
-        ]
-
-    ocr_system = _build_system_prompt_ocr(
-        input_language,
-        ero_doujinshi_mode=getattr(config, "ero_doujinshi_mode", False),
-        code_execution=_uses_code_execution(config),
-    )
-    ocr_response_text = _call_llm_endpoint(
-        config,
-        ocr_parts,
-        ocr_prompt,
-        debug,
-        system_prompt=ocr_system,
-        prompt_cache_key=prompt_cache_key,
-    )
-    extracted_texts = _parse_llm_response_unified(
-        ocr_response_text,
-        total_elements,
-        provider + "-OCR",
-        debug,
-    )
-
-    if extracted_texts is None:
-        log_message("OCR API call failed", always_print=True)
-        return [f"[{provider}: OCR failed]"] * total_elements
-
-    if _check_ocr_failure(extracted_texts, provider):
-        log_message("OCR returned only placeholders", verbose=debug)
-        return extracted_texts
-
-    return extracted_texts
-
-
 def _clean_previous_context_texts(
     previous_context_texts: list[list[str]] | None, max_pages: int
 ) -> list[list[str]]:
@@ -1729,51 +869,19 @@ def _layout_hints(bubble_metadata: list[dict[str, Any]]) -> str:
     return "\nLayout: " + " ".join(hints) if hints else ""
 
 
-def _previous_page_parts(
-    previous_context_images: list[dict[str, str]], context_res: str | None
-) -> list[dict[str, Any]]:
-    """Labeled image parts for the previous pages, oldest first."""
-    parts = []
-    for pages_back, image in zip(
-        range(len(previous_context_images), 0, -1),
-        previous_context_images,
-        strict=False,
-    ):
-        parts += [
-            {"text": _PREVIOUS_PAGE_LABEL.format(pages_back)},
-            _image_part(
-                image.get("mime_type", "image/jpeg"),
-                image.get("data", ""),
-                context_res,
-            ),
-        ]
-    return parts
-
-
 def _run_ocr_step(
     config: TranslationConfig,
     images_b64: list[str],
-    mime_types: list[str],
     bubble_metadata: list[dict[str, Any]],
     debug: bool,
-    prompt_cache_key: str,
 ) -> list[str]:
-    """Two-step mode's OCR pass, with the configured local or LLM OCR method."""
+    """The OCR pass with the configured local OCR method."""
     log_message("Starting OCR step", verbose=debug)
     if config.ocr_method == "manga-ocr":
         return _perform_manga_ocr(images_b64, bubble_metadata, debug)
     if config.ocr_method == "paddleocr-vl-1.6":
         return _perform_paddle_ocr_vl(images_b64, bubble_metadata, debug)
-    return _perform_llm_ocr(
-        config,
-        images_b64,
-        mime_types,
-        f"Transcribe the {len(images_b64)} crops above.",
-        config.provider,
-        config.input_language,
-        debug,
-        prompt_cache_key=prompt_cache_key,
-    )
+    raise TranslationError(f"Unknown OCR method: {config.ocr_method}")
 
 
 def _mark_ocr_failures(
@@ -1810,23 +918,6 @@ def _keep_ocr_failures(
             )
         results.append("[OCR FAILED]")
     return results
-
-
-def _split_one_step_lines(raw_lines: list[str]) -> tuple[list[str], list[str]]:
-    """Split one-step "Original || Translated" lines into (OCR texts, translations)."""
-    ocr_texts = []
-    translations = []
-    for line in raw_lines:
-        if "||" in line:
-            parts = line.split("||", 1)
-            ocr_texts.append(parts[0].strip())
-            translations.append(parts[1].strip())
-        else:
-            # Model violated the format — keep the line as the translation
-            # and mark OCR as failed so it isn't reused as prior context.
-            ocr_texts.append("[OCR FAILED]")
-            translations.append(line)
-    return ocr_texts, translations
 
 
 def call_translation_api_batch(
@@ -1871,16 +962,8 @@ def call_translation_api_batch(
         RuntimeError: If an API call fails irrecoverably after retries (raised by endpoint functions).
     """
     provider = config.provider
-    import uuid
-
-    session_prompt_cache_key = f"manga-translation-{uuid.uuid4()}"
     input_language = config.input_language
     output_language = config.output_language
-    translation_mode = config.translation_mode
-    previous_context_images = previous_context_images or []
-    if not config.send_full_page_context or config.ocr_method != "LLM":
-        previous_context_images = []
-    previous_context_image_count = len(previous_context_images)
     cleaned_previous_texts = _clean_previous_context_texts(
         previous_context_texts,
         int(getattr(config, "previous_context_text_count", 0) or 0),
@@ -1901,7 +984,6 @@ def call_translation_api_batch(
         images_b64,
         full_image_b64,
         config,
-        previous_context_images=previous_context_images,
         previous_context_texts=cleaned_previous_texts,
     )
     cached_translation, cached_ocr_texts = cache.get_translation(cache_key)
@@ -1919,72 +1001,36 @@ def call_translation_api_batch(
             ocr_texts_output.extend(cached_ocr_texts)
         return cached_translation
 
-    model_name = config.model_name
-    per_part_res = _supports_per_part_media_resolution(provider, model_name)
-    bubble_res = config.media_resolution_bubbles if per_part_res else None
-    context_res = config.media_resolution_context if per_part_res else None
     has_full_page = bool(config.send_full_page_context and full_image_b64)
-    has_previous_context = bool(
-        previous_context_image_count or previous_context_text_count
-    )
-    web_search = (
-        bool(getattr(config, "enable_web_search", False))
-        and provider not in NO_WEB_SEARCH_PROVIDERS
-    )
-
-    base_parts = []
-    for i, img_b64 in enumerate(images_b64):
-        mime_type = mime_types[i] if i < len(mime_types) else "image/jpeg"
-        base_parts += [
-            {"text": f"Crop {i + 1}:"},
-            _image_part(mime_type, img_b64, bubble_res),
-        ]
-
-    if has_full_page:
-        base_parts += [
-            {"text": _FULL_PAGE_LABEL},
-            _image_part(full_image_mime_type, full_image_b64, context_res),
-        ]
-
-    base_parts += _previous_page_parts(previous_context_images, context_res)
+    has_previous_context = bool(previous_context_text_count)
 
     try:
-        if translation_mode == "two-step":
-            extracted_texts = _run_ocr_step(
-                config,
-                images_b64,
-                mime_types,
-                bubble_metadata,
-                debug,
-                prompt_cache_key=session_prompt_cache_key,
-            )
+        extracted_texts = _run_ocr_step(config, images_b64, bubble_metadata, debug)
 
-            log_message("Starting translation step", verbose=debug)
+        log_message("Starting translation step", verbose=debug)
 
-            formatted_texts, ocr_failed_indices = _mark_ocr_failures(
-                extracted_texts, provider
-            )
+        formatted_texts, ocr_failed_indices = _mark_ocr_failures(
+            extracted_texts, provider
+        )
 
-            ocr_input_section = """
+        ocr_input_section = """
 ## INPUT DATA
 """
-            for i, text in enumerate(formatted_texts):
-                ocr_input_section += f"{i + 1}: {text}\n"
+        for i, text in enumerate(formatted_texts):
+            ocr_input_section += f"{i + 1}: {text}\n"
 
-            llm_ocr = config.ocr_method not in ("manga-ocr", "paddleocr-vl-1.6")
-            # Local OCR implies a text-only translation request, unless MT_PAGE_IMAGE=1
-            # (--vision full: the model runs with its vision projector and sees the whole page,
-            # so it can tell who speaks and catch OCR misreads)
-            page_attached = has_full_page and (llm_ocr or os.environ.get("MT_PAGE_IMAGE") == "1")
-            full_page_context = _FULL_PAGE_NOTE if page_attached else ""
-            previous_page_context = _format_previous_context_prompt_note(
-                previous_context_image_count,
-                previous_context_text_count,
-            )
+        # Local OCR implies a text-only translation request, unless MT_PAGE_IMAGE=1
+        # (--vision full: the model runs with its vision projector and sees the whole page,
+        # so it can tell who speaks and catch OCR misreads)
+        page_attached = has_full_page and os.environ.get("MT_PAGE_IMAGE") == "1"
+        full_page_context = _FULL_PAGE_NOTE if page_attached else ""
+        previous_page_context = _format_previous_context_prompt_note(
+            previous_context_text_count
+        )
 
-            special_instructions_section = _format_special_instructions(config)
+        special_instructions_section = _format_special_instructions(config)
 
-            translation_prompt = f"""## CONTEXT
+        translation_prompt = f"""## CONTEXT
 {total_elements} transcribed text items from one comic page, in reading order.{full_page_context}{previous_page_context}
 {context_hints}
 {previous_text_section}
@@ -1993,175 +1039,68 @@ def call_translation_api_batch(
 Translate each item under `## INPUT DATA` into {output_language}.{special_instructions_section}
 """
 
-            translation_parts = []
-            if page_attached:
-                translation_parts += [
-                    {"text": _FULL_PAGE_LABEL},
-                    _image_part(full_image_mime_type, full_image_b64, context_res),
-                ]
-            translation_parts += _previous_page_parts(
-                previous_context_images, context_res
+        translation_parts = []
+        if page_attached:
+            translation_parts += [
+                {"text": _FULL_PAGE_LABEL},
+                _image_part(full_image_mime_type, full_image_b64),
+            ]
+
+        translation_system = _build_system_prompt_translation(
+            output_language,
+            full_page_context=page_attached,
+            ero_doujinshi_mode=getattr(config, "ero_doujinshi_mode", False),
+            ocr_correction=getattr(config, "ocr_correction", False),
+            input_language=input_language,
+            previous_context=has_previous_context,
+            terminology_memory=bool(glossary_path),
+        )
+        translation_response_text = _call_llm_endpoint(
+            config,
+            translation_parts,
+            translation_prompt,
+            debug,
+            system_prompt=translation_system,
+        )
+        new_terms = []
+        if glossary_path:
+            translation_response_text, new_terms = split_new_terms(
+                translation_response_text
             )
+            _record_glossary_terms(glossary_path, new_terms, extracted_texts, debug)
+        final_translations = _parse_llm_response_unified(
+            translation_response_text,
+            total_elements,
+            provider + "-Translate",
+            debug,
+        )
 
-            use_rosetta = is_rosetta_model(model_name)
-            use_hy_mt2 = is_hy_mt2_model(model_name)
-            if use_rosetta:
-                log_message(
-                    "YanoljaNEXT Rosetta model detected — using Rosetta prompt format",
-                    always_print=True,
-                )
-                translation_system = _build_rosetta_instruction(
-                    output_language,
-                    config.special_instructions,
-                    glossary_terms=glossary_terms,
-                )
-                translation_prompt = _build_rosetta_source_prompt(formatted_texts)
-                translation_parts = []  # text-only model, no image parts
-            elif use_hy_mt2:
-                log_message(
-                    "Hy-MT2 model detected — using compact system prompt",
-                    always_print=True,
-                )
-                translation_system = _build_system_prompt_hy_mt2(
-                    output_language,
-                    input_language=input_language,
-                    ero_doujinshi_mode=getattr(config, "ero_doujinshi_mode", False),
-                    ocr_correction=getattr(config, "ocr_correction", False),
-                    previous_context=has_previous_context,
-                    glossary=bool(glossary_terms),
-                )
-                translation_parts = []  # text-only model, no image parts
-            else:
-                translation_system = _build_system_prompt_translation(
-                    output_language,
-                    mode="two-step",
-                    full_page_context=page_attached,
-                    ero_doujinshi_mode=getattr(config, "ero_doujinshi_mode", False),
-                    ocr_correction=getattr(config, "ocr_correction", False),
-                    input_language=input_language,
-                    previous_context=has_previous_context,
-                    llm_transcription=llm_ocr,
-                    web_search=web_search,
-                    terminology_memory=bool(glossary_path),
-                )
-            translation_response_text = _call_llm_endpoint(
-                config,
-                translation_parts,
-                translation_prompt,
-                debug,
-                system_prompt=translation_system,
-                prompt_cache_key=session_prompt_cache_key,
-            )
-            new_terms = []
-            if glossary_path and not (use_rosetta or use_hy_mt2):
-                translation_response_text, new_terms = split_new_terms(
-                    translation_response_text
-                )
-                _record_glossary_terms(glossary_path, new_terms, extracted_texts, debug)
-            if use_rosetta:
-                final_translations = _parse_rosetta_response(
-                    translation_response_text,
-                    total_elements,
-                    provider + "-Translate",
-                    debug,
-                )
-            else:
-                final_translations = _parse_llm_response_unified(
-                    translation_response_text,
-                    total_elements,
-                    provider + "-Translate",
-                    debug,
-                )
-
-            if final_translations is None:
-                log_message("Translation API call failed", always_print=True)
-                combined_results = [
-                    f"[{provider}: OCR Failed]"
-                    if i in ocr_failed_indices
-                    else f"[{provider}: Translation failed]"
-                    for i in range(total_elements)
-                ]
-                if ocr_texts_output is not None:
-                    ocr_texts_output.extend(extracted_texts)
-                return combined_results
-
-            combined_results = _keep_ocr_failures(
-                final_translations, ocr_failed_indices, total_elements, debug
-            )
-
-            if not _has_failed_items(combined_results, provider):
-                cache.set_translation(
-                    cache_key,
-                    combined_results,
-                    ocr_texts=extracted_texts,
-                    new_terms=new_terms,
-                )
+        if final_translations is None:
+            log_message("Translation API call failed", always_print=True)
+            combined_results = [
+                f"[{provider}: OCR Failed]"
+                if i in ocr_failed_indices
+                else f"[{provider}: Translation failed]"
+                for i in range(total_elements)
+            ]
             if ocr_texts_output is not None:
                 ocr_texts_output.extend(extracted_texts)
             return combined_results
 
-        elif translation_mode == "one-step":
-            log_message("Starting one-step translation", verbose=debug)
+        combined_results = _keep_ocr_failures(
+            final_translations, ocr_failed_indices, total_elements, debug
+        )
 
-            full_page_context = _FULL_PAGE_NOTE if has_full_page else ""
-            previous_page_context = _format_previous_context_prompt_note(
-                previous_context_image_count,
-                previous_context_text_count,
+        if not _has_failed_items(combined_results, provider):
+            cache.set_translation(
+                cache_key,
+                combined_results,
+                ocr_texts=extracted_texts,
+                new_terms=new_terms,
             )
-
-            special_instructions_section = _format_special_instructions(config)
-
-            one_step_prompt = f"""## CONTEXT
-{total_elements} text crops from one comic page, in reading order.{full_page_context}{previous_page_context}
-{context_hints}
-{previous_text_section}
-## TASK
-Transcribe each crop, then translate that transcription into {output_language}.{special_instructions_section}
-"""
-
-            one_step_system = _build_system_prompt_translation(
-                output_language,
-                mode="one-step",
-                full_page_context=has_full_page,
-                ero_doujinshi_mode=getattr(config, "ero_doujinshi_mode", False),
-                input_language=input_language,
-                previous_context=has_previous_context,
-                web_search=web_search,
-                terminology_memory=bool(glossary_path),
-                code_execution=_uses_code_execution(config),
-            )
-            response_text = _call_llm_endpoint(
-                config,
-                base_parts,
-                one_step_prompt,
-                debug,
-                system_prompt=one_step_system,
-                prompt_cache_key=session_prompt_cache_key,
-            )
-            new_terms = []
-            if glossary_path:
-                response_text, new_terms = split_new_terms(response_text)
-
-            # Parse one-step format ("Original || Translated")
-            raw_lines = _parse_llm_response_unified(
-                response_text, total_elements, provider, debug
-            )
-
-            ocr_texts, translations = _split_one_step_lines(raw_lines)
-
-            if new_terms:
-                _record_glossary_terms(glossary_path, new_terms, ocr_texts, debug)
-            if not _has_failed_items(translations, provider):
-                cache.set_translation(
-                    cache_key, translations, ocr_texts=ocr_texts, new_terms=new_terms
-                )
-            if ocr_texts_output is not None:
-                ocr_texts_output.extend(ocr_texts)
-            return translations
-        else:
-            raise TranslationError(
-                f"Unknown translation_mode specified in config: {translation_mode}"
-            )
+        if ocr_texts_output is not None:
+            ocr_texts_output.extend(extracted_texts)
+        return combined_results
     except TranslationError:
         raise
     except (ValueError, RuntimeError) as e:

@@ -12,11 +12,6 @@ from mangatl.utils.logging import log_message
 
 T = TypeVar("T")
 
-COMMON_STATUS_HINTS = {
-    400: "Check payload",
-    401: "Check API key",
-    403: "Permission denied, check API key/plan",
-}
 # Rate limits and transient server overloads (529 is Anthropic's "overloaded")
 RETRY_STATUSES = {429, 500, 502, 503, 504, 529}
 

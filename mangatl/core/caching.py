@@ -245,7 +245,6 @@ class UnifiedCache:
             "input_language": config.input_language,
             "output_language": config.output_language,
             "reading_direction": config.reading_direction,
-            "translation_mode": config.translation_mode,
             "send_full_page_context": config.send_full_page_context,
             "temperature": config.temperature,
             "top_k": config.top_k,
@@ -262,15 +261,6 @@ class UnifiedCache:
             "reasoning_effort": config.reasoning_effort,
             "effort": config.effort,
             "image_detail": getattr(config, "image_detail", None),
-            "media_resolution": getattr(config, "media_resolution", None),
-            "media_resolution_bubbles": getattr(
-                config, "media_resolution_bubbles", None
-            ),
-            "media_resolution_context": getattr(
-                config, "media_resolution_context", None
-            ),
-            "enable_web_search": getattr(config, "enable_web_search", None),
-            "enable_code_execution": getattr(config, "enable_code_execution", None),
             "upscale_method": getattr(config, "upscale_method", None),
             "bubble_min_side_pixels": getattr(config, "bubble_min_side_pixels", None),
             "context_image_max_side_pixels": getattr(

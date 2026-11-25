@@ -14,7 +14,6 @@ from mangatl.utils.archive import ARCHIVE_SUFFIXES, safe_extract_zip
 from mangatl.utils.model_metadata import (
     FLUX_SDCPP_DIFFUSION_QUANTS,
     FLUX_SDCPP_TEXT_ENCODER_QUANTS,
-    NO_WEB_SEARCH_PROVIDERS,
     flux_method_backends,
     flux_sdcpp_diffusion_quants,
     flux_sdcpp_text_encoder_quants,
@@ -22,22 +21,6 @@ from mangatl.utils.model_metadata import (
     flux_valid_backend,
 )
 
-# Model used when --model-name is not given; the keys are the --provider choices
-CLI_DEFAULT_MODELS = {
-    "Google": "gemini-4-argon",
-    "OpenAI": "gpt-6.1-sol",
-    "Anthropic": "claude-opus-5-5",
-    "SpaceXAI": "grok-4.7",
-    "Meta Model": "muse-spark-1.3-contributor",
-    "DeepSeek": "deepseek-flash",
-    "Z.ai": "glm-5.3-flash",
-    "Moonshot AI": "kimi-k3.1-pro",
-    "Xiaomi MiMo": "mimo-v2.6-pro",
-    "QwenCloud": "qwen3.8-flash",
-    "OpenCode": "deepseek-v4.1-flash",
-    "OpenRouter": "google/gemini-4-argon",
-    "OpenAI-Compatible": "default",
-}
 
 
 def main():
@@ -131,110 +114,6 @@ def main():
         ),
     )
     parser.add_argument(
-        "--provider",
-        type=str,
-        default="Google",
-        choices=list(CLI_DEFAULT_MODELS),
-        help="LLM provider to use for translation",
-    )
-    parser.add_argument(
-        "--google-api-key",
-        dest="google_api_key",
-        type=str,
-        default=None,
-        help=(
-            "Google API key (overrides GOOGLE_API_KEY or GEMINI_API_KEY env var "
-            "if --provider is Google)"
-        ),
-    )
-    parser.add_argument(
-        "--openai-api-key",
-        type=str,
-        default=None,
-        help="OpenAI API key (overrides OPENAI_API_KEY env var if --provider is OpenAI)",
-    )
-    parser.add_argument(
-        "--anthropic-api-key",
-        type=str,
-        default=None,
-        help="Anthropic API key (overrides ANTHROPIC_API_KEY env var if --provider is Anthropic)",
-    )
-    parser.add_argument(
-        "--spacexai-api-key",
-        type=str,
-        default=None,
-        help=(
-            "SpaceXAI API key (overrides SPACEXAI_API_KEY or XAI_API_KEY env var "
-            "if --provider is SpaceXAI)"
-        ),
-    )
-    parser.add_argument(
-        "--meta-api-key",
-        dest="meta_api_key",
-        type=str,
-        default=None,
-        help=(
-            "Meta Model API key; overrides META_MODEL_API_KEY or META_API_KEY env var "
-            "if --provider is Meta Model"
-        ),
-    )
-    parser.add_argument(
-        "--deepseek-api-key",
-        type=str,
-        default=None,
-        help="DeepSeek API key (overrides DEEPSEEK_API_KEY env var if --provider is DeepSeek)",
-    )
-    parser.add_argument(
-        "--zai-api-key",
-        type=str,
-        default=None,
-        help="Z.ai API key (overrides ZAI_API_KEY env var if --provider is Z.ai)",
-    )
-    parser.add_argument(
-        "--moonshot-api-key",
-        type=str,
-        default=None,
-        help="Moonshot API key (overrides MOONSHOT_API_KEY env var if --provider is Moonshot)",
-    )
-    parser.add_argument(
-        "--mimo-api-key",
-        type=str,
-        default=None,
-        help=(
-            "Xiaomi MiMo API key, sk-... (pay-as-you-go) or tp-... (Token Plan); "
-            "overrides MIMO_API_KEY env var if --provider is Xiaomi MiMo"
-        ),
-    )
-    parser.add_argument(
-        "--qwencloud-api-key",
-        dest="qwencloud_api_key",
-        type=str,
-        default=None,
-        help=(
-            "QwenCloud API key (starts with sk-...); "
-            "overrides QWENCLOUD_API_KEY or QWEN_API_KEY env var if --provider is QwenCloud"
-        ),
-    )
-    parser.add_argument(
-        "--opencode-api-key",
-        type=str,
-        default=None,
-        help="OpenCode API key (overrides OPENCODE_API_KEY env var if --provider is OpenCode)",
-    )
-    parser.add_argument(
-        "--opencode-tier",
-        type=str,
-        default="zen",
-        choices=["zen", "go", "OpenCode Zen", "OpenCode Go"],
-        help="OpenCode endpoint tier ('zen' or 'go', default: 'zen')",
-    )
-    parser.add_argument(
-        "--openrouter-api-key",
-        type=str,
-        default=None,
-        help="OpenRouter API key (overrides OPENROUTER_API_KEY env var if --provider is OpenRouter)",
-    )
-    parser.add_argument(
         "--openai-compatible-url",
         type=str,
         default="http://localhost:8080/v1",
@@ -250,8 +129,7 @@ def main():
         "--model-name",
         type=str,
         default=None,
-        help="Model name for the selected provider (e.g., 'gemini-4-argon'). "
-        "If not provided, a default will be attempted based on the provider.",
+        help="Model name to request from the OpenAI-compatible server (default: 'default')",
     )
     parser.add_argument(
         "--models",
@@ -426,7 +304,7 @@ def main():
         "--top-k",
         type=int,
         default=None,
-        help="Limits sampling pool to top K tokens (default: provider default)",
+        help="Limits sampling pool to top K tokens (default: 40)",
     )
     parser.add_argument(
         "--max-tokens",
@@ -435,16 +313,6 @@ def main():
         help=(
             "Maximum number of tokens in the response (4096-63488). "
             "Default: 4096 for non-reasoning models, 32768 for reasoning models"
-        ),
-    )
-    parser.add_argument(
-        "--translation-mode",
-        type=str,
-        default="one-step",
-        choices=["one-step", "two-step"],
-        help=(
-            "Method for translation ('one-step' combines OCR/Translate, 'two-step' separates them). "
-            "'two-step' might improve translation quality for less-capable LLMs"
         ),
     )
     parser.add_argument(
@@ -486,13 +354,9 @@ def main():
     parser.add_argument(
         "--ocr-method",
         type=str,
-        default="LLM",
-        choices=["LLM", "manga-ocr", "paddleocr-vl-1.6"],
-        help=(
-            "Determines whether to use a vision-capable LLM or a local OCR model for OCR. "
-            "Local OCR options enable text-only LLMs for translation "
-            "and must be used in 'two-step' translation mode."
-        ),
+        default="manga-ocr",
+        choices=["manga-ocr", "paddleocr-vl-1.6"],
+        help="Local OCR model: manga-ocr (Japanese, refined with Hayai OCR) or PaddleOCR-VL 1.6",
     )
     parser.add_argument(
         "--max-font-size",
@@ -660,46 +524,12 @@ def main():
         help="Skip translation and render placeholder text (lorem ipsum)",
     )
     parser.add_argument(
-        "--enable-web-search",
-        action="store_true",
-        help=(
-            "Enable model's built-in web search for up-to-date information. OpenRouter uses its own web search tool. "
-            f"Not available for {', '.join(NO_WEB_SEARCH_PROVIDERS)}."
-        ),
-    )
-    parser.add_argument(
-        "--enable-code-execution",
-        action="store_true",
-        help="Enable Gemini's code execution tool for image zoom/inspection (Gemini 3+ only)",
-    )
-    parser.add_argument(
         "--no-custom-sampling",
         dest="use_custom_sampling",
         action="store_false",
         help="Omit temperature, top-p, and top-k from API requests",
     )
     parser.set_defaults(use_custom_sampling=True)
-    parser.add_argument(
-        "--media-resolution",
-        type=str,
-        choices=["auto", "high", "medium", "low"],
-        default="auto",
-        help="Media resolution for Gemini models (Google provider only, not used for Gemini 3+)",
-    )
-    parser.add_argument(
-        "--media-resolution-bubbles",
-        type=str,
-        choices=["auto", "high", "medium", "low"],
-        default="auto",
-        help="Media resolution for bubble images (Gemini 3+ and Grok only)",
-    )
-    parser.add_argument(
-        "--media-resolution-context",
-        type=str,
-        choices=["auto", "high", "medium", "low"],
-        default="auto",
-        help="Media resolution for context (full page) images (Gemini 3+ and Grok only)",
-    )
     parser.add_argument(
         "--image-detail",
         type=str,
@@ -1156,7 +986,6 @@ def main():
     import torch
 
     from mangatl.core.config import (
-        PROVIDER_API_KEYS,
         CleaningConfig,
         DetectionConfig,
         MangaTranslatorConfig,
@@ -1165,7 +994,6 @@ def main():
         PreprocessingConfig,
         RenderingConfig,
         TranslationConfig,
-        env_api_key,
     )
     from mangatl.core.llm_defaults import get_provider_sampling_defaults
     from mangatl.core.pipeline import batch_translate_images, translate_and_render
@@ -1183,40 +1011,8 @@ def main():
     except Exception as e:
         parser.error(str(e))
 
-    provider = args.provider
-    key_field, key_env_vars = PROVIDER_API_KEYS[provider]
-    # The CLI flag for SpaceXAI is --spacexai-api-key; others match the config field
-    key_arg = "spacexai_api_key" if provider == "SpaceXAI" else key_field
-    api_key = getattr(args, key_arg, None) or env_api_key(provider)
-    api_key_arg_name = "--" + key_arg.replace("_", "-")
-    api_key_env_var = " or ".join(key_env_vars)
-    default_model = CLI_DEFAULT_MODELS[provider]
-    compatible_url = (
-        args.openai_compatible_url if provider == "OpenAI-Compatible" else None
-    )
-
-    if (
-        provider != "OpenAI-Compatible"
-        and not api_key
-        and not args.cleaning_only
-        and not args.test_mode
-    ):
-        log_message(
-            f"Warning: {provider} API key not provided via {api_key_arg_name} or {api_key_env_var} "
-            f"environment variable. Translation will likely fail.",
-            always_print=True,
-        )
-
-    if args.enable_web_search and provider in NO_WEB_SEARCH_PROVIDERS:
-        log_message(
-            f"Warning: {provider} has no built-in web search; "
-            "--enable-web-search is ignored.",
-            always_print=True,
-        )
-
-    model_name = args.model_name or default_model
-    if not args.model_name:
-        log_message(f"Using default model for {provider}: {model_name}", verbose=True)
+    provider = "OpenAI-Compatible"
+    model_name = args.model_name or "default"
 
     from mangatl.core.ml.model_manager import get_model_manager, migrate_model_dirs
 
@@ -1281,10 +1077,8 @@ def main():
         ),
         translation=TranslationConfig(
             provider=provider,
-            # Keys for other providers come from the environment in __post_init__
-            **{key_field: api_key},
-            openai_compatible_url=compatible_url,
-            opencode_tier=getattr(args, "opencode_tier", "zen"),
+            openai_compatible_url=args.openai_compatible_url,
+            openai_compatible_api_key=args.openai_compatible_api_key,
             model_name=model_name,
             temperature=args.temperature,
             top_p=args.top_p,
@@ -1297,14 +1091,8 @@ def main():
             input_language=args.input_language,
             output_language=args.output_language,
             reading_direction=args.reading_direction,
-            translation_mode=args.translation_mode,
-            enable_web_search=args.enable_web_search,
-            enable_code_execution=args.enable_code_execution,
             use_custom_sampling=args.use_custom_sampling,
             image_detail=args.image_detail,
-            media_resolution=args.media_resolution,
-            media_resolution_bubbles=args.media_resolution_bubbles,
-            media_resolution_context=args.media_resolution_context,
             reasoning_effort=args.reasoning_effort,
             effort=args.effort,
             verbosity=args.verbosity,

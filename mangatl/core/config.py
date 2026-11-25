@@ -7,36 +7,6 @@ import torch
 from mangatl.core.device import get_best_device
 from mangatl.core.llm_defaults import DEFAULT_LLM_PROVIDER, get_provider_sampling_defaults
 
-# Each provider's TranslationConfig key field and the env vars it falls back to, in order
-PROVIDER_API_KEYS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "Google": ("google_api_key", ("GOOGLE_API_KEY", "GEMINI_API_KEY")),
-    "OpenAI": ("openai_api_key", ("OPENAI_API_KEY",)),
-    "Anthropic": ("anthropic_api_key", ("ANTHROPIC_API_KEY",)),
-    "SpaceXAI": ("xai_api_key", ("SPACEXAI_API_KEY", "XAI_API_KEY")),
-    "Meta Model": ("meta_api_key", ("META_MODEL_API_KEY", "META_API_KEY")),
-    "DeepSeek": ("deepseek_api_key", ("DEEPSEEK_API_KEY",)),
-    "Z.ai": ("zai_api_key", ("ZAI_API_KEY",)),
-    "Moonshot AI": ("moonshot_api_key", ("MOONSHOT_API_KEY",)),
-    "Xiaomi MiMo": ("mimo_api_key", ("MIMO_API_KEY",)),
-    "QwenCloud": ("qwencloud_api_key", ("QWENCLOUD_API_KEY", "QWEN_API_KEY")),
-    "OpenCode": (
-        "opencode_api_key",
-        ("OPENCODE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY"),
-    ),
-    "OpenRouter": ("openrouter_api_key", ("OPENROUTER_API_KEY",)),
-    "OpenAI-Compatible": (
-        "openai_compatible_api_key",
-        ("OPENAI_COMPATIBLE_API_KEY",),
-    ),
-}
-
-
-def env_api_key(provider: str) -> str:
-    """First non-empty environment variable holding `provider`'s API key, or ""."""
-    env_names = PROVIDER_API_KEYS.get(provider, ("", ()))[1]
-    return next((value for name in env_names if (value := os.environ.get(name))), "")
-
-
 @dataclass
 class DetectionConfig:
     """Configuration for speech bubble detection."""
@@ -76,24 +46,12 @@ _DEFAULT_SAMPLING = get_provider_sampling_defaults(_DEFAULT_TRANSLATION_PROVIDER
 class TranslationConfig:
     """Configuration for text translation."""
 
+    # The translator is any OpenAI-compatible server (llama-server by default). The provider
+    # name still labels error placeholders ("[OpenAI-Compatible: Missing item 3]").
     provider: str = _DEFAULT_TRANSLATION_PROVIDER
-    google_api_key: str = ""
-    openai_api_key: str = ""
-    anthropic_api_key: str = ""
-    xai_api_key: str = ""
-    meta_api_key: str = ""
-    deepseek_api_key: str = ""
-    zai_api_key: str = ""
-    moonshot_api_key: str = ""
-    mimo_api_key: str = ""
-    qwencloud_api_key: str = ""
-    opencode_api_key: str = ""
-    opencode_tier: str = "zen"
-    openrouter_api_key: str = ""
     openai_compatible_url: str = "http://localhost:8080/v1"
-    openai_compatible_api_key: str | None = ""
-    model_name: str = "gemini-4-argon"
-    provider_models: dict[str, str | None] = field(default_factory=dict)
+    openai_compatible_api_key: str | None = ""  # falls back to OPENAI_COMPATIBLE_API_KEY
+    model_name: str = "default"
     temperature: float = float(_DEFAULT_SAMPLING["temperature"])
     top_p: float = float(_DEFAULT_SAMPLING["top_p"])
     top_k: int = int(_DEFAULT_SAMPLING["top_k"])
@@ -101,25 +59,15 @@ class TranslationConfig:
     input_language: str = "Japanese"
     output_language: str = "English"
     reading_direction: str = "rtl"
-    translation_mode: str = "one-step"
-    reasoning_effort: str | None = (
-        None  # None = per-provider fallback in translation._build_generation_config
-    )
+    reasoning_effort: str | None = None  # sent to reasoning models only
     # Claude Opus 4.5+, Sonnet 4.6+, Haiku 5.5+, Fable 5+: how eagerly it spends tokens
     effort: str | None = "medium"
     verbosity: str | None = None  # GPT-5 and GPT-6 series (high/medium/low)
     send_full_page_context: bool = True
     whiteout_conjoined_bubbles: bool = True
     upscale_method: str = "model_lite"  # "model", "model_lite", "lanczos", or "none"
-    enable_web_search: bool = False
-    # Google, Gemini 3+: lets the model zoom into and rotate crops with code
-    enable_code_execution: bool = False
     use_custom_sampling: bool = True
     image_detail: str = "auto"  # OpenAI models (auto/original/high/low)
-    # Gemini before 3 (auto/high/medium/low); newer models use the per-image fields
-    media_resolution: str = "auto"
-    media_resolution_bubbles: str = "auto"  # Gemini 3+ and SpaceXAI
-    media_resolution_context: str = "auto"  # Gemini 3+ and SpaceXAI
     bubble_min_side_pixels: int = 128
     context_image_max_side_pixels: int = 1024
     previous_context_image_count: int = 0
@@ -131,7 +79,7 @@ class TranslationConfig:
     ero_doujinshi_mode: bool = False
     ocr_correction: bool = False
     force_cache_translations: bool = False
-    ocr_method: str = "LLM"  # "LLM", "manga-ocr", or "paddleocr-vl-1.6"
+    ocr_method: str = "manga-ocr"  # "manga-ocr" (Japanese) or "paddleocr-vl-1.6"
     request_coordinator: Any | None = None
 
 
@@ -257,9 +205,10 @@ class MangaTranslatorConfig:
     request_coordinator: Any | None = None
 
     def __post_init__(self):
-        for provider, (key_field, _) in PROVIDER_API_KEYS.items():
-            if not getattr(self.translation, key_field):
-                setattr(self.translation, key_field, env_api_key(provider))
+        if not self.translation.openai_compatible_api_key:
+            self.translation.openai_compatible_api_key = os.environ.get(
+                "OPENAI_COMPATIBLE_API_KEY", ""
+            )
         if not self.outside_text.huggingface_token:
             self.outside_text.huggingface_token = os.environ.get("HF_TOKEN", "")
 
@@ -277,29 +226,3 @@ class PreprocessingConfig:
     split_long_strips: bool = True
 
 
-def calculate_reasoning_budget(total_tokens: int, effort_level: str) -> int:
-    """
-    Calculate reasoning token budget based on effort level.
-
-    Args:
-        total_tokens: Total available tokens (typically max_tokens)
-        effort_level: Reasoning effort level ("high", "medium", "low", "minimal", "auto", or "none")
-
-    Returns:
-        int: Calculated budget in tokens
-        - "high": 80% of total_tokens
-        - "medium": 50% of total_tokens
-        - "low": 20% of total_tokens
-        - "minimal": 10% of total_tokens
-        - "auto" or "none": Returns 0 (caller should handle these cases separately)
-    """
-    if effort_level == "high":
-        return int(total_tokens * 0.8)
-    elif effort_level == "medium":
-        return int(total_tokens * 0.5)
-    elif effort_level == "low":
-        return int(total_tokens * 0.2)
-    elif effort_level == "minimal":
-        return int(total_tokens * 0.1)
-    else:
-        return 0

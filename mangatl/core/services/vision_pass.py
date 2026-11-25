@@ -67,9 +67,9 @@ def revise_short_items(config, bubble_metadata: list[dict], ocr_texts: list[str]
             + tr._format_special_instructions(config)
         )
         system = tr._build_system_prompt_translation(
-            config.output_language, mode="two-step", full_page_context=True,
+            config.output_language, full_page_context=True,
             ero_doujinshi_mode=getattr(config, "ero_doujinshi_mode", False),
-            input_language=config.input_language, llm_transcription=False)
+            input_language=config.input_language)
         parts = [{"text": tr._FULL_PAGE_LABEL}, tr._image_part(page_mime, page_b64)]
         reply = tr._call_llm_endpoint(config, parts, prompt, system_prompt=system) or ""
     except Exception as e:  # never lose the page over the second look

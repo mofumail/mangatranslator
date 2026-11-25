@@ -371,7 +371,6 @@ def main() -> None:
 
     cmd = [
         "--batch" if batch else "",
-        "--provider", "OpenAI-Compatible",
         "--openai-compatible-url", llm_url,
         "--model-name", model_name,
         "--input-language", args.source,
@@ -385,7 +384,7 @@ def main() -> None:
         # narrow/tall regions (vertical Japanese asides) may grow so English fits
         "--osb-render-expansion-narrow", "2.0",
     ]
-    cmd += ["--translation-mode", "two-step", "--ocr-method", ocr]
+    cmd += ["--ocr-method", ocr]
     if args.adult:
         cmd += ["--ero-doujinshi-mode"]
     if args.ocr_correction:
