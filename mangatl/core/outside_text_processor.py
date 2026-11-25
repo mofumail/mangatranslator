@@ -135,9 +135,7 @@ def _build_outside_text_data(
         outside_text_image_pil = cv2_to_pil(outside_text_image_cv)
         original_crop_pil = cv2_to_pil(original_cv_image[y1:y2, x1:x2].copy())
 
-        osb_upscale_method = (
-            "none" if config.test_mode else config.translation.upscale_method
-        )
+        osb_upscale_method = config.translation.upscale_method
 
         if osb_upscale_method == "model":
             model_manager = get_model_manager()

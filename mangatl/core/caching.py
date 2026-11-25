@@ -142,7 +142,6 @@ class UnifiedCache:
         images_b64: list,
         full_image_b64: str,
         config,
-        previous_context_images: list[dict[str, str]] | None = None,
         previous_context_texts: list[list[str]] | None = None,
     ) -> str | None:
         """Compute cache key for LLM translation.
@@ -153,7 +152,6 @@ class UnifiedCache:
             images_b64: List of base64 encoded bubble images
             full_image_b64: Base64 encoded full page image
             config: TranslationConfig object
-            previous_context_images: Previous page context images, in request order
             previous_context_texts: Previous page OCR transcripts (oldest-to-newest)
 
         Returns:
@@ -167,7 +165,6 @@ class UnifiedCache:
 
         images_hash = hashlib.sha256("".join(images_b64).encode()).hexdigest()[:16]
         full_hash = hashlib.sha256(full_image_b64.encode()).hexdigest()[:16]
-        previous_context_images = previous_context_images or []
         previous_context_texts = previous_context_texts or []
 
         cache_params = {
@@ -198,14 +195,6 @@ class UnifiedCache:
                 config, "context_image_max_side_pixels", None
             ),
         }
-        if previous_context_images:
-            previous_hash = hashlib.sha256(
-                "".join(
-                    image.get("data", "") for image in previous_context_images
-                ).encode()
-            ).hexdigest()[:16]
-            cache_params["previous_context_image_count"] = len(previous_context_images)
-            cache_params["previous_context_image_hash"] = previous_hash
         if previous_context_texts:
             previous_texts_hash = hashlib.sha256(
                 "\u241e".join(

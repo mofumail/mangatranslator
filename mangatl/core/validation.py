@@ -1,11 +1,9 @@
 from pathlib import Path
 from typing import Any
 
-from mangatl.core.config import MangaTranslatorConfig, RenderingConfig, TranslationConfig
-from mangatl.utils.archive import ARCHIVE_SUFFIXES
-from mangatl.utils.exceptions import ValidationError
 
 SETTING_CONSTRAINTS: dict[str, tuple[float, float]] = {
+    "image_upscale_factor": (1.0, 8.0),
     "confidence": (0.1, 1.0),
     "conjoined_confidence": (0.1, 1.0),
     "panel_confidence": (0.05, 1.0),
@@ -17,8 +15,6 @@ SETTING_CONSTRAINTS: dict[str, tuple[float, float]] = {
     "max_tokens": (4096, 63488),
     "bubble_min_side_pixels": (64, 512),
     "context_image_max_side_pixels": (512, 2560),
-    "previous_context_image_count": (0, 10),
-    "batch_previous_context_image_count": (0, 10),
     "previous_context_text_count": (0, 50),
     "batch_previous_context_text_count": (0, 50),
     "osb_min_side_pixels": (64, 512),
@@ -51,7 +47,6 @@ SETTING_CONSTRAINTS: dict[str, tuple[float, float]] = {
     "outside_text_osb_outline_ratio": (0.0, 0.3),
     "jpeg_quality": (1, 100),
     "png_compression": (0, 6),
-    "image_upscale_factor": (1.0, 8.0),
     "parallel_requests": (1, 20),
 }
 
@@ -70,7 +65,6 @@ _CONFIG_ATTR_PATHS: dict[str, tuple[tuple[str, ...], ...]] = {
     "context_image_max_side_pixels": (
         ("translation", "context_image_max_side_pixels"),
     ),
-    "previous_context_image_count": (("translation", "previous_context_image_count"),),
     "previous_context_text_count": (("translation", "previous_context_text_count"),),
     "osb_min_side_pixels": (("translation", "osb_min_side_pixels"),),
     "max_font_size": (("rendering", "max_font_size"),),
@@ -125,7 +119,6 @@ _CONFIG_ATTR_PATHS: dict[str, tuple[tuple[str, ...], ...]] = {
     "jpeg_quality": (("output", "jpeg_quality"),),
     "png_compression": (("output", "png_compression"),),
     "image_upscale_factor": (
-        ("output", "image_upscale_factor"),
         ("preprocessing", "factor"),
     ),
     "parallel_requests": (("parallel_requests",),),
@@ -196,171 +189,3 @@ def autodetect_yolo_model_path(
     return yolo_dir / "yolov8m_seg-speech-bubble.pt"
 
 
-def validate_core_inputs(
-    translation_cfg: TranslationConfig,
-    rendering_cfg: RenderingConfig,
-    models_dir: Path,
-    fonts_base_dir: Path,
-    bubble_detector_model: str = "yolo_2",
-) -> tuple[Path, Path]:
-    """
-    Validates core inputs required for translation, raising standard exceptions.
-
-    Args:
-        translation_cfg (TranslationConfig): Translation configuration.
-        rendering_cfg (RenderingConfig): Rendering configuration.
-        models_dir (Path): Absolute path to the directory containing YOLO models.
-        fonts_base_dir (Path): Absolute path to the base directory containing font packs.
-        bubble_detector_model (str): Which bubble detector to use ("yolo_1" or "yolo_2").
-
-    Returns:
-        tuple[Path, Path]: Validated absolute path to the YOLO model and font directory.
-
-    Raises:
-        FileNotFoundError: If required directories or files (model, font) are not found.
-        ValidationError: If configuration values are invalid (e.g., model not selected,
-                         font pack empty, invalid numeric values).
-        ValueError: For general invalid parameter values.
-    """
-    if not models_dir.is_dir():
-        raise FileNotFoundError(f"YOLO models directory not found: {models_dir}")
-
-    yolo_model_path = autodetect_yolo_model_path(models_dir, bubble_detector_model)
-
-    if not fonts_base_dir.is_dir():
-        raise FileNotFoundError(f"Fonts base directory not found: {fonts_base_dir}")
-
-    if not rendering_cfg.font_dir:
-        raise ValidationError("Font pack (font_dir in rendering config) not specified.")
-
-    font_dir_path = fonts_base_dir / rendering_cfg.font_dir
-    if not font_dir_path.is_dir():
-        raise FileNotFoundError(
-            f"Specified font pack directory '{rendering_cfg.font_dir}' not found within {fonts_base_dir}"
-        )
-
-    font_files = list(font_dir_path.glob("*.ttf")) + list(font_dir_path.glob("*.otf"))
-    if not font_files:
-        raise ValidationError(
-            f"No font files (.ttf or .otf) found in the font pack directory: '{font_dir_path}'"
-        )
-
-    if not (
-        isinstance(rendering_cfg.max_font_size, int) and rendering_cfg.max_font_size > 0
-    ):
-        raise ValidationError("Max Font Size must be a positive integer.")
-    if not (
-        isinstance(rendering_cfg.min_font_size, int) and rendering_cfg.min_font_size > 0
-    ):
-        raise ValidationError("Min Font Size must be a positive integer.")
-    if not (
-        isinstance(rendering_cfg.line_spacing_mult, (int, float))
-        and float(rendering_cfg.line_spacing_mult) > 0
-    ):
-        raise ValidationError("Line Spacing Multiplier must be a positive number.")
-    if rendering_cfg.min_font_size > rendering_cfg.max_font_size:
-        raise ValidationError("Min Font Size cannot be larger than Max Font Size.")
-
-    if not translation_cfg.provider:
-        raise ValidationError("Translation provider cannot be empty.")
-    if not translation_cfg.model_name:
-        raise ValidationError("Translation model name cannot be empty.")
-    if not translation_cfg.input_language:
-        raise ValidationError("Input language cannot be empty.")
-    if not translation_cfg.output_language:
-        raise ValidationError("Output language cannot be empty.")
-    if translation_cfg.reading_direction not in ["rtl", "ltr"]:
-        raise ValidationError("Reading direction must be 'rtl' or 'ltr'.")
-
-    return yolo_model_path.resolve(), font_dir_path.resolve()
-
-
-def validate_mutually_exclusive_modes(
-    cleaning_only: bool, upscaling_only: bool, test_mode: bool
-) -> None:
-    """
-    Validates that cleaning_only, upscaling_only, and test_mode are mutually exclusive.
-
-    Args:
-        cleaning_only (bool): Whether cleaning-only mode is enabled.
-        upscaling_only (bool): Whether upscaling-only mode is enabled.
-        test_mode (bool): Whether test mode is enabled.
-
-    Raises:
-        ValidationError: If more than one mode is enabled simultaneously.
-    """
-    enabled_modes = sum([cleaning_only, upscaling_only, test_mode])
-    if enabled_modes > 1:
-        raise ValidationError(
-            "Cleaning-only mode, Upscaling-only mode, and Test mode are mutually exclusive. "
-            "Only one mode can be active at a time."
-        )
-
-
-def validate_config(config: MangaTranslatorConfig) -> None:
-    """
-    Validates the MangaTranslatorConfig object for mutually exclusive settings.
-
-    Args:
-        config (MangaTranslatorConfig): The configuration to validate.
-
-    Raises:
-        ValidationError: If invalid configuration is detected.
-    """
-    validate_mutually_exclusive_modes(
-        config.cleaning_only, config.upscaling_only, config.test_mode
-    )
-
-
-def validate_zip_file(zip_path: str | Path) -> Path:
-    """
-    Validates that a ZIP file exists and has the correct extension.
-
-    Args:
-        zip_path: Path to the ZIP file to validate.
-
-    Returns:
-        Path: Validated Path object to the ZIP file.
-
-    Raises:
-        FileNotFoundError: If the ZIP file does not exist.
-        ValidationError: If the file is not a ZIP archive.
-    """
-    zip_file_path = Path(zip_path)
-    if not zip_file_path.exists():
-        raise FileNotFoundError(f"ZIP file not found: {zip_path}")
-
-    if zip_file_path.suffix.lower() not in ARCHIVE_SUFFIXES:
-        raise ValidationError(f"File is not a ZIP/CBZ archive: {zip_path}")
-
-    return zip_file_path
-
-
-def validate_batch_input_path(input_path: str | Path) -> Path:
-    """
-    Validates that a batch input path exists and is a directory, ZIP, or path-list .txt.
-
-    Args:
-        input_path: Path to validate (directory, ZIP file, or failed-paths .txt).
-
-    Returns:
-        Path: Validated Path object.
-
-    Raises:
-        FileNotFoundError: If the path does not exist.
-        ValidationError: If the path is not a supported batch input.
-    """
-    path = Path(input_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Input path '{input_path}' does not exist.")
-
-    if path.is_dir():
-        return path
-
-    if path.is_file() and path.suffix.lower() in (*ARCHIVE_SUFFIXES, ".txt"):
-        return path
-
-    raise ValidationError(
-        f"Input path '{input_path}' must be a directory, ZIP/CBZ archive, "
-        "or failed-paths .txt file."
-    )

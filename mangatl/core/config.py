@@ -69,7 +69,6 @@ class TranslationConfig:
     image_detail: str = "auto"  # OpenAI models (auto/original/high/low)
     bubble_min_side_pixels: int = 128
     context_image_max_side_pixels: int = 1024
-    previous_context_image_count: int = 0
     previous_context_text_count: int = 0
     terminology_memory: bool = False
     terminology_memory_path: str | None = None  # Batch resolves a default when unset
@@ -158,8 +157,6 @@ class OutputConfig:
     jpeg_quality: int = 95
     png_compression: int = 2
     output_format: str = "png"
-    upscale_final_image: bool = False
-    image_upscale_factor: float = 2.0
     image_upscale_model: str = "model_lite"  # "model" or "model_lite"
 
 
@@ -180,8 +177,6 @@ class MangaTranslatorConfig:
     verbose: bool = False
     device: torch.device | None = None
     cleaning_only: bool = False
-    upscaling_only: bool = False
-    test_mode: bool = False
     processing_scale: float = 1.0
     parallel_requests: int = 1
     batch_parallel_within_pages: bool = False

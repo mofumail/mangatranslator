@@ -27,11 +27,6 @@ _active: CancellationManager | None = None
 _pinned = threading.local()
 
 
-def activate(manager: CancellationManager) -> None:
-    global _active
-    _active = manager
-
-
 def active_manager() -> CancellationManager | None:
     return _active
 
@@ -39,11 +34,6 @@ def active_manager() -> CancellationManager | None:
 def pin_thread(manager: CancellationManager | None) -> None:
     """Make this thread check `manager` instead of whichever one is active later."""
     _pinned.manager = manager
-
-
-def cancel_active() -> None:
-    if _active is not None:
-        _active.cancel()
 
 
 def is_cancelled() -> bool:

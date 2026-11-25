@@ -72,12 +72,6 @@ def main():
         help="Do not run LLM translation concurrently with inpainting",
     )
     parser.add_argument(
-        "--batch-previous-context-images",
-        type=int,
-        default=0,
-        help="Batch only: include this many previous source pages as visual context (0-10, default: 0)",
-    )
-    parser.add_argument(
         "--batch-previous-context-texts",
         type=int,
         default=3,
@@ -459,15 +453,15 @@ def main():
     )
     parser.add_argument(
         "--image-upscale-mode",
-        choices=["off", "initial", "final"],
+        choices=["off", "initial"],
         default="off",
-        help="Image upscaling mode: 'off' (none), 'initial' (before processing), or 'final' (after processing).",
+        help="Upscale source pages before processing: 'off' or 'initial'.",
     )
     parser.add_argument(
         "--image-upscale-factor",
         type=float,
         default=2.0,
-        help="Factor for the selected upscaling mode (1.0-8.0).",
+        help="Factor for --image-upscale-mode initial (1.0-8.0).",
     )
     parser.add_argument(
         "--image-upscale-model",
@@ -495,16 +489,6 @@ def main():
         "--cleaning-only",
         action="store_true",
         help="Skip translation and text rendering, output only the cleaned speech bubbles",
-    )
-    parser.add_argument(
-        "--upscaling-only",
-        action="store_true",
-        help="Skip detection and translation, only upscale the image",
-    )
-    parser.add_argument(
-        "--test-mode",
-        action="store_true",
-        help="Skip translation and render placeholder text (lorem ipsum)",
     )
     parser.add_argument(
         "--no-custom-sampling",
@@ -842,16 +826,8 @@ def main():
     from mangatl.core.validation import (
         autodetect_yolo_model_path,
         clamp_settings,
-        validate_mutually_exclusive_modes,
     )
     from mangatl.utils.logging import log_message
-
-    try:
-        validate_mutually_exclusive_modes(
-            args.cleaning_only, args.upscaling_only, args.test_mode
-        )
-    except Exception as e:
-        parser.error(str(e))
 
     provider = "OpenAI-Compatible"
     model_name = args.model_name or "default"
@@ -892,7 +868,6 @@ def main():
         verbose=args.verbose,
         device=target_device,
         cleaning_only=args.cleaning_only,
-        upscaling_only=args.upscaling_only,
         parallel_requests=args.parallel_requests,
         batch_parallel_within_pages=bool(
             args.batch and args.batch_parallel_within_pages
@@ -942,15 +917,6 @@ def main():
             upscale_method=args.upscale_method,
             bubble_min_side_pixels=args.bubble_min_side_pixels,
             context_image_max_side_pixels=args.context_image_max_side_pixels,
-            previous_context_image_count=(
-                args.batch_previous_context_images
-                if (
-                    args.batch
-                    and args.send_full_page_context
-                    and args.ocr_method == "LLM"
-                )
-                else 0
-            ),
             previous_context_text_count=(
                 args.batch_previous_context_texts if args.batch else 0
             ),
@@ -984,8 +950,6 @@ def main():
             output_format=args.output_format,
             jpeg_quality=args.jpeg_quality,
             png_compression=args.png_compression,
-            upscale_final_image=args.image_upscale_mode == "final",
-            image_upscale_factor=args.image_upscale_factor,
             image_upscale_model=args.image_upscale_model,
         ),
         outside_text=OutsideTextConfig(
@@ -1033,7 +997,6 @@ def main():
             auto_scale=args.auto_scale,
             split_long_strips=args.split_long_strips,
         ),
-        test_mode=args.test_mode,
     )
 
     clamp_settings(config)

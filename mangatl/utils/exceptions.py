@@ -22,10 +22,6 @@ class TranslationError(RuntimeError):
     """Custom exception for translation API and processing failures."""
 
 
-class DetectionError(RuntimeError):
-    """Custom exception for speech bubble detection failures."""
-
-
 class CleaningError(Exception):
     """Custom exception for bubble cleaning failures."""
 

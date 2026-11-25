@@ -927,7 +927,6 @@ def call_translation_api_batch(
     mime_types: list[str],
     full_image_mime_type: str,
     bubble_metadata: list[dict[str, Any]],
-    previous_context_images: list[dict[str, str]] | None = None,
     previous_context_texts: list[list[str]] | None = None,
     ocr_texts_output: list[str] | None = None,
     debug: bool = False,
@@ -945,7 +944,6 @@ def call_translation_api_batch(
         mime_types (List[str]): List of MIME types for each text element image.
         full_image_mime_type (str): MIME type of the full page image.
         bubble_metadata (List[Dict]): List of metadata dicts with 'is_outside_text' flags for each image.
-        previous_context_images: Previous source page images, oldest-to-newest, as reference only.
         previous_context_texts: Per-previous-page OCR transcripts (oldest-to-newest) included as
             narrative reference only. Each inner list contains the OCR strings for that page in reading order.
         ocr_texts_output: Optional mutable list. When provided, OCR transcripts (source-language text) for

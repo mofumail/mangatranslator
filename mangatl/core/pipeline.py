@@ -8,7 +8,6 @@ import shutil
 import tempfile
 import threading
 import time
-from collections import OrderedDict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -29,7 +28,6 @@ from mangatl.core.image.line_ocr import _script_ratios
 from mangatl.core.terminology import default_glossary_path, load_terms
 from mangatl.core.text import sfx_labels
 from mangatl.core.text.narration import mark_narration
-from mangatl.core.validation import validate_config
 from mangatl.core.services.vision_pass import revise_short_items
 from mangatl.utils import eval_hooks
 from mangatl.utils.archive import copy_comic_info
@@ -45,10 +43,6 @@ from mangatl.utils.exceptions import (
 from mangatl.utils.logging import log_message
 from mangatl.utils.path_list import record_failed_images, resolve_source_path
 
-from .component_order_debug import (
-    ENABLE_COMPONENT_ORDER_DEBUG,
-    write_component_order_debug,
-)
 from .image.cleaning import clean_speech_bubbles, retry_cleaning_with_otsu
 from .image.detection import detect_panels, detect_speech_bubbles
 from .image.image_utils import (
@@ -80,7 +74,6 @@ from .services.translation import (
     prepare_bubble_images_for_translation,
 )
 from .text.font_manager import find_font_variants, get_cap_height_ratio
-from .text.placeholders import generate_test_placeholders
 from .text.text_processing import supports_long_word_breaking
 from .text.text_renderer import render_text_skia
 
@@ -88,7 +81,6 @@ if TYPE_CHECKING:
     from mangatl.utils.cancellation import CancellationManager
 
 
-PREVIOUS_CONTEXT_CACHE_MAX_SIZE = 32
 NATURAL_SORT_TOKEN_RE = re.compile(r"(\d+)")
 # Translated cap height relative to the measured original lettering. CJK glyphs fill the em
 # box and their translations run longer, so professional lettering sits near 0.71 of it.
@@ -215,7 +207,6 @@ def _should_overlap_llm_with_inpaint(config: MangaTranslatorConfig) -> bool:
     return (
         bool(getattr(config, "overlap_llm_with_inpaint", False))
         and not config.cleaning_only
-        and not getattr(config, "test_mode", False)
     )
 
 
@@ -297,33 +288,6 @@ def get_image_encoding_params(pil_image_format: str | None) -> tuple[str, str]:
     return "image/jpeg", ".jpg"
 
 
-def _normalize_context_image_mode(
-    image: Image.Image,
-    mime_type: str,
-    verbose: bool = False,
-) -> Image.Image:
-    if mime_type == "image/jpeg":
-        if image.mode in ("RGBA", "LA"):
-            background = Image.new("RGB", image.size, (255, 255, 255))
-            background.paste(image, mask=image.split()[-1])
-            return background
-        if image.mode != "RGB":
-            log_message(
-                f"Converting {image.mode} previous context image to RGB",
-                verbose=verbose,
-            )
-            return image.convert("RGB")
-        return image
-
-    if image.mode not in ("RGB", "RGBA", "L"):
-        log_message(
-            f"Converting {image.mode} previous context image to RGBA",
-            verbose=verbose,
-        )
-        return image.convert("RGBA")
-    return image
-
-
 def _encode_context_image(
     image: Image.Image, config: MangaTranslatorConfig, cv2_ext: str
 ) -> str:
@@ -336,7 +300,7 @@ def _encode_context_image(
         minimum=512,
         maximum=4096,
     )
-    upscale_method = "none" if config.test_mode else config.translation.upscale_method
+    upscale_method = config.translation.upscale_method
 
     if upscale_method in ("model", "model_lite"):
         model_manager = get_model_manager()
@@ -362,117 +326,6 @@ def _encode_context_image(
     if not is_success:
         raise ImageProcessingError(f"Context image encoding to {cv2_ext} failed")
     return base64.b64encode(buffer).decode("utf-8")
-
-
-def _encode_previous_context_source_page(
-    image_path: Path,
-    config: MangaTranslatorConfig,
-    verbose: bool = False,
-) -> dict[str, str] | None:
-    try:
-        with Image.open(image_path) as source_image:
-            image_format = source_image.format
-            mime_type, cv2_ext = get_image_encoding_params(image_format)
-            context_image_pil = _normalize_context_image_mode(
-                source_image.copy(),
-                mime_type,
-                verbose,
-            )
-        return {
-            "mime_type": mime_type,
-            "data": _encode_context_image(context_image_pil, config, cv2_ext),
-        }
-    except Exception as e:
-        log_message(
-            f"Warning: Failed to encode previous context image {image_path}: {e}",
-            always_print=True,
-        )
-        return None
-
-
-def _previous_context_cache_key(
-    image_path: Path,
-    config: MangaTranslatorConfig,
-) -> tuple[Any, ...]:
-    stat = image_path.stat()
-    context_upscale_method = (
-        "none" if config.test_mode else config.translation.upscale_method
-    )
-    return (
-        str(image_path.resolve()),
-        stat.st_mtime_ns,
-        stat.st_size,
-        config.translation.context_image_max_side_pixels,
-        context_upscale_method,
-    )
-
-
-def _get_cached_previous_context_image(
-    image_path: Path,
-    config: MangaTranslatorConfig,
-    context_cache: OrderedDict | None,
-    context_cache_lock: threading.Lock | None,
-) -> dict[str, str] | None:
-    verbose = config.verbose
-    if context_cache is None:
-        return _encode_previous_context_source_page(image_path, config, verbose)
-
-    try:
-        cache_key = _previous_context_cache_key(image_path, config)
-    except Exception:
-        return _encode_previous_context_source_page(image_path, config, verbose)
-
-    if context_cache_lock:
-        with context_cache_lock:
-            cached = context_cache.get(cache_key)
-            if cached is not None:
-                context_cache.move_to_end(cache_key)
-                return cached
-
-    encoded = _encode_previous_context_source_page(image_path, config, verbose)
-    if encoded is None:
-        return None
-
-    if context_cache_lock:
-        with context_cache_lock:
-            context_cache[cache_key] = encoded
-            context_cache.move_to_end(cache_key)
-            while len(context_cache) > PREVIOUS_CONTEXT_CACHE_MAX_SIZE:
-                context_cache.popitem(last=False)
-    return encoded
-
-
-def _build_previous_context_images(
-    image_files: list[Path],
-    image_index: int,
-    config: MangaTranslatorConfig,
-    context_cache: OrderedDict | None = None,
-    context_cache_lock: threading.Lock | None = None,
-) -> list[dict[str, str]]:
-    if not getattr(config.translation, "send_full_page_context", False):
-        return []
-    if getattr(config.translation, "ocr_method", "LLM") != "LLM":
-        return []
-
-    requested_count = int(
-        getattr(config.translation, "previous_context_image_count", 0) or 0
-    )
-    if requested_count <= 0:
-        return []
-
-    start_index = max(0, image_index - requested_count)
-    previous_paths = image_files[start_index:image_index]
-    previous_images = []
-    for previous_path in previous_paths:
-        encoded = _get_cached_previous_context_image(
-            previous_path,
-            config,
-            context_cache,
-            context_cache_lock,
-        )
-        if encoded is not None:
-            previous_images.append(encoded)
-    return previous_images
 
 
 def _build_previous_context_texts(
@@ -576,7 +429,6 @@ def _translate_strip(
     output_path: str | Path | None,
     target_mode: str,
     cancellation_manager: Optional["CancellationManager"],
-    previous_context_images: list[dict[str, str]],
     previous_context_texts: list[list[str]],
     previous_context_texts_provider: Callable[[], list[list[str]]] | None,
     ocr_texts_out: list[str] | None,
@@ -635,7 +487,6 @@ def _translate_strip(
                 section_path,
                 section_config,
                 cancellation_manager=cancellation_manager,
-                previous_context_images=previous_context_images,
                 previous_context_texts_provider=context_texts,
                 ocr_texts_out=texts,
                 strip_glyph_size=strip_glyph_size,
@@ -672,7 +523,7 @@ def _translate_strip(
 
 
 class _RenderSizes(NamedTuple):
-    """Font sizes and paddings scaled to the page, named as generate_test_placeholders takes them."""
+    """Font sizes and paddings scaled to the page."""
 
     main_min_font: int
     main_max_font: int
@@ -782,17 +633,8 @@ def _finish_page(
     target_mode: str,
     start_time: float,
 ) -> Image.Image:
-    """Apply the optional final upscale and save the page if an output path is given."""
+    """Save the page if an output path is given."""
     verbose = config.verbose
-    if config.output.upscale_final_image:
-        log_message("Upscaling final image...", verbose=verbose, always_print=True)
-        image = upscale_image(
-            image,
-            config.output.image_upscale_factor,
-            model_type=config.output.image_upscale_model,
-            verbose=verbose,
-        )
-
     if output_path:
         if image.mode != target_mode:
             log_message(f"Converting final image to {target_mode}", verbose=verbose)
@@ -842,33 +684,31 @@ def _detect_page_bubbles(
 
 def _detect_page_panels(
     image_path: Path, image: Image.Image, config: MangaTranslatorConfig
-) -> tuple[list | None, list | None]:
-    """Returns (panels for reading order, panels for the component order debug output)."""
-    if not (config.detection.use_panel_sorting or ENABLE_COMPONENT_ORDER_DEBUG):
-        return None, None
+) -> list | None:
+    """Panels for reading order, or None when panel sorting is off or detection fails."""
+    if not config.detection.use_panel_sorting:
+        return None
 
     verbose = config.verbose
     try:
         log_message("Detecting panels...", verbose=verbose)
-        debug_panels = detect_panels(
+        panels = detect_panels(
             image_path,
             confidence=config.detection.panel_confidence,
             device=config.device,
             verbose=verbose,
             image_override=image,
         )
-        if debug_panels:
-            log_message(f"Detected {len(debug_panels)} panels", always_print=True)
+        if panels:
+            log_message(f"Detected {len(panels)} panels", always_print=True)
         else:
             log_message("No panels detected", verbose=verbose)
     except Exception as e:
         log_message(
             f"Panel detection failed: {e}. Using global sorting.", always_print=True
         )
-        debug_panels = None
-
-    panels = debug_panels if config.detection.use_panel_sorting else None
-    return panels, debug_panels
+        panels = None
+    return panels
 
 
 def _encode_full_page_context(
@@ -957,7 +797,7 @@ def _prepare_bubble_crops(
         if bbox_key in mask_by_bbox:
             bubble["sam_mask"] = mask_by_bbox[bbox_key]
 
-    upscale_method = "none" if config.test_mode else config.translation.upscale_method
+    upscale_method = config.translation.upscale_method
 
     model_manager = get_model_manager()
     upscale_model = None
@@ -1017,7 +857,6 @@ def _call_translation_api(
     mime_types: list[str],
     full_image_b64: str | None,
     full_image_mime_type: str,
-    previous_context_images: list[dict[str, str]],
     previous_context_texts: list[list[str]],
     previous_context_texts_provider: Callable[[], list[list[str]]] | None,
 ) -> tuple[list[str], list[str]]:
@@ -1027,10 +866,6 @@ def _call_translation_api(
         previous_context_texts = previous_context_texts_provider() or []
 
     context_parts = []
-    if previous_context_images:
-        context_parts.append(
-            f"Previous Context Images: {len(previous_context_images)} page(s)"
-        )
     usable_context_text_pages = sum(
         1
         for page_texts in previous_context_texts
@@ -1061,7 +896,6 @@ def _call_translation_api(
             mime_types=mime_types,
             full_image_mime_type=page_mime,
             bubble_metadata=sorted_bubble_data,
-            previous_context_images=previous_context_images,
             previous_context_texts=previous_context_texts,
             ocr_texts_output=ocr_out,
             debug=config.verbose,
@@ -1839,7 +1673,6 @@ def translate_and_render(
     config: MangaTranslatorConfig,
     output_path: str | Path | None = None,
     cancellation_manager: Optional["CancellationManager"] = None,
-    previous_context_images: list[dict[str, str]] | None = None,
     previous_context_texts: list[list[str]] | None = None,
     previous_context_texts_provider: Callable[[], list[list[str]]] | None = None,
     ocr_texts_out: list[str] | None = None,
@@ -1853,7 +1686,6 @@ def translate_and_render(
         image_path (str or Path): Path to input image
         config (MangaTranslatorConfig): Configuration object containing all settings.
         output_path (str or Path, optional): Path to save the final image. If None, image is not saved.
-        previous_context_images: Batch-only previous source page images for LLM reference.
         previous_context_texts: Batch-only previous source page OCR transcripts for LLM reference
             (oldest-to-newest, one inner list per page).
         previous_context_texts_provider: Optional callback used to fetch previous-page
@@ -1873,10 +1705,8 @@ def translate_and_render(
     """
     start_time = time.time()
     eval_hooks.set_page(image_path)
-    validate_config(config)
     image_path = Path(image_path)
     verbose = config.verbose
-    previous_context_images = previous_context_images or []
     previous_context_texts = previous_context_texts or []
     empty_bubbles = empty_bubbles_out if empty_bubbles_out is not None else []
     config.translation.request_coordinator = getattr(
@@ -1899,7 +1729,7 @@ def translate_and_render(
     log_message(f"Target mode: {target_mode}", verbose=verbose)
     page = convert_image_to_target_mode(pil_original, target_mode, verbose)
 
-    if config.preprocessing.split_long_strips and not config.upscaling_only:
+    if config.preprocessing.split_long_strips:
         cut_rows = find_cut_rows(
             page, lambda crop: _detect_strip_text_rows(crop, image_path, config)
         )
@@ -1912,7 +1742,6 @@ def translate_and_render(
                 output_path,
                 target_mode,
                 cancellation_manager,
-                previous_context_images,
                 previous_context_texts,
                 previous_context_texts_provider,
                 ocr_texts_out,
@@ -1921,13 +1750,6 @@ def translate_and_render(
 
     page, _ = _apply_pre_upscale_if_needed(page, config, verbose)
 
-    if config.upscaling_only:
-        log_message(
-            "Upscaling only mode - skipping detection and translation",
-            always_print=True,
-        )
-        return _finish_page(page, config, output_path, target_mode, start_time)
-
     processing_scale = _resolve_processing_scale(page, config)
     get_cache().set_current_image(page, verbose)
     full_page_context_source = page.copy()
@@ -1935,7 +1757,7 @@ def translate_and_render(
     # Detect speech bubbles first so OSB processing can respect bubble regions
     bubble_data, text_free_boxes = _detect_page_bubbles(image_path, page, config)
     _raise_if_cancelled(cancellation_manager)
-    panels, debug_panels = _detect_page_panels(image_path, page, config)
+    panels = _detect_page_panels(image_path, page, config)
     _raise_if_cancelled(cancellation_manager)
     # Built on first use from the original page, then shared by OSB and bubble cleaning
     glyph_map = PageGlyphMap.for_page(page, config, verbose)
@@ -2031,17 +1853,6 @@ def translate_and_render(
     sorted_bubble_data = _sort_text_elements(
         valid_bubble_data, outside_text_data, config, panels
     )
-    if ENABLE_COMPONENT_ORDER_DEBUG:
-        write_component_order_debug(
-            sorted_bubble_data,
-            processed_bubbles_info,
-            page.size,
-            debug_panels,
-            config.translation.reading_direction,
-            image_path,
-            output_path,
-            verbose=verbose,
-        )
 
     bubble_images_b64 = [
         bubble["image_b64"] for bubble in sorted_bubble_data if "image_b64" in bubble
@@ -2057,28 +1868,6 @@ def translate_and_render(
         log_message("No valid bubbles after sorting", always_print=True)
         if overlap:
             cleaned, processed_bubbles_info = finish_deferred_cleaning()
-    elif config.test_mode:
-        # Size placeholders against the same max the renderer will use
-        sizes = sizes._replace(
-            main_max_font=_resolve_main_max_font(
-                config,
-                page_cv,
-                processed_bubbles_info,
-                sizes.main_min_font,
-                sizes.main_max_font,
-                processing_scale,
-                strip_glyph_size,
-                verbose,
-                page_glyphs,
-            )
-        )
-        translated_texts = generate_test_placeholders(
-            sorted_bubble_data=sorted_bubble_data,
-            processed_bubbles_info=processed_bubbles_info,
-            config=config,
-            verbose=verbose,
-            **sizes._asdict(),
-        )
     else:
         call_api = partial(
             _call_translation_api,
@@ -2088,7 +1877,6 @@ def translate_and_render(
             bubble_mime_types,
             full_image_b64,
             mime_type,
-            previous_context_images,
             previous_context_texts,
             previous_context_texts_provider,
         )
@@ -2119,21 +1907,19 @@ def translate_and_render(
     if current_ocr_texts:
         _attach_ocr_texts(sorted_bubble_data, current_ocr_texts, verbose)
 
-    # The test-mode branch above already resolved the auto font size
-    if not (config.test_mode and bubble_images_b64):
-        sizes = sizes._replace(
-            main_max_font=_resolve_main_max_font(
-                config,
-                page_cv,
-                processed_bubbles_info,
-                sizes.main_min_font,
-                sizes.main_max_font,
-                processing_scale,
-                strip_glyph_size,
-                verbose,
-                page_glyphs,
-            )
+    sizes = sizes._replace(
+        main_max_font=_resolve_main_max_font(
+            config,
+            page_cv,
+            processed_bubbles_info,
+            sizes.main_min_font,
+            sizes.main_max_font,
+            processing_scale,
+            strip_glyph_size,
+            verbose,
+            page_glyphs,
         )
+    )
     cleaned = _render_translations(
         cleaned,
         sorted_bubble_data,
@@ -2388,8 +2174,6 @@ async def _batch_translate_pages(
         "failed_image_paths": [],
         "_failed_jobs": [],
     }
-    previous_context_cache = OrderedDict()
-    previous_context_cache_lock = threading.Lock()
     ocr_text_history: dict[Path, list[str]] = {}
     ocr_text_history_lock = threading.Lock()
     ocr_text_ready_events = [threading.Event() for _ in image_files]
@@ -2448,13 +2232,6 @@ async def _batch_translate_pages(
             progress_callback(
                 0.0, f"Processing image 1/{total_images}: {first_display}"
             )
-        first_previous_context_images = _build_previous_context_images(
-            image_files,
-            0,
-            config,
-            previous_context_cache,
-            previous_context_cache_lock,
-        )
         first_previous_context_texts = _build_previous_context_texts(
             image_files,
             0,
@@ -2469,7 +2246,6 @@ async def _batch_translate_pages(
                 config,
                 first_output,
                 cancellation_manager=cancellation_manager,
-                previous_context_images=first_previous_context_images,
                 previous_context_texts=first_previous_context_texts,
                 ocr_texts_out=first_ocr_texts,
             )
@@ -2525,14 +2301,6 @@ async def _batch_translate_pages(
             f"Processing {index + 1}/{total_images}: {display_path}",
             always_print=True,
         )
-        previous_context_images = _build_previous_context_images(
-            image_files,
-            index,
-            config,
-            previous_context_cache,
-            previous_context_cache_lock,
-        )
-
         def previous_context_texts_provider() -> list[list[str]]:
             _wait_for_required_previous_ocr(index)
             return _build_previous_context_texts(
@@ -2550,7 +2318,6 @@ async def _batch_translate_pages(
                 config,
                 output_path,
                 cancellation_manager=cancellation_manager,
-                previous_context_images=previous_context_images,
                 previous_context_texts_provider=previous_context_texts_provider,
                 ocr_texts_out=captured_ocr_texts,
             )
@@ -2725,7 +2492,7 @@ def batch_translate_images(
         return empty_results
 
     translation_cfg = config.translation
-    translates = not (config.test_mode or config.cleaning_only or config.upscaling_only)
+    translates = not config.cleaning_only
     if not (translates and translation_cfg.terminology_memory):
         glossary_path = None
     elif translation_cfg.terminology_memory_path:
