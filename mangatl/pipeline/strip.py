@@ -7,14 +7,15 @@ from collections.abc import Callable
 from itertools import pairwise
 from pathlib import Path
 from typing import Optional
+
+import numpy as np
 from PIL import Image
+
+from mangatl.common.cancellation import CancellationManager
+from mangatl.common.image_utils import save_image_with_compression
 from mangatl.common.log import log_message
 from mangatl.detect.bubbles import detect_speech_bubbles
-from mangatl.common.image_utils import save_image_with_compression
 from mangatl.settings import Settings
-from mangatl.common.cancellation import CancellationManager
-import numpy as np
-
 
 # Section heights are multiples of the width: bubble detection recall peaks around 4-6x,
 # dropping for whole strips (small bubbles lost) and page-shaped sections (large ones lost).
@@ -77,10 +78,7 @@ def find_cut_rows(
     return cuts
 
 
-
-def detect_strip_text_rows(
-    crop: Image.Image, image_path: Path, config: Settings
-) -> list[tuple[int, int]]:
+def detect_strip_text_rows(crop: Image.Image, image_path: Path, config: Settings) -> list[tuple[int, int]]:
     """Row ranges occupied by bubbles and text in a strip crop, for choosing cut rows."""
     bubbles, text_free_boxes = detect_speech_bubbles(
         image_path,
@@ -118,8 +116,7 @@ def translate_strip(
     width, height = strip.size
     bounds = [0, *cut_rows, height]
     log_message(
-        f"Long strip ({width}x{height}): splitting into {len(bounds) - 1} sections "
-        f"at rows {cut_rows}",
+        f"Long strip ({width}x{height}): splitting into {len(bounds) - 1} sections at rows {cut_rows}",
         always_print=True,
     )
 
@@ -128,14 +125,14 @@ def translate_strip(
         # Section heights vary, so scaling each by its own area would change font sizes
         # and kernels from one section to the next. All share a nominal section's scale.
         pre_upscale = resolve_pre_upscale_factor(config.preprocessing)
-        section_config = section_config.updated(**{
-            "preprocessing.processing_scale": math.sqrt(TARGET_RATIO) * width * pre_upscale / 1000,
-            "preprocessing.auto_scale": False,
-        })
+        section_config = section_config.updated(
+            **{
+                "preprocessing.processing_scale": math.sqrt(TARGET_RATIO) * width * pre_upscale / 1000,
+                "preprocessing.auto_scale": False,
+            }
+        )
     # Sections of one image are one page to the reader, so they always share context.
-    context_count = max(
-        config.translation.context_pages, 1
-    )
+    context_count = max(config.translation.context_pages, 1)
     section_texts: list[list[str]] = []
     strip_glyph_size: list[float] = []
 
@@ -173,9 +170,7 @@ def translate_strip(
                 if ocr_texts_out is not None:
                     ocr_texts_out.extend(texts)
 
-    stitched = Image.new(
-        target_mode, (sections[0].width, sum(section.height for section in sections))
-    )
+    stitched = Image.new(target_mode, (sections[0].width, sum(section.height for section in sections)))
     offset = 0
     for section in sections:
         stitched.paste(section, (0, offset))

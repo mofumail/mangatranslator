@@ -6,9 +6,9 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from mangatl.translate.glossary import load_terms
 from mangatl.common.log import log_message
 from mangatl.settings import PROVIDER
+from mangatl.translate.glossary import load_terms
 
 
 class UnifiedCache:
@@ -44,9 +44,7 @@ class UnifiedCache:
         else:
             data_image = image
 
-        metadata = (
-            f"{data_image.mode}_{data_image.size[0]}_{data_image.size[1]}".encode()
-        )
+        metadata = f"{data_image.mode}_{data_image.size[0]}_{data_image.size[1]}".encode()
         digest = hashlib.sha256(metadata)
         digest.update(data_image.tobytes())
         return digest.hexdigest()[:16]
@@ -79,9 +77,7 @@ class UnifiedCache:
         data_bytes = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
         return hashlib.sha256(data_bytes).hexdigest()[:16]
 
-    def get_yolo_cache_key(
-        self, image: Image.Image, model_path: str, confidence: float
-    ) -> str:
+    def get_yolo_cache_key(self, image: Image.Image, model_path: str, confidence: float) -> str:
         """Compute cache key for YOLO detection.
 
         Args:
@@ -109,9 +105,7 @@ class UnifiedCache:
         with self._lock:
             return self._yolo_cache.get(cache_key)
 
-    def set_yolo_detection(
-        self, cache_key: str, results: Any, verbose: bool = False
-    ) -> None:
+    def set_yolo_detection(self, cache_key: str, results: Any, verbose: bool = False) -> None:
         """Cache YOLO detection result.
 
         Args:
@@ -126,7 +120,6 @@ class UnifiedCache:
             verbose=verbose,
         )
 
-
     def _is_deterministic(self, config) -> bool:
         """Check if translation config is deterministic.
 
@@ -136,7 +129,11 @@ class UnifiedCache:
         Returns:
             bool: True if translation is deterministic
         """
-        return config.translation.temperature == 0.0 or config.translation.top_k == 1 or config.translation.top_p == 0.0
+        return (
+            config.translation.temperature == 0.0
+            or config.translation.top_k == 1
+            or config.translation.top_p == 0.0
+        )
 
     def get_translation_cache_key(
         self,
@@ -158,10 +155,7 @@ class UnifiedCache:
         Returns:
             str: Cache key, or None if caching is not enabled/deterministic
         """
-        if not (
-            config.translation.force_cache
-            or self._is_deterministic(config)
-        ):
+        if not (config.translation.force_cache or self._is_deterministic(config)):
             return None
 
         images_hash = hashlib.sha256("".join(images_b64).encode()).hexdigest()[:16]
@@ -192,15 +186,11 @@ class UnifiedCache:
             "image_detail": config.translation.image_detail,
             "upscale_method": config.ocr.upscale,
             "bubble_min_side_pixels": config.ocr.bubble_min_side,
-            "context_image_max_side_pixels": getattr(
-                config, "context_image_max_side_pixels", None
-            ),
+            "context_image_max_side_pixels": getattr(config, "context_image_max_side_pixels", None),
         }
         if previous_context_texts:
             previous_texts_hash = hashlib.sha256(
-                "\u241e".join(
-                    "\u241f".join(page or []) for page in previous_context_texts
-                ).encode()
+                "\u241e".join("\u241f".join(page or []) for page in previous_context_texts).encode()
             ).hexdigest()[:16]
             cache_params["previous_context_text_count"] = len(previous_context_texts)
             cache_params["previous_context_text_hash"] = previous_texts_hash
@@ -212,9 +202,7 @@ class UnifiedCache:
         key_string = f"trans_{images_hash}_{full_hash}_{config_hash}"
         return hashlib.sha256(key_string.encode()).hexdigest()
 
-    def get_translation(
-        self, cache_key: str | None
-    ) -> "tuple[list | None, list | None]":
+    def get_translation(self, cache_key: str | None) -> "tuple[list | None, list | None]":
         """Get cached translation results.
 
         Args:
@@ -299,9 +287,7 @@ class UnifiedCache:
         with self._lock:
             return self._manga_ocr_cache.get(cache_key)
 
-    def set_manga_ocr_result(
-        self, cache_key: str | None, results: list, verbose: bool = False
-    ) -> None:
+    def set_manga_ocr_result(self, cache_key: str | None, results: list, verbose: bool = False) -> None:
         """Cache manga-ocr results (including failure markers)."""
         if cache_key is None:
             return
@@ -312,9 +298,7 @@ class UnifiedCache:
             verbose=verbose,
         )
 
-    def get_upscale_cache_key(
-        self, image: Image.Image, factor: float, model_type: str = "model"
-    ) -> str:
+    def get_upscale_cache_key(self, image: Image.Image, factor: float, model_type: str = "model") -> str:
         """Compute cache key for image upscaling.
 
         Args:
@@ -344,9 +328,7 @@ class UnifiedCache:
             str: Cache key
         """
         image_hash = self._hash_image(image)
-        key_string = (
-            f"upscale_dim_{image_hash}_target{target}_mode{mode}_model{model_type}"
-        )
+        key_string = f"upscale_dim_{image_hash}_target{target}_mode{mode}_model{model_type}"
         return hashlib.sha256(key_string.encode()).hexdigest()
 
     def get_bubble_processing_cache_key(
@@ -364,9 +346,7 @@ class UnifiedCache:
             str: Cache key
         """
         image_hash = self._hash_image(image)
-        key_string = (
-            f"bubble_proc_{image_hash}_target{target}_mode{mode}_model{model_type}"
-        )
+        key_string = f"bubble_proc_{image_hash}_target{target}_mode{mode}_model{model_type}"
         return hashlib.sha256(key_string.encode()).hexdigest()
 
     def get_upscaled_image(self, cache_key: str) -> Image.Image | None:
@@ -381,9 +361,7 @@ class UnifiedCache:
         with self._lock:
             return self._upscale_cache.get(cache_key)
 
-    def set_upscaled_image(
-        self, cache_key: str, image: Image.Image, verbose: bool = False
-    ) -> None:
+    def set_upscaled_image(self, cache_key: str, image: Image.Image, verbose: bool = False) -> None:
         """Cache upscaled image.
 
         Args:
@@ -429,9 +407,7 @@ class UnifiedCache:
 
         ocr_params_str = ""
         if ocr_params:
-            ocr_params_str = "_" + "_".join(
-                f"{k}{v}" for k, v in sorted(ocr_params.items())
-            )
+            ocr_params_str = "_" + "_".join(f"{k}{v}" for k, v in sorted(ocr_params.items()))
 
         key_string = (
             f"inpaint_{image_hash}_{mask_hash}_"
@@ -465,9 +441,7 @@ class UnifiedCache:
         with self._lock:
             return self._inpaint_cache.get(cache_key)
 
-    def set_inpainted_image(
-        self, cache_key: str, image: Image.Image, verbose: bool = False
-    ) -> None:
+    def set_inpainted_image(self, cache_key: str, image: Image.Image, verbose: bool = False) -> None:
         """Cache inpainted image.
 
         Args:
@@ -487,7 +461,6 @@ class UnifiedCache:
         with self._lock:
             self._yolo_cache.cache.clear()
         log_message("YOLO cache cleared", verbose=verbose)
-
 
     def clear_translation_cache(self, verbose: bool = False) -> None:
         """Clear translation cache."""
@@ -537,9 +510,7 @@ class UnifiedCache:
                 self._current_image_hash = image_hash
                 log_message("Cache initialized for new image", verbose=verbose)
             elif self._current_image_hash != image_hash:
-                log_message(
-                    "Different image detected - clearing all caches", verbose=verbose
-                )
+                log_message("Different image detected - clearing all caches", verbose=verbose)
                 self._yolo_cache.cache.clear()
                 self._translation_cache.cache.clear()
                 self._manga_ocr_cache.cache.clear()

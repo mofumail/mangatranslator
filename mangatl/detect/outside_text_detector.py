@@ -7,16 +7,12 @@ from PIL import Image
 
 from mangatl.common.caching import get_cache
 from mangatl.common.device import get_best_device
-from mangatl.ml.model_manager import ModelType, get_model_manager
 from mangatl.common.exceptions import ImageProcessingError
 from mangatl.common.log import log_message
+from mangatl.ml.model_manager import ModelType, get_model_manager
 
-OSB_BUBBLE_MATCH_IOA_THRESHOLD = (
-    0.2  # Minimum text-box overlap ratio for OSB assignment
-)
-TEXT_FREE_BUBBLE_IOA_THRESHOLD = (
-    0.5  # Bubble treated as text_free only with substantial overlap
-)
+OSB_BUBBLE_MATCH_IOA_THRESHOLD = 0.2  # Minimum text-box overlap ratio for OSB assignment
+TEXT_FREE_BUBBLE_IOA_THRESHOLD = 0.5  # Bubble treated as text_free only with substantial overlap
 # Rechecking a region on crops: the page-level pass misses text the model finds once
 # the crop changes the scale it sees. Pads are shares of the region's long side
 NEAR_CROP_PADS = (0.25, 0.5, 1.5)
@@ -59,9 +55,7 @@ class OutsideTextDetector:
         x1_min, y1_min, x1_max, y1_max = box1
         x2_min, y2_min, x2_max, y2_max = box2
 
-        return not (
-            x1_max <= x2_min or x2_max <= x1_min or y1_max <= y2_min or y2_max <= y1_min
-        )
+        return not (x1_max <= x2_min or x2_max <= x1_min or y1_max <= y2_min or y2_max <= y1_min)
 
     def box_intersection_area(self, box1, box2) -> float:
         """Return the intersection area between two xyxy boxes."""
@@ -91,9 +85,8 @@ class OutsideTextDetector:
 
         center_x = (text_box[0] + text_box[2]) / 2.0
         center_y = (text_box[1] + text_box[3]) / 2.0
-        return (
-            intersection / text_area >= OSB_BUBBLE_MATCH_IOA_THRESHOLD
-            or self.point_in_box(center_x, center_y, bubble_box)
+        return intersection / text_area >= OSB_BUBBLE_MATCH_IOA_THRESHOLD or self.point_in_box(
+            center_x, center_y, bubble_box
         )
 
     def box_is_inside(self, box1, box2, threshold=0.9):
@@ -172,9 +165,7 @@ class OutsideTextDetector:
                 if intersection > best_intersection:
                     best_intersection = intersection
                     best_bubble = bubble_box
-            if best_bubble is None or not self.text_box_meaningfully_matches_bubble(
-                bbox, best_bubble
-            ):
+            if best_bubble is None or not self.text_box_meaningfully_matches_bubble(bbox, best_bubble):
                 kept.append(result)
         return kept
 
@@ -252,11 +243,7 @@ class OutsideTextDetector:
 
         try:
             if image_override is not None:
-                image_pil = (
-                    image_override
-                    if image_override.mode == "RGB"
-                    else image_override.convert("RGB")
-                )
+                image_pil = image_override if image_override.mode == "RGB" else image_override.convert("RGB")
                 image_cv = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
             else:
                 image_cv = cv2.imread(str(image_path))
@@ -265,8 +252,7 @@ class OutsideTextDetector:
                 image_pil = Image.fromarray(cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB))
             image_name = image_path if image_override is None else "override"
             log_message(
-                f"Processing image: {image_name} "
-                f"({image_cv.shape[1]}x{image_cv.shape[0]})",
+                f"Processing image: {image_name} ({image_cv.shape[1]}x{image_cv.shape[0]})",
                 verbose=verbose,
             )
         except Exception as e:
@@ -281,9 +267,7 @@ class OutsideTextDetector:
                     if bbox is None or len(bbox) != 4:
                         continue
                     x0, y0, x1, y1 = bbox
-                    provided_bubble_boxes.append(
-                        [float(x0), float(y0), float(x1), float(y1)]
-                    )
+                    provided_bubble_boxes.append([float(x0), float(y0), float(x1), float(y1)])
                 if provided_bubble_boxes:
                     log_message(
                         f"Using {len(provided_bubble_boxes)} provided bubble boxes for OSB filtering",
@@ -299,9 +283,7 @@ class OutsideTextDetector:
         text_free_boxes = list(text_free_boxes) if text_free_boxes else []
 
         if provided_bubble_boxes:
-            yolo_boxes = torch.tensor(
-                provided_bubble_boxes, device=self.device, dtype=torch.float32
-            )
+            yolo_boxes = torch.tensor(provided_bubble_boxes, device=self.device, dtype=torch.float32)
             num_yolo_boxes = len(yolo_boxes)
             log_message(
                 f"Skipping YOLO; using provided bubbles ({num_yolo_boxes})",
@@ -319,15 +301,11 @@ class OutsideTextDetector:
                 if yolo_model_path is None
                 else yolo_model_path
             )
-            sb_cache_key = self.cache.get_yolo_cache_key(
-                image_pil, sb_model_path, confidence
-            )
+            sb_cache_key = self.cache.get_yolo_cache_key(image_pil, sb_model_path, confidence)
             cached_sb = self.cache.get_yolo_detection(sb_cache_key)
 
             if cached_sb is not None:
-                log_message(
-                    "  - Using cached speech bubble detections", always_print=True
-                )
+                log_message("  - Using cached speech bubble detections", always_print=True)
                 yolo_results, yolo_boxes = cached_sb
             else:
                 yolo_model = self.manager.load_yolo_speech_bubble(yolo_model_path)
@@ -339,25 +317,17 @@ class OutsideTextDetector:
                     imgsz=1600 if bubble_detector_model == "yolo_2" else 640,
                     retina_masks=True,
                 )[0]
-                yolo_boxes = (
-                    yolo_results.boxes.xyxy
-                    if yolo_results.boxes is not None
-                    else torch.tensor([])
-                )
+                yolo_boxes = yolo_results.boxes.xyxy if yolo_results.boxes is not None else torch.tensor([])
                 self.cache.set_yolo_detection(sb_cache_key, (yolo_results, yolo_boxes))
 
             num_yolo_boxes = len(yolo_boxes) if yolo_boxes.nelement() > 0 else 0
-            log_message(
-                f"YOLO detected {num_yolo_boxes} speech bubbles", verbose=verbose
-            )
+            log_message(f"YOLO detected {num_yolo_boxes} speech bubbles", verbose=verbose)
 
         # Secondary RT-DETR: run when text_free_only needs text_free boxes (none were
         # collected upstream) or when YOLO ran here (provided bubbles already include
         # RT-DETR output).
         if (text_free_only and not text_free_boxes) or not provided_bubble_boxes:
-            log_message(
-                "Running secondary RT-DETR to catch missed bubbles...", verbose=verbose
-            )
+            log_message("Running secondary RT-DETR to catch missed bubbles...", verbose=verbose)
             try:
                 sec_model = self.manager.load_rtdetr_conjoined_bubble()
                 sec_results = sec_model(
@@ -368,16 +338,8 @@ class OutsideTextDetector:
                     imgsz=640,
                 )[0]
 
-                sec_boxes = (
-                    sec_results.boxes.xyxy
-                    if sec_results.boxes is not None
-                    else torch.tensor([])
-                )
-                sec_cls = (
-                    sec_results.boxes.cls
-                    if sec_results.boxes is not None
-                    else torch.tensor([])
-                )
+                sec_boxes = sec_results.boxes.xyxy if sec_results.boxes is not None else torch.tensor([])
+                sec_cls = sec_results.boxes.cls if sec_results.boxes is not None else torch.tensor([])
 
                 # bubble = speech bubbles; text_free = OSB; ignore text_bubble (in-bubble text)
                 bubble_id = None
@@ -407,9 +369,7 @@ class OutsideTextDetector:
                         )
                         boxes_to_add_tensor = torch.stack(boxes_to_add)
                         if yolo_boxes.nelement() > 0:
-                            yolo_boxes = torch.cat(
-                                (yolo_boxes, boxes_to_add_tensor), dim=0
-                            )
+                            yolo_boxes = torch.cat((yolo_boxes, boxes_to_add_tensor), dim=0)
                         else:
                             yolo_boxes = boxes_to_add_tensor
             except Exception as e:
@@ -419,8 +379,7 @@ class OutsideTextDetector:
         osbtext_confs = None
         if text_free_only:
             log_message(
-                "Using RT-DETR text_free detections as OSB regions "
-                "(skipping YOLO OSB model)",
+                "Using RT-DETR text_free detections as OSB regions (skipping YOLO OSB model)",
                 always_print=True,
             )
             if text_free_boxes:
@@ -431,9 +390,7 @@ class OutsideTextDetector:
                 osbtext_boxes = torch.tensor(
                     np.array(text_free_boxes), device=self.device, dtype=torch.float32
                 )
-                osbtext_confs = torch.ones(
-                    len(text_free_boxes), device=self.device, dtype=torch.float32
-                )
+                osbtext_confs = torch.ones(len(text_free_boxes), device=self.device, dtype=torch.float32)
             else:
                 log_message(
                     "No text_free detections available; skipping OSB text detections",
@@ -442,12 +399,8 @@ class OutsideTextDetector:
         else:
             log_message("Running YOLO OSB Text...", always_print=True)
             try:
-                osbtext_model_path = str(
-                    self.manager.model_paths[ModelType.YOLO_OSBTEXT]
-                )
-                osbtext_cache_key = self.cache.get_yolo_cache_key(
-                    image_pil, osbtext_model_path, confidence
-                )
+                osbtext_model_path = str(self.manager.model_paths[ModelType.YOLO_OSBTEXT])
+                osbtext_cache_key = self.cache.get_yolo_cache_key(image_pil, osbtext_model_path, confidence)
 
                 cached_osbtext = self.cache.get_yolo_detection(osbtext_cache_key)
 
@@ -466,16 +419,8 @@ class OutsideTextDetector:
                         verbose=False,
                         imgsz=640,
                     )[0]
-                    osbtext_boxes = (
-                        osbtext_results.boxes.xyxy
-                        if osbtext_results.boxes is not None
-                        else None
-                    )
-                    osbtext_confs = (
-                        osbtext_results.boxes.conf
-                        if osbtext_results.boxes is not None
-                        else None
-                    )
+                    osbtext_boxes = osbtext_results.boxes.xyxy if osbtext_results.boxes is not None else None
+                    osbtext_confs = osbtext_results.boxes.conf if osbtext_results.boxes is not None else None
                     self.cache.set_yolo_detection(
                         osbtext_cache_key,
                         (osbtext_results, osbtext_boxes, osbtext_confs),
@@ -495,9 +440,7 @@ class OutsideTextDetector:
                         device=self.device,
                         dtype=torch.float32,
                     )
-                    osbtext_confs = torch.ones(
-                        len(text_free_boxes), device=self.device, dtype=torch.float32
-                    )
+                    osbtext_confs = torch.ones(len(text_free_boxes), device=self.device, dtype=torch.float32)
                 else:
                     log_message(
                         "No text_free fallback available; skipping OSB text detections",
@@ -547,8 +490,7 @@ class OutsideTextDetector:
             ignored_count = sum(
                 1
                 for bbox, _ in final_results
-                if ((bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) / max(1.0, image_area)
-                < min_ignore
+                if ((bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) / max(1.0, image_area) < min_ignore
             )
             found_count -= ignored_count
 
@@ -578,12 +520,8 @@ class OutsideTextDetector:
         # texts on the sample pages and saved under a tenth of a second per page
         for index, origin, crop in crops:
             for size in NEAR_CROP_SIZES:
-                result = model(
-                    crop, conf=confidence, device=self.device, verbose=False, imgsz=size
-                )[0]
-                found[index] += self._near_detections(
-                    result, origin, regions[index], confidence
-                )
+                result = model(crop, conf=confidence, device=self.device, verbose=False, imgsz=size)[0]
+                found[index] += self._near_detections(result, origin, regions[index], confidence)
         return found
 
     def _near_detections(self, result, origin, region, confidence):
@@ -654,11 +592,7 @@ class OutsideTextDetector:
             return None, None
 
         if image_override is not None:
-            image_pil = (
-                image_override.convert("RGB")
-                if image_override.mode != "RGB"
-                else image_override
-            )
+            image_pil = image_override.convert("RGB") if image_override.mode != "RGB" else image_override
         else:
             image_pil = Image.open(image_path).convert("RGB")
         img_w, img_h = image_pil.size
@@ -725,9 +659,7 @@ class OutsideTextDetector:
                     f"  - Group too large ({max_x - min_x}x{max_y - min_y}), splitting...",
                     verbose=verbose,
                 )
-                for box, result, g_idx in zip(
-                    group_boxes, group_results, global_indices, strict=False
-                ):
+                for box, result, g_idx in zip(group_boxes, group_results, global_indices, strict=False):
                     x0, y0, x1, y1 = box
                     mask = np.zeros((img_h, img_w), dtype=bool)
                     mask[y0:y1, x0:x1] = True
@@ -764,9 +696,7 @@ class OutsideTextDetector:
 
             raw_boxes = [[int(c) for c in res[0]] for res in group_results]
 
-            for box, result, g_idx in zip(
-                group_boxes, group_results, global_indices, strict=False
-            ):
+            for box, result, g_idx in zip(group_boxes, group_results, global_indices, strict=False):
                 x0, y0, x1, y1 = box
                 mask = np.zeros((img_h, img_w), dtype=bool)
                 mask[y0:y1, x0:x1] = True
@@ -896,5 +826,3 @@ class OutsideTextDetector:
         distance = np.sqrt((cx1 - cx2) ** 2 + (cy1 - cy2) ** 2)
 
         return distance <= threshold
-
-

@@ -4,11 +4,13 @@ import base64
 import re
 from io import BytesIO
 from typing import Any
+
 from PIL import Image
+
 from mangatl.common.caching import get_cache
-from mangatl.ocr.readers import extract_text_with_manga_ocr, extract_text_with_paddle_ocr_vl
 from mangatl.common.exceptions import TranslationError
 from mangatl.common.log import log_message
+from mangatl.ocr.readers import extract_text_with_manga_ocr, extract_text_with_paddle_ocr_vl
 from mangatl.settings import Settings
 
 
@@ -122,9 +124,9 @@ def _refine_ocr_reads(
     - Pages carrying both the Japanese text and a Chinese translation of it: the Chinese block
       is marked `mt_skip` (erased, not translated) unless keep_other_language is set.
     """
-    from mangatl.ocr import line_ocr
-    from mangatl.ocr import hayai as hayai_ocr
     from mangatl.ml.model_manager import get_model_manager
+    from mangatl.ocr import hayai as hayai_ocr
+    from mangatl.ocr import line_ocr
 
     models_dir = get_model_manager().models_dir
     changed = False
@@ -136,13 +138,13 @@ def _refine_ocr_reads(
             texts[i] = text
             changed = True
 
-    bubble_idx = [i for i, m in enumerate(bubble_metadata)
-                  if i < len(texts) and not m.get("is_outside_text")]
+    bubble_idx = [i for i, m in enumerate(bubble_metadata) if i < len(texts) and not m.get("is_outside_text")]
     if bubble_idx:
         crops = _prepare_images_for_ocr([images_b64[i] for i in bubble_idx])
         ok = [(i, c) for i, c in zip(bubble_idx, crops) if c is not None]
-        reads = hayai_ocr.get(models_dir).read([c.convert("RGB") for _, c in ok],
-                                               max_patches=512, max_new_tokens=160)
+        reads = hayai_ocr.get(models_dir).read(
+            [c.convert("RGB") for _, c in ok], max_patches=512, max_new_tokens=160
+        )
         for (i, _), t in zip(ok, reads):
             picked = line_ocr.pick_read(texts[i] if texts[i] != "[OCR FAILED]" else "", t.strip())
             if picked and picked != texts[i]:
@@ -155,11 +157,15 @@ def _refine_ocr_reads(
                 bubble_metadata[i]["mt_skip"] = True
                 texts[i] = "(no text)"
                 changed = True
-                log_message(f"Skipping block {i + 1}: not in the source language "
-                            "(erased, not translated)", always_print=True)
+                log_message(
+                    f"Skipping block {i + 1}: not in the source language (erased, not translated)",
+                    always_print=True,
+                )
     if changed:
-        log_message("Text re-read with Hayai OCR (outside bubbles: line by line via comic-text-detector):",
-                    always_print=True)
+        log_message(
+            "Text re-read with Hayai OCR (outside bubbles: line by line via comic-text-detector):",
+            always_print=True,
+        )
         _format_ocr_results(texts, bubble_metadata)
     return texts
 
@@ -249,17 +255,13 @@ def _perform_paddle_ocr_vl(
     log_message("Using PaddleOCR-VL-1.6 for text extraction", verbose=debug)
 
     cache = get_cache()
-    cache_key = cache.get_manga_ocr_cache_key(
-        images_b64, total_elements, prefix="pocr16_"
-    )
+    cache_key = cache.get_manga_ocr_cache_key(images_b64, total_elements, prefix="pocr16_")
     cached_ocr = cache.get_manga_ocr_result(cache_key)
     if cached_ocr is not None:
         if len(cached_ocr) == total_elements:
             log_message("  - Using cached PaddleOCR-VL-1.6 results", always_print=True)
             return cached_ocr
-        log_message(
-            "Discarding PaddleOCR-VL-1.6 cache due to length mismatch", verbose=debug
-        )
+        log_message("Discarding PaddleOCR-VL-1.6 cache due to length mismatch", verbose=debug)
 
     pil_images = _prepare_images_for_ocr(images_b64)
     extracted_texts = extract_text_with_paddle_ocr_vl(pil_images, verbose=debug)

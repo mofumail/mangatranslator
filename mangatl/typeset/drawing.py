@@ -6,11 +6,11 @@ import skia
 import uharfbuzz as hb
 from PIL import Image
 
+from mangatl.common.exceptions import FontError, RenderingError
+from mangatl.common.log import log_message
 from mangatl.typeset.fonts import LRUCache, get_variable_font_style_info, load_font_data
 from mangatl.typeset.layout import shape_line
 from mangatl.typeset.text import is_rtl_script, parse_styled_segments
-from mangatl.common.exceptions import FontError, RenderingError
-from mangatl.common.log import log_message
 
 _typeface_cache = LRUCache(max_size=50)
 _hb_face_cache = LRUCache(max_size=50)
@@ -72,24 +72,16 @@ def load_font_resources(
                     f"Skia typeface load failed: {os.path.basename(font_path)}",
                     always_print=True,
                 )
-                raise FontError(
-                    f"Failed to create Skia typeface from font: {font_path}"
-                )
+                raise FontError(f"Failed to create Skia typeface from font: {font_path}")
 
             if var_info and var_info.get("coords"):
                 try:
                     coords = skia.FontArguments.VariationPosition.Coordinates()
                     for tag_str, val in var_info["coords"].items():
                         tag_int = int.from_bytes(tag_str.encode("ascii"), "big")
-                        coords.append(
-                            skia.FontArguments.VariationPosition.Coordinate(
-                                tag_int, float(val)
-                            )
-                        )
+                        coords.append(skia.FontArguments.VariationPosition.Coordinate(tag_int, float(val)))
                     args = skia.FontArguments()
-                    args.setVariationDesignPosition(
-                        skia.FontArguments.VariationPosition(coords)
-                    )
+                    args.setVariationDesignPosition(skia.FontArguments.VariationPosition(coords))
                     cloned_tf = base_typeface.makeClone(args)
                     typeface = cloned_tf if cloned_tf is not None else base_typeface
                 except Exception as e:
@@ -119,9 +111,7 @@ def load_font_resources(
                 # Clean up Skia cache if HarfBuzz fails to avoid inconsistent state
                 if cache_key in _typeface_cache:
                     del _typeface_cache[cache_key]
-                raise FontError(
-                    f"Failed to create HarfBuzz face from font: {font_path}"
-                ) from e
+                raise FontError(f"Failed to create HarfBuzz face from font: {font_path}") from e
 
     return font_data, typeface, hb_face
 
@@ -135,9 +125,7 @@ def pil_to_skia_surface(pil_image: Image.Image) -> skia.Surface:
     try:
         if pil_image.mode != "RGBA":
             pil_image = pil_image.convert("RGBA")
-        skia_image = skia.Image.frombytes(
-            pil_image.tobytes(), pil_image.size, skia.kRGBA_8888_ColorType
-        )
+        skia_image = skia.Image.frombytes(pil_image.tobytes(), pil_image.size, skia.kRGBA_8888_ColorType)
         if skia_image is None:
             log_message("PIL to Skia conversion failed", always_print=True)
             raise RenderingError("Failed to create Skia image from PIL")
@@ -221,9 +209,7 @@ def draw_layout(
         final_line_height = layout_data["line_height"]
 
         for line_data in final_lines_data:
-            line_data["segments"] = parse_styled_segments(
-                line_data["text_with_markers"]
-            )
+            line_data["segments"] = parse_styled_segments(line_data["text_with_markers"])
 
         paint = skia.Paint(AntiAlias=True, Color=text_color)
 
@@ -248,16 +234,12 @@ def draw_layout(
         num_lines = len(final_lines_data)
         if num_lines > 0:
             total_visual_height = (
-                (num_lines - 1) * final_line_height
-                - final_metrics.fAscent
-                + final_metrics.fDescent
+                (num_lines - 1) * final_line_height - final_metrics.fAscent + final_metrics.fDescent
             )
             block_top_y = target_center_y - (total_visual_height / 2.0)
             first_baseline_y = block_top_y - final_metrics.fAscent
         else:
-            first_baseline_y = (
-                target_center_y - (final_metrics.fAscent + final_metrics.fDescent) / 2.0
-            )
+            first_baseline_y = target_center_y - (final_metrics.fAscent + final_metrics.fDescent) / 2.0
 
         log_message(
             f"Rendering at size {final_font_size}, center: ({target_center_x:.0f}, {target_center_y:.0f})",
@@ -295,9 +277,7 @@ def draw_layout(
         with surface as canvas:
             # Apply optional pre-transform (used for rotated OSB rendering)
             need_transform = (
-                abs(pre_translate_x) > 1e-3
-                or abs(pre_translate_y) > 1e-3
-                or abs(pre_rotate_deg) > 1e-3
+                abs(pre_translate_x) > 1e-3 or abs(pre_translate_y) > 1e-3 or abs(pre_rotate_deg) > 1e-3
             )
             if need_transform:
                 canvas.save()
@@ -317,9 +297,7 @@ def draw_layout(
                 for line_data in final_lines_data:
                     segment_text = line_data.get("text_with_markers", "")
                     style_name = line_data.get("style", "regular")
-                    typeface_to_use, hb_face_to_use = _resolve_style_resources(
-                        style_name
-                    )
+                    typeface_to_use, hb_face_to_use = _resolve_style_resources(style_name)
 
                     skia_font_segment = skia.Font(typeface_to_use, final_font_size)
                     skia_font_segment.setSubpixel(True)
@@ -331,9 +309,7 @@ def draw_layout(
                     hb_font_segment.scale = (hb_scale, hb_scale)
 
                     try:
-                        infos, positions, _ = shape_line(
-                            segment_text, hb_font_segment, features_to_enable
-                        )
+                        infos, positions, _ = shape_line(segment_text, hb_font_segment, features_to_enable)
                         if not infos:
                             continue
                     except Exception as e:
@@ -368,19 +344,13 @@ def draw_layout(
                     segment_cursor_x = 0.0
 
                     for _, pos in zip(infos, positions, strict=False):
-                        glyph_x = (
-                            baseline_x
-                            + segment_cursor_x
-                            + (pos.x_offset / HB_26_6_SCALE_FACTOR)
-                        )
+                        glyph_x = baseline_x + segment_cursor_x + (pos.x_offset / HB_26_6_SCALE_FACTOR)
                         glyph_y = baseline_y - (pos.y_offset / HB_26_6_SCALE_FACTOR)
                         skia_point_positions.append(skia.Point(glyph_x, glyph_y))
                         segment_cursor_x += pos.x_advance / HB_26_6_SCALE_FACTOR
 
                     try:
-                        _ = builder.allocRunPos(
-                            skia_font_segment, glyph_ids, skia_point_positions
-                        )
+                        _ = builder.allocRunPos(skia_font_segment, glyph_ids, skia_point_positions)
                         text_blob = builder.make()
                         if text_blob:
                             if outline_paint:
@@ -401,10 +371,7 @@ def draw_layout(
                 for i, line_data in enumerate(final_lines_data):
                     line_width_measured = line_data["width"]
 
-                    line_start_x = (
-                        block_start_x
-                        + (final_max_line_width - line_width_measured) / 2.0
-                    )
+                    line_start_x = block_start_x + (final_max_line_width - line_width_measured) / 2.0
                     cursor_x = line_start_x
 
                     if bg_paint is not None:
@@ -426,9 +393,7 @@ def draw_layout(
                         cursor_x = line_start_x + line_width_measured
 
                     for segment_text, style_name in segments:
-                        typeface_to_use, hb_face_to_use = _resolve_style_resources(
-                            style_name
-                        )
+                        typeface_to_use, hb_face_to_use = _resolve_style_resources(style_name)
                         if not typeface_to_use or not hb_face_to_use:
                             log_message(
                                 f"ERROR: No font resources for style '{style_name}' - skipping segment",
@@ -468,8 +433,7 @@ def draw_layout(
                         segment_cursor_x = 0.0
                         HB_26_6_SCALE_FACTOR = 64.0
                         segment_width_calculated = (
-                            sum(pos.x_advance for pos in positions)
-                            / HB_26_6_SCALE_FACTOR
+                            sum(pos.x_advance for pos in positions) / HB_26_6_SCALE_FACTOR
                         )
 
                         if is_line_rtl:
@@ -480,20 +444,14 @@ def draw_layout(
 
                         for _, pos in zip(infos, positions, strict=False):
                             glyph_x = (
-                                segment_start_x
-                                + segment_cursor_x
-                                + (pos.x_offset / HB_26_6_SCALE_FACTOR)
+                                segment_start_x + segment_cursor_x + (pos.x_offset / HB_26_6_SCALE_FACTOR)
                             )
-                            glyph_y = current_baseline_y - (
-                                pos.y_offset / HB_26_6_SCALE_FACTOR
-                            )
+                            glyph_y = current_baseline_y - (pos.y_offset / HB_26_6_SCALE_FACTOR)
                             skia_point_positions.append(skia.Point(glyph_x, glyph_y))
                             segment_cursor_x += pos.x_advance / HB_26_6_SCALE_FACTOR
 
                         try:
-                            _ = builder.allocRunPos(
-                                skia_font_segment, glyph_ids, skia_point_positions
-                            )
+                            _ = builder.allocRunPos(skia_font_segment, glyph_ids, skia_point_positions)
                             text_blob = builder.make()
                             if text_blob:
                                 if outline_paint:

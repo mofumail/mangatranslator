@@ -3,6 +3,7 @@ import threading
 import time
 from pathlib import Path
 from typing import TextIO
+
 from mangatl.settings import ROOT
 
 CURRENT_LOG_NAME = "mangatranslator.log"
@@ -13,9 +14,7 @@ _log_file: TextIO | None = None
 _log_initialized = False
 
 
-def init_file_logging(
-    log_dir: Path | str | None = None, force_reinit: bool = False
-) -> None:
+def init_file_logging(log_dir: Path | str | None = None, force_reinit: bool = False) -> None:
     """Initialize file logging in log_dir with rotation (current and one previous)."""
     global _log_file, _log_initialized
 

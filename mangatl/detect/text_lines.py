@@ -18,8 +18,9 @@ import cv2
 import numpy as np
 from PIL import Image
 
-CTD_URL = ("https://github.com/zyddnys/manga-image-translator/releases/download/"
-           "beta-0.3/comictextdetector.pt.onnx")
+CTD_URL = (
+    "https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/comictextdetector.pt.onnx"
+)
 CTD_SHA256 = "1a86ace74961413cbd650002e7bb4dcec4980ffa21b2f19b86933372071d718f"
 INPUT = 1024
 BINARY_THRESHOLD = 0.3
@@ -89,7 +90,7 @@ class LineDetector:
             x, y, bw, bh = cv2.boundingRect(c)
             local = np.zeros((bh, bw), np.uint8)
             cv2.fillPoly(local, [c - [x, y]], 1)
-            score = float(prob[y:y + bh, x:x + bw][local > 0].mean()) if local.any() else 0.0
+            score = float(prob[y : y + bh, x : x + bw][local > 0].mean()) if local.any() else 0.0
             if score < SCORE_THRESHOLD:
                 continue
             d = rw * rh * UNCLIP_RATIO / (2 * (rw + rh))

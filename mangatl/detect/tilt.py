@@ -30,18 +30,14 @@ def _heuristic_ink_mask(crop: np.ndarray, is_dark_text: bool) -> np.ndarray:
 
     border_pixels = crop[border_mask]
     bg_bgr = np.median(border_pixels, axis=0).astype(np.uint8)
-    bg_lum = (
-        0.299 * float(bg_bgr[2]) + 0.587 * float(bg_bgr[1]) + 0.114 * float(bg_bgr[0])
-    )
+    bg_lum = 0.299 * float(bg_bgr[2]) + 0.587 * float(bg_bgr[1]) + 0.114 * float(bg_bgr[0])
 
     # Blurring attenuates screentone
     blurred = cv2.GaussianBlur(crop, (3, 3), 1.0)
     gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
 
     lab = cv2.cvtColor(blurred, cv2.COLOR_BGR2LAB)
-    bg_lab = cv2.cvtColor(np.uint8([[bg_bgr]]), cv2.COLOR_BGR2LAB)[0, 0].astype(
-        np.float32
-    )
+    bg_lab = cv2.cvtColor(np.uint8([[bg_bgr]]), cv2.COLOR_BGR2LAB)[0, 0].astype(np.float32)
     delta_e = np.sqrt(np.sum((lab.astype(np.float32) - bg_lab) ** 2, axis=2))
     p95_de = float(np.percentile(delta_e, 95))
 
@@ -80,9 +76,7 @@ def _heuristic_ink_mask(crop: np.ndarray, is_dark_text: bool) -> np.ndarray:
         edge_touch_count = np.count_nonzero(m[border_mask] > 0)
         edge_touch_penalty = edge_touch_count / float(num_fg)
 
-        score = (span_ratio * pixel_density * row_consistency) - (
-            1.5 * edge_touch_penalty
-        )
+        score = (span_ratio * pixel_density * row_consistency) - (1.5 * edge_touch_penalty)
         if is_prior:
             score *= 1.2
         return score
@@ -100,9 +94,7 @@ def _filter_ink_components(mask: np.ndarray, from_text_model: bool) -> _Ink | No
 
     Returns None when too little ink is left to estimate an angle."""
     h, w = mask.shape
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
-        mask, connectivity=8
-    )
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
     crop_area = float(w * h)
     kept: list[int] = []
 
@@ -135,13 +127,9 @@ def _filter_ink_components(mask: np.ndarray, from_text_model: bool) -> _Ink | No
                 continue
             # Discard border-attached background framing (ceiling beams, wall pillars, panel frames)
             if touches >= 1:
-                if (cx == 0 or cx + cw >= w) and (
-                    ch / float(h) > 0.30 or area > 0.12 * crop_area
-                ):
+                if (cx == 0 or cx + cw >= w) and (ch / float(h) > 0.30 or area > 0.12 * crop_area):
                     continue
-                if (cy == 0 or cy + ch >= h) and (
-                    cw / float(w) > 0.30 or area > 0.12 * crop_area
-                ):
+                if (cy == 0 or cy + ch >= h) and (cw / float(w) > 0.30 or area > 0.12 * crop_area):
                     continue
 
         # Speed line filter: high aspect streak with small thickness
@@ -207,12 +195,7 @@ def detect_crop_tilt_angle(
     orig_h, orig_w = crop_cv.shape[:2]
     default_dims = (float(max(orig_w, orig_h)), float(min(orig_w, orig_h)))
 
-    if (
-        orig_h < 8
-        or orig_w < 8
-        or (orig_h < 16 and orig_w < 8)
-        or (orig_w < 16 and orig_h < 8)
-    ):
+    if orig_h < 8 or orig_w < 8 or (orig_h < 16 and orig_w < 8) or (orig_w < 16 and orig_h < 8):
         return 0.0, 0.0, default_dims, "none"
 
     max_dim = max(orig_h, orig_w)
@@ -230,14 +213,10 @@ def detect_crop_tilt_angle(
 
     ink = None
     if ink_mask is not None:
-        ink = _filter_ink_components(
-            _scaled_ink_mask(ink_mask, (w, h)), from_text_model=True
-        )
+        ink = _filter_ink_components(_scaled_ink_mask(ink_mask, (w, h)), from_text_model=True)
     from_text_model = ink is not None
     if ink is None:
-        ink = _filter_ink_components(
-            _heuristic_ink_mask(crop, is_dark_text), from_text_model=False
-        )
+        ink = _filter_ink_components(_heuristic_ink_mask(crop, is_dark_text), from_text_model=False)
     if ink is None:
         return 0.0, 0.0, default_dims, "none"
     filtered_mask = ink.mask
@@ -283,9 +262,7 @@ def detect_crop_tilt_angle(
         col_binary = (col_counts > threshold).astype(np.uint8)
         gap_px = max(2, round(0.045 * w))
         k_col = np.ones((1, gap_px), dtype=np.uint8)
-        col_merged = cv2.morphologyEx(
-            col_binary.reshape(1, -1), cv2.MORPH_CLOSE, k_col
-        )[0]
+        col_merged = cv2.morphologyEx(col_binary.reshape(1, -1), cv2.MORPH_CLOSE, k_col)[0]
 
         cols = []
         in_col = False
@@ -322,11 +299,7 @@ def detect_crop_tilt_angle(
 
         if len(tall_cols) >= 2:
             spread = max(a for a, _ in tall_cols) - min(a for a, _ in tall_cols)
-            avg_angle = float(
-                np.average(
-                    [a for a, _ in tall_cols], weights=[wt for _, wt in tall_cols]
-                )
-            )
+            avg_angle = float(np.average([a for a, _ in tall_cols], weights=[wt for _, wt in tall_cols]))
             if spread <= 7.0 and abs(avg_angle) < 4.0:
                 return 0.0, 1.0, oriented_dims, "vertical"
             if spread <= 7.0:
@@ -395,11 +368,7 @@ def detect_crop_tilt_angle(
             v1 = eigenvectors[0]
             if v1[1] < 0:
                 v1 = -v1
-            theta_pca = (
-                -math.degrees(math.atan2(v1[0], v1[1]))
-                if abs(v1[1]) > 1e-4
-                else theta_row
-            )
+            theta_pca = -math.degrees(math.atan2(v1[0], v1[1])) if abs(v1[1]) > 1e-4 else theta_row
 
             if min(abs(theta_row), abs(theta_pca)) < deadband_deg:
                 return 0.0, 0.75, oriented_dims, "vertical"
@@ -450,8 +419,7 @@ def detect_crop_tilt_angle(
     if spread <= 8.0:
         cand_angle = float(np.median(cands))
     elif theta_a is not None and (
-        abs(theta_a - theta_c) <= 6.0
-        or (theta_b is not None and abs(theta_a - theta_b) <= 6.0)
+        abs(theta_a - theta_c) <= 6.0 or (theta_b is not None and abs(theta_a - theta_b) <= 6.0)
     ):
         cand_angle = float(theta_a)
     elif spread > 15.0 or has_sign_conflict:
@@ -469,9 +437,7 @@ def detect_crop_tilt_angle(
     # the baseline of a big one, but a turned line also moves their tops and bottoms
     if np.count_nonzero(valid_comp) >= 2:
         comp_stats = ink.stats[valid_comp]
-        comp_xs = (
-            comp_stats[:, cv2.CC_STAT_LEFT] + comp_stats[:, cv2.CC_STAT_WIDTH] / 2.0
-        )
+        comp_xs = comp_stats[:, cv2.CC_STAT_LEFT] + comp_stats[:, cv2.CC_STAT_WIDTH] / 2.0
         if np.ptp(comp_xs) > 0:
             comp_weights = np.sqrt(comp_stats[:, cv2.CC_STAT_AREA].astype(np.float32))
             tops = comp_stats[:, cv2.CC_STAT_TOP].astype(np.float64)
@@ -500,12 +466,8 @@ def detect_crop_tilt_angle(
     m_cw_deskew = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), abs_cand, 1.0)
     m_ccw_deskew = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), -abs_cand, 1.0)
 
-    rot_cw_deskew = cv2.warpAffine(
-        filtered_mask, m_cw_deskew, (w, h), flags=cv2.INTER_NEAREST
-    )
-    rot_ccw_deskew = cv2.warpAffine(
-        filtered_mask, m_ccw_deskew, (w, h), flags=cv2.INTER_NEAREST
-    )
+    rot_cw_deskew = cv2.warpAffine(filtered_mask, m_cw_deskew, (w, h), flags=cv2.INTER_NEAREST)
+    rot_ccw_deskew = cv2.warpAffine(filtered_mask, m_ccw_deskew, (w, h), flags=cv2.INTER_NEAREST)
 
     c_cw, peak_cw = calc_concentration(rot_cw_deskew)
     c_ccw, peak_ccw = calc_concentration(rot_ccw_deskew)

@@ -80,9 +80,7 @@ def safe_extract_zip(zip_ref: ZipFile, destination: Path) -> None:
         try:
             target.resolve().relative_to(destination)
         except ValueError as exc:
-            raise ValueError(
-                f"ZIP archive contains an unsafe path: {member.filename}"
-            ) from exc
+            raise ValueError(f"ZIP archive contains an unsafe path: {member.filename}") from exc
 
     zip_ref.extractall(destination)
 

@@ -8,6 +8,7 @@ Bold (bundled, free license, assets/symbols/); the dialogue font is used as is, 
 from __future__ import annotations
 
 import itertools
+
 from mangatl.settings import ROOT
 
 SYMBOL_FONT = ROOT / "assets" / "symbols" / "DejaVuSans-Bold.ttf"

@@ -36,12 +36,22 @@ ROOT = Path(__file__).resolve().parent.parent
 RUNS = ROOT / "eval" / "runs"
 
 # Fixed for every run: the port is part of the LLM cache key, PNG avoids JPEG noise in pixel diffs.
-COMMON = ["--port", "8090", "--set", "translation.temperature=0", "--format", "png", "--verbose", "--llm-fresh"]
+COMMON = [
+    "--port",
+    "8090",
+    "--set",
+    "translation.temperature=0",
+    "--format",
+    "png",
+    "--verbose",
+    "--llm-fresh",
+]
 
 
 @dataclass
 class Unit:
     """One translate.py invocation (one chapter: its own glossary, context and text dump)."""
+
     name: str
     input: str
     args: list[str] = field(default_factory=list)
@@ -98,13 +108,26 @@ def units_for(sets: list[str]) -> list[Unit]:
 
 # ---------------------------------------------------------------- running
 
+
 def run_unit(unit: Unit, run_dir: Path, cache: Path, replay: bool, extra: list[str] | None = None) -> dict:
     d = run_dir / unit.name
     d.mkdir(parents=True)
     out = d / "out"
-    argv = [sys.executable, str(ROOT / "translate.py"), "--input", str(ROOT / unit.input),
-            "--output", str(out), *COMMON, "--llm-cache", str(cache), "--dump-text", str(d / "text"),
-            *unit.args, *(extra or [])]
+    argv = [
+        sys.executable,
+        str(ROOT / "translate.py"),
+        "--input",
+        str(ROOT / unit.input),
+        "--output",
+        str(out),
+        *COMMON,
+        "--llm-cache",
+        str(cache),
+        "--dump-text",
+        str(d / "text"),
+        *unit.args,
+        *(extra or []),
+    ]
     if replay:
         argv += ["--llm-replay", "--llm-misses", str(d / "misses.jsonl")]
     env = dict(os.environ)
@@ -114,9 +137,16 @@ def run_unit(unit: Unit, run_dir: Path, cache: Path, replay: bool, extra: list[s
     secs = time.time() - t0
     pages = len(list(out.glob("*.png"))) if out.exists() else 0
     log(f"{unit.name}: rc={rc} pages={pages} {secs:.0f}s")
-    return {"unit": unit.name, "argv": [str(a) for a in argv[1:]], "extra": list(extra or []), "rc": rc,
-            "seconds": round(secs, 1),
-            "pages": pages, "replay": replay, "cache": str(cache.relative_to(ROOT))}
+    return {
+        "unit": unit.name,
+        "argv": [str(a) for a in argv[1:]],
+        "extra": list(extra or []),
+        "rc": rc,
+        "seconds": round(secs, 1),
+        "pages": pages,
+        "replay": replay,
+        "cache": str(cache.relative_to(ROOT)),
+    }
 
 
 def new_run_dir(name: str, force: bool) -> Path:
@@ -130,9 +160,15 @@ def new_run_dir(name: str, force: bool) -> Path:
 
 
 def write_meta(run_dir: Path, kind: str, results: list[dict], against: str | None = None) -> None:
-    meta = {"kind": kind, "against": against, "date": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "git_rev": git("rev-parse", "HEAD"), "git_dirty": bool(git("status", "--porcelain")),
-            "units": results, "models": model_listing()}
+    meta = {
+        "kind": kind,
+        "against": against,
+        "date": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "git_rev": git("rev-parse", "HEAD"),
+        "git_dirty": bool(git("status", "--porcelain")),
+        "units": results,
+        "models": model_listing(),
+    }
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=1))
 
 
@@ -148,8 +184,15 @@ def cmd_baseline(a) -> int:
     if a.no_self_check:
         return 0
     log("self-check: replaying the baseline (expect no differences)")
-    a2 = argparse.Namespace(against=a.name, name=f"{a.name}-selfcheck", force=True, live=False, tol=a.tol,
-                            only=None, extra_args=None)
+    a2 = argparse.Namespace(
+        against=a.name,
+        name=f"{a.name}-selfcheck",
+        force=True,
+        live=False,
+        tol=a.tol,
+        only=None,
+        extra_args=None,
+    )
     return cmd_check(a2)
 
 
@@ -185,6 +228,7 @@ def cmd_compare(a) -> int:
 
 # ---------------------------------------------------------------- comparing
 
+
 def load_dump(d: Path) -> dict[str, list]:
     return {f.stem: json.loads(f.read_text()) for f in sorted(d.glob("*.json"))} if d.exists() else {}
 
@@ -207,7 +251,9 @@ def text_changes(old: list, new: list) -> list[str]:
         lines.append(f"regions: {len(old)} -> {len(new)}")
         used, pairs = set(), []
         for i, o in enumerate(old):
-            best = max(((iou(o["bbox"], n["bbox"]), j) for j, n in enumerate(new) if j not in used), default=(0, -1))
+            best = max(
+                ((iou(o["bbox"], n["bbox"]), j) for j, n in enumerate(new) if j not in used), default=(0, -1)
+            )
             if best[0] > 0.3:
                 used.add(best[1])
                 pairs.append((i, o, new[best[1]]))
@@ -219,7 +265,9 @@ def text_changes(old: list, new: list) -> list[str]:
     for i, o, n in pairs:
         for k, label in (("ocr", "OCR"), ("tl", "TL")):
             if o.get(k) != n.get(k):
-                lines.append(f"  region {i + 1} {label}: {o.get(k)!r}\n  {' ' * len(f'region {i + 1} {label}:')} -> {n.get(k)!r}")
+                lines.append(
+                    f"  region {i + 1} {label}: {o.get(k)!r}\n  {' ' * len(f'region {i + 1} {label}:')} -> {n.get(k)!r}"
+                )
     return lines
 
 
@@ -289,15 +337,19 @@ def request_diff(miss: dict, cache: Path, limit: int = 12) -> list[str]:
             best, best_lines = r, old
     if best_lines is None:
         return ["(no baseline requests to compare with)"]
-    out = [ln for ln in difflib.unified_diff(best_lines, new, lineterm="", n=0)
-           if ln[:1] in "+-" and not ln.startswith(("+++", "---"))]
+    out = [
+        ln
+        for ln in difflib.unified_diff(best_lines, new, lineterm="", n=0)
+        if ln[:1] in "+-" and not ln.startswith(("+++", "---"))
+    ]
+
     def clip(i: int, ln: str) -> str:  # long prompt lines: show the part around the change
         if len(ln) < 220:
             return ln
-        other = next((o for o in out[max(0, i - 1):i + 2] if o[:1] != ln[:1]), "")
+        other = next((o for o in out[max(0, i - 1) : i + 2] if o[:1] != ln[:1]), "")
         k = next((j for j, (x, y) in enumerate(zip(ln[1:], other[1:])) if x != y), 0)
         start = max(0, k - 80)
-        return ln[0] + ("..." if start else "") + ln[1 + start:1 + start + 200] + "..."
+        return ln[0] + ("..." if start else "") + ln[1 + start : 1 + start + 200] + "..."
 
     shown = [clip(i, ln) for i, ln in enumerate(out[:limit])]
     if len(out) > limit:
@@ -306,13 +358,16 @@ def request_diff(miss: dict, cache: Path, limit: int = 12) -> list[str]:
 
 
 _ERROR_LINE = re.compile(r"error|exception|traceback|failed", re.I)
-_EXPECTED = re.compile(r"replay miss|All bubbles failed|Retry failed|still failed|failed image|Finished in", re.I)
+_EXPECTED = re.compile(
+    r"replay miss|All bubbles failed|Retry failed|still failed|failed image|Finished in", re.I
+)
 
 
 def new_errors(base_log: Path, run_log: Path, limit: int = 8) -> list[str]:
     """Error-looking log lines of this run that the baseline's log doesn't have (numbers and
     paths normalized). The pipeline catches many errors and carries on, so a broken stage can
     look like missing regions rather than a crash."""
+
     def lines(f: Path) -> dict[str, str]:
         out = {}
         for line in f.read_text(errors="replace").splitlines() if f.exists() else []:
@@ -320,9 +375,12 @@ def new_errors(base_log: Path, run_log: Path, limit: int = 8) -> list[str]:
                 key = re.sub(r"\d+(\.\d+)?", "#", re.sub(r"/\S+", "<path>", line.strip()))
                 out.setdefault(key, line.strip())
         return out
+
     base, run = lines(base_log), lines(run_log)
     fresh = [run[k] for k in run if k not in base]
-    return [ln[:200] for ln in fresh[:limit]] + ([f"... {len(fresh) - limit} more"] if len(fresh) > limit else [])
+    return [ln[:200] for ln in fresh[:limit]] + (
+        [f"... {len(fresh) - limit} more"] if len(fresh) > limit else []
+    )
 
 
 def report(base: Path, run: Path, tol: int) -> int:
@@ -345,39 +403,52 @@ def report(base: Path, run: Path, tol: int) -> int:
         img_changed = txt_changed = 0
         unit_lines = []
         if rtimes.get(name, {}).get("rc"):
-            unit_lines.append(f"**translate.py exited with code {rtimes[name]['rc']}** (see `{name}/log.txt`)")
+            unit_lines.append(
+                f"**translate.py exited with code {rtimes[name]['rc']}** (see `{name}/log.txt`)"
+            )
         missed = {Path(m.get("page") or "?").stem for m in misses}
         errs = new_errors(bd / "log.txt", rd / "log.txt")
         if errs:
-            unit_lines.append("**New error lines in the log** (not in the baseline's):\n```\n"
-                              + "\n".join(errs) + "\n```")
+            unit_lines.append(
+                "**New error lines in the log** (not in the baseline's):\n```\n" + "\n".join(errs) + "\n```"
+            )
         if misses:
             first = misses[0]
-            unit_lines.append(f"**{len(misses)} LLM cache misses** on {len(missed)} page(s), first on "
-                              f"`{first.get('page')}` (later misses in a chapter usually follow from the first: "
-                              f"context and glossary carry it forward). What changed in the first request, "
-                              f"against the closest baseline request:\n```diff\n"
-                              + "\n".join(request_diff(first, bd / "llm")) + "\n```")
+            unit_lines.append(
+                f"**{len(misses)} LLM cache misses** on {len(missed)} page(s), first on "
+                f"`{first.get('page')}` (later misses in a chapter usually follow from the first: "
+                f"context and glossary carry it forward). What changed in the first request, "
+                f"against the closest baseline request:\n```diff\n"
+                + "\n".join(request_diff(first, bd / "llm"))
+                + "\n```"
+            )
         for page in sorted(set(bpages) | set(rpages)):
             stem = page.removesuffix(".png").removesuffix("_translated")
             lines = []
             if page not in rpages:
-                lines.append("not rendered: its translation was a cache miss" if stem in missed
-                             else "page missing in this run")
+                lines.append(
+                    "not rendered: its translation was a cache miss"
+                    if stem in missed
+                    else "page missing in this run"
+                )
             elif page not in bpages:
                 lines.append("page not in baseline")
             else:
                 mask, ia, ib = image_change(bpages[page], rpages[page], tol)
                 if mask is None:
-                    lines.append(f"image size changed {ia.shape[1]}x{ia.shape[0]} -> {ib.shape[1]}x{ib.shape[0]}")
+                    lines.append(
+                        f"image size changed {ia.shape[1]}x{ia.shape[0]} -> {ib.shape[1]}x{ib.shape[0]}"
+                    )
                     img_changed += 1
                 elif int(mask.sum()) > MIN_CHANGED:
                     img_changed += 1
                     diffs.mkdir(exist_ok=True)
                     png = diffs / f"{name.replace('/', '__')}__{stem}.jpg"
                     diff_png(ia, ib, mask, png)
-                    lines.append(f"image: {int(mask.sum())} px changed ({100 * mask.mean():.2f}%) "
-                                 f"[side by side]({png.relative_to(run)})")
+                    lines.append(
+                        f"image: {int(mask.sum())} px changed ({100 * mask.mean():.2f}%) "
+                        f"[side by side]({png.relative_to(run)})"
+                    )
                     lines += ["  " + s for s in changed_regions(mask, bdump.get(stem, []))]
             if stem in bdump and stem not in rdump and page in rpages:
                 lines.append("no text dump in this run (translation call failed on this page?)")
@@ -393,18 +464,24 @@ def report(base: Path, run: Path, tol: int) -> int:
             unit_lines.append("- glossary.txt differs")
         n = len(unit_lines)
         total += n
-        rows.append(f"| {name} | {len(bpages)} | {img_changed} | {txt_changed} | {len(misses)} | "
-                    f"{bu.get('seconds', '?')}s / {rtimes.get(name, {}).get('seconds', '?')}s |")
+        rows.append(
+            f"| {name} | {len(bpages)} | {img_changed} | {txt_changed} | {len(misses)} | "
+            f"{bu.get('seconds', '?')}s / {rtimes.get(name, {}).get('seconds', '?')}s |"
+        )
         if unit_lines:
             details.append(f"\n## {name}\n\n" + "\n".join(unit_lines))
-    head = (f"# {run.name} vs {base.name}\n\n"
-            f"baseline {bmeta['git_rev'][:10]}{' (dirty)' if bmeta['git_dirty'] else ''}, "
-            f"this run {rmeta['git_rev'][:10]}{' (dirty)' if rmeta['git_dirty'] else ''}; "
-            f"pixel tolerance {tol}\n")
+    head = (
+        f"# {run.name} vs {base.name}\n\n"
+        f"baseline {bmeta['git_rev'][:10]}{' (dirty)' if bmeta['git_dirty'] else ''}, "
+        f"this run {rmeta['git_rev'][:10]}{' (dirty)' if rmeta['git_dirty'] else ''}; "
+        f"pixel tolerance {tol}\n"
+    )
     if bmeta.get("models") != rmeta.get("models"):
         head += "\n**Model files differ between the two runs** (meta.json `models`).\n"
-    table = ("\n| unit | pages | image changed | text changed | cache misses | time base / run |\n"
-             "|---|---|---|---|---|---|\n" + "\n".join(rows) + "\n")
+    table = (
+        "\n| unit | pages | image changed | text changed | cache misses | time base / run |\n"
+        "|---|---|---|---|---|---|\n" + "\n".join(rows) + "\n"
+    )
     verdict = "\nNo differences.\n" if not total else ""
     text = head + table + verdict + "".join(details) + "\n"
     (run / "report.md").write_text(text)
@@ -418,22 +495,32 @@ def main() -> None:
     sub = p.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("baseline", help="run the sets with the live LLM and store everything")
     b.add_argument("--name", default="baseline")
-    b.add_argument("--sets", type=lambda s: s.split(","), default=DEFAULT_SETS,
-                   help=f"comma-separated, from: {', '.join(SETS)}")
+    b.add_argument(
+        "--sets",
+        type=lambda s: s.split(","),
+        default=DEFAULT_SETS,
+        help=f"comma-separated, from: {', '.join(SETS)}",
+    )
     b.add_argument("--force", action="store_true", help="replace an existing run of that name")
     b.add_argument("--no-self-check", action="store_true")
-    b.add_argument("--extra-args", default=None,
-                   help='extra translate.py flags for a variant baseline, e.g. "--vision full"; check '
-                        "replays it with the same flags")
+    b.add_argument(
+        "--extra-args",
+        default=None,
+        help='extra translate.py flags for a variant baseline, e.g. "--vision full"; check '
+        "replays it with the same flags",
+    )
     c = sub.add_parser("check", help="re-run with the baseline's LLM answers and report differences")
     c.add_argument("--against", default="baseline")
     c.add_argument("--name", default=None, help="default: check-<timestamp>")
     c.add_argument("--force", action="store_true")
     c.add_argument("--live", action="store_true", help="send cache misses to the LLM instead of failing them")
     c.add_argument("--only", default=None, help="comma-separated units or sets to run, e.g. ch6,om10")
-    c.add_argument("--extra-args", default=None,
-                   help='extra translate.py flags for a variant run, e.g. "--sfx redraw" (render-only '
-                        "variants replay without misses; compare a pre/post pair of such runs)")
+    c.add_argument(
+        "--extra-args",
+        default=None,
+        help='extra translate.py flags for a variant run, e.g. "--sfx redraw" (render-only '
+        "variants replay without misses; compare a pre/post pair of such runs)",
+    )
     m = sub.add_parser("compare", help="report differences between two existing runs")
     m.add_argument("a")
     m.add_argument("b")

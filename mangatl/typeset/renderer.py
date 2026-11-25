@@ -5,14 +5,20 @@ import numpy as np
 import skia
 from PIL import Image
 
+from mangatl.common.exceptions import FontError, ImageProcessingError, RenderingError
 from mangatl.common.image_utils import calculate_centroid_expansion_box, padded_safe_area_mask
-from mangatl.typeset.drawing import draw_layout, load_font_resources, pil_to_skia_surface, resolve_outline_width, skia_surface_to_pil
-from mangatl.typeset.fonts import find_font_variants, get_font_features, sanitize_text_for_font
+from mangatl.common.log import log_message
 from mangatl.typeset import symbols
+from mangatl.typeset.drawing import (
+    draw_layout,
+    load_font_resources,
+    pil_to_skia_surface,
+    resolve_outline_width,
+    skia_surface_to_pil,
+)
+from mangatl.typeset.fonts import find_font_variants, get_font_features, sanitize_text_for_font
 from mangatl.typeset.layout import find_optimal_layout
 from mangatl.typeset.text import is_rtl_script, parse_styled_segments
-from mangatl.common.exceptions import FontError, ImageProcessingError, RenderingError
-from mangatl.common.log import log_message
 
 
 @dataclass
@@ -69,10 +75,7 @@ def _should_try_auto_vertical_text(
 
     non_space_chars = sum(1 for ch in plain_text if not ch.isspace())
     word_count = len(plain_text.split())
-    return (
-        non_space_chars <= AUTO_VERTICAL_MAX_CHARS
-        and word_count <= AUTO_VERTICAL_MAX_WORDS
-    )
+    return non_space_chars <= AUTO_VERTICAL_MAX_CHARS and word_count <= AUTO_VERTICAL_MAX_WORDS
 
 
 VERTICAL_MIN_GAIN = 1.8  # stack letters vertically only if that allows text this much bigger
@@ -126,9 +129,7 @@ class _ScaledMetrics:
 def _scale_layout_data(layout_data: dict, factor: float) -> dict:
     """Copy of `layout_data` with every size and position scaled by `factor`."""
     scaled_layout_data = layout_data.copy()
-    scaled_layout_data["lines"] = [
-        line_data.copy() for line_data in layout_data["lines"]
-    ]
+    scaled_layout_data["lines"] = [line_data.copy() for line_data in layout_data["lines"]]
     scaled_layout_data["font_size"] = layout_data["font_size"] * factor
     scaled_layout_data["line_height"] = layout_data["line_height"] * factor
     scaled_layout_data["max_line_width"] = layout_data["max_line_width"] * factor
@@ -162,9 +163,7 @@ def _load_style_variants(
     verbose: bool,
 ) -> tuple[dict, dict]:
     """Load the italic/bold variants the text's style markers use (regular as fallback)."""
-    required_styles = {"regular"} | {
-        style for _, style in parse_styled_segments(clean_text)
-    }
+    required_styles = {"regular"} | {style for _, style in parse_styled_segments(clean_text)}
     log_message(f"Required styles: {sorted(required_styles)}", verbose=verbose)
 
     loaded_typefaces = {"regular": regular_typeface}
@@ -205,12 +204,8 @@ def _resolve_text_color(
         return skia.ColorBLACK
     try:
         # bubble_color_bgr may be a grayscale proxy; treat as BGR
-        bg_brightness = (
-            bubble_color_bgr[0] + bubble_color_bgr[1] + bubble_color_bgr[2]
-        ) / 3.0
-        return (
-            skia.ColorWHITE if bg_brightness < GRAYSCALE_MIDPOINT else skia.ColorBLACK
-        )
+        bg_brightness = (bubble_color_bgr[0] + bubble_color_bgr[1] + bubble_color_bgr[2]) / 3.0
+        return skia.ColorWHITE if bg_brightness < GRAYSCALE_MIDPOINT else skia.ColorBLACK
     except Exception:
         return skia.ColorBLACK
 
@@ -272,9 +267,7 @@ def _render_supersampled(
     tilt_margin = 0
     if rotation_deg and abs(rotation_deg) > 0.01:
         tilt_margin = (
-            math.ceil(
-                max(x2 - x1, y2 - y1) * math.sin(math.radians(abs(rotation_deg))) / 2
-            )
+            math.ceil(max(x2 - x1, y2 - y1) * math.sin(math.radians(abs(rotation_deg))) / 2)
             + OSB_TILT_SUPERSAMPLE_MARGIN
         )
     crop_x1 = max(0, x1 - tilt_margin)
@@ -319,9 +312,7 @@ def _render_supersampled(
     except RenderingError as e:
         raise RenderingError(f"Scaled conversion failed: {e}") from e
 
-    downscaled_result = scaled_pil_result.resize(
-        (crop_width, crop_height), Image.Resampling.LANCZOS
-    )
+    downscaled_result = scaled_pil_result.resize((crop_width, crop_height), Image.Resampling.LANCZOS)
     final_pil_image = pil_image.copy()
     final_pil_image.paste(downscaled_result, (crop_x1, crop_y1))
     return final_pil_image
@@ -509,9 +500,7 @@ def render_text_skia(
     except FontError as e:
         raise RenderingError(f"Font loading failed: {e}") from e
 
-    layout_text = sanitize_text_for_font(
-        layout_text, str(regular_font_path), verbose=verbose
-    )
+    layout_text = sanitize_text_for_font(layout_text, str(regular_font_path), verbose=verbose)
     if not layout_text.strip():
         log_message(
             "All text characters unsupported by font, skipping render",
@@ -520,9 +509,7 @@ def render_text_skia(
         return pil_image
 
     try:
-        _, regular_typeface, regular_hb_face = load_font_resources(
-            str(regular_font_path)
-        )
+        _, regular_typeface, regular_hb_face = load_font_resources(str(regular_font_path))
     except FontError as e:
         raise RenderingError(f"Font resource loading failed: {e}") from e
 
@@ -544,18 +531,12 @@ def render_text_skia(
     for style_key in ["italic", "bold", "bold_italic"]:
         style_path = font_variants.get(style_key)
         if style_path:
-            _, _typeface, _hb_face = load_font_resources(
-                str(style_path), style=style_key
-            )
+            _, _typeface, _hb_face = load_font_resources(str(style_path), style=style_key)
             if _hb_face:
                 preload_hb_faces[style_key] = _hb_face
 
     def _find_layout(use_vertical_stack: bool) -> dict:
-        line_spacing = (
-            config.vertical_line_spacing_mult
-            if use_vertical_stack
-            else config.line_spacing_mult
-        )
+        line_spacing = config.vertical_line_spacing_mult if use_vertical_stack else config.line_spacing_mult
         min_font = config.min_font_size
         max_font = config.max_font_size
         if use_vertical_stack and config.vertical_font_size_mult != 1.0:
@@ -591,9 +572,7 @@ def render_text_skia(
         if not (
             config.auto_vertical_text
             and not vertical_stack
-            and _should_try_auto_vertical_text(
-                layout_text, max_render_width, max_render_height
-            )
+            and _should_try_auto_vertical_text(layout_text, max_render_width, max_render_height)
         ):
             raise RenderingError(f"Layout optimization failed: {e}") from e
 
@@ -609,15 +588,11 @@ def render_text_skia(
         if (
             config.auto_vertical_text
             and not vertical_stack
-            and _should_try_auto_vertical_text(
-                layout_text, max_render_width, max_render_height
-            )
+            and _should_try_auto_vertical_text(layout_text, max_render_width, max_render_height)
         ):
             try:
                 vertical_layout_data = _find_layout(True)
-                if _auto_vertical_layout_is_better(
-                    layout_data, vertical_layout_data, max_render_height
-                ):
+                if _auto_vertical_layout_is_better(layout_data, vertical_layout_data, max_render_height):
                     layout_data = vertical_layout_data
                     log_message("Using auto vertical text layout", verbose=verbose)
             except RenderingError:

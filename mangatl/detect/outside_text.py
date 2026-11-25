@@ -15,22 +15,30 @@ from PIL import Image
 from sklearn.cluster import KMeans
 
 from mangatl.clean.glyph_mask import THRESHOLD as GLYPH_THRESHOLD
-from mangatl.clean.glyph_mask import glyph_dilation_radius, group_glyphs, texts_sharing_detections, verified_glyph_box
-from mangatl.common.image_utils import cv2_to_pil, pil_to_cv2, process_bubble_image_cached, resize_lanczos_antiring
-from mangatl.ocr import line_ocr
-from mangatl.detect.outside_text_detector import OutsideTextDetector
-from mangatl.ocr.readers import extract_text_with_manga_ocr
+from mangatl.clean.glyph_mask import (
+    glyph_dilation_radius,
+    group_glyphs,
+    texts_sharing_detections,
+    verified_glyph_box,
+)
 from mangatl.clean.page_glyph_map import PageGlyphMap
+from mangatl.common.exceptions import CancellationError
+from mangatl.common.image_utils import (
+    cv2_to_pil,
+    pil_to_cv2,
+    process_bubble_image_cached,
+    resize_lanczos_antiring,
+)
+from mangatl.common.log import log_message
+from mangatl.detect.outside_text_detector import OutsideTextDetector
 from mangatl.detect.tilt import detect_crop_tilt_angle
 from mangatl.ml.model_manager import get_model_manager
-from mangatl.common.exceptions import CancellationError
-from mangatl.common.log import log_message
+from mangatl.ocr import line_ocr
+from mangatl.ocr.readers import extract_text_with_manga_ocr
 from mangatl.settings import Settings
 
 OSB_EXPANSION_PIXEL_BUFFER = 5  # for bubbles, nearby OSB regions, panels
-OSB_SOLID_RATIO_THRESHOLD = (
-    0.95  # Stricter than interior sampling because border ring has no text mask noise
-)
+OSB_SOLID_RATIO_THRESHOLD = 0.95  # Stricter than interior sampling because border ring has no text mask noise
 OSB_COLOR_TOLERANCE = 15
 OSB_EXPANSION_PX = 2
 OSB_WHITE_SNAP_THRESH = 245
@@ -74,9 +82,7 @@ class OutsideTextWork:
 
     def __post_init__(self):
         if self.glyph_map is None:
-            self.glyph_map = PageGlyphMap.for_page(
-                self.pil_image, self.config, self.verbose
-            )
+            self.glyph_map = PageGlyphMap.for_page(self.pil_image, self.config, self.verbose)
 
 
 def _build_outside_text_data(
@@ -95,9 +101,7 @@ def _build_outside_text_data(
     outside_text_data = []
     original_cv_image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
 
-    for expanded_res, raw_res in zip(
-        outside_text_results, raw_outside_text_results, strict=False
-    ):
+    for expanded_res, raw_res in zip(outside_text_results, raw_outside_text_results, strict=False):
         bbox_coords, conf = expanded_res
         raw_coords, _ = raw_res
 
@@ -152,9 +156,7 @@ def _build_outside_text_data(
                 scale_factor = config.ocr.outside_min_side / min_side
                 new_w = int(w * scale_factor)
                 new_h = int(h * scale_factor)
-                resized_text = resize_lanczos_antiring(
-                    outside_text_image_pil, (new_w, new_h)
-                )
+                resized_text = resize_lanczos_antiring(outside_text_image_pil, (new_w, new_h))
             else:
                 resized_text = outside_text_image_pil
             final_text_pil = resized_text
@@ -193,11 +195,7 @@ def _build_outside_text_data(
                 max_side=osb_tilt_estimation_side_pixels,
                 deadband_deg=config.typesetting.outside.min_tilt,
                 max_tilt_deg=config.typesetting.outside.max_tilt,
-                ink_mask=(
-                    None
-                    if glyph_prob is None
-                    else glyph_prob[ry1:ry2, rx1:rx2] > GLYPH_THRESHOLD
-                ),
+                ink_mask=(None if glyph_prob is None else glyph_prob[ry1:ry2, rx1:rx2] > GLYPH_THRESHOLD),
             )
 
         try:
@@ -426,21 +424,15 @@ def _drop_page_numbers(
     suspicious_indices = []
     safe_results = []
 
-    margin_threshold = max(
-        0.0, min(0.3, config.detection.outside_text.page_filter_margin)
-    )
-    min_area_threshold = max(
-        0.0, min(0.2, config.detection.outside_text.page_filter_min_area)
-    )
+    margin_threshold = max(0.0, min(0.3, config.detection.outside_text.page_filter_margin))
+    min_area_threshold = max(0.0, min(0.2, config.detection.outside_text.page_filter_min_area))
 
     for i, res in enumerate(outside_text_results):
         bbox, _ = res
         x1, y1, x2, y2 = [int(c) for c in bbox]
         cy = (y1 + y2) / 2
 
-        is_in_margin = (cy < img_h * margin_threshold) or (
-            cy > img_h * (1 - margin_threshold)
-        )
+        is_in_margin = (cy < img_h * margin_threshold) or (cy > img_h * (1 - margin_threshold))
 
         area = (x2 - x1) * (y2 - y1)
         is_small = area < (img_w * img_h * min_area_threshold)
@@ -456,9 +448,7 @@ def _drop_page_numbers(
             f"Verifying {len(suspicious_crops)} suspicious OSB regions with OCR...",
             verbose=verbose,
         )
-        suspicious_texts = extract_text_with_manga_ocr(
-            suspicious_crops, verbose=verbose
-        )
+        suspicious_texts = extract_text_with_manga_ocr(suspicious_crops, verbose=verbose)
 
         for i, text in enumerate(suspicious_texts):
             if not _is_page_number(text):
@@ -493,8 +483,7 @@ def _expand_osb_bboxes(
     if max(narrow_expansion_mult, tiny_expansion_mult) <= 1.0:
         return outside_text_results
     log_message(
-        "Expanding OSB bboxes "
-        f"(narrow/tall: {narrow_expansion_mult}x, tiny: {tiny_expansion_mult}x)...",
+        f"Expanding OSB bboxes (narrow/tall: {narrow_expansion_mult}x, tiny: {tiny_expansion_mult}x)...",
         verbose=verbose,
     )
     expanded_results = []
@@ -660,9 +649,9 @@ def _build_total_bubble_mask(
         if np.any(total_bubble_mask):
             # Dilate the bubble mask to provide a safe buffer for OSB fill
             kernel = np.ones((11, 11), np.uint8)
-            total_bubble_mask = cv2.dilate(
-                total_bubble_mask.astype(np.uint8), kernel, iterations=1
-            ).astype(bool)
+            total_bubble_mask = cv2.dilate(total_bubble_mask.astype(np.uint8), kernel, iterations=1).astype(
+                bool
+            )
     return total_bubble_mask
 
 
@@ -699,12 +688,8 @@ def _probe_original_text_colors(
         # Dominant cluster is usually the background (text pixels are sparse)
         bg_color_rgb = centers[dominant_cluster_idx]
         # Use proper luminance calculation (ITU-R BT.601)
-        bg_brightness = (
-            0.299 * bg_color_rgb[0] + 0.587 * bg_color_rgb[1] + 0.114 * bg_color_rgb[2]
-        )
-        is_dark_text = (
-            bg_brightness < 128
-        )  # passed downstream; renderer inverts for text color
+        bg_brightness = 0.299 * bg_color_rgb[0] + 0.587 * bg_color_rgb[1] + 0.114 * bg_color_rgb[2]
+        is_dark_text = bg_brightness < 128  # passed downstream; renderer inverts for text color
         original_text_colors[bbox_tuple] = is_dark_text
 
         log_message(
@@ -732,9 +717,7 @@ def _recovery_confidence(osb_confidence: float) -> float:
     confidence also tightens recovery; below it, lower crop scores would mostly add art.
     """
     raised = max(0.0, osb_confidence - OSB_RECOVERY_REFERENCE_CONFIDENCE)
-    headroom = (1.0 - OSB_RECOVERY_CONFIDENCE) / (
-        1.0 - OSB_RECOVERY_REFERENCE_CONFIDENCE
-    )
+    headroom = (1.0 - OSB_RECOVERY_CONFIDENCE) / (1.0 - OSB_RECOVERY_REFERENCE_CONFIDENCE)
     return min(1.0, OSB_RECOVERY_CONFIDENCE + raised * headroom)
 
 
@@ -766,9 +749,7 @@ def _recover_missed_osb_text(
                 mask = mask[..., 0]
             if mask.shape == covered.shape:
                 covered |= mask > 0
-    covered = cv2.dilate(
-        covered.astype(np.uint8), np.ones((2 * radius + 1,) * 2, np.uint8)
-    ).astype(bool)
+    covered = cv2.dilate(covered.astype(np.uint8), np.ones((2 * radius + 1,) * 2, np.uint8)).astype(bool)
     for bubble in bubble_data or []:
         bbox = bubble.get("bbox")
         if bbox is None or len(bbox) != 4:
@@ -786,9 +767,7 @@ def _recover_missed_osb_text(
         return []
     image_cv = cv2.cvtColor(np.array(pil_image.convert("RGB")), cv2.COLOR_RGB2BGR)
     words = []
-    near = detector.detect_text_near(
-        image_cv, [group.box for group in groups], confidence
-    )
+    near = detector.detect_text_near(image_cv, [group.box for group in groups], confidence)
     for group, detections in zip(groups, near, strict=True):
         box = verified_glyph_box(group, [d for d, _ in detections])
         if box is not None:
@@ -804,8 +783,7 @@ def _recover_missed_osb_text(
             )
         )
     log_message(
-        f"Recovered {len(recovered)} OSB text region(s) the OSB model missed "
-        f"({len(groups)} checked)",
+        f"Recovered {len(recovered)} OSB text region(s) the OSB model missed ({len(groups)} checked)",
         always_print=bool(recovered),
         verbose=verbose,
     )
@@ -834,9 +812,7 @@ def prepare_outside_text_work(
     log_message("Detecting text outside speech bubbles...", verbose=verbose)
 
     try:
-        outside_detector = OutsideTextDetector(
-            device=config.device, hf_token=config.runtime.hf_token
-        )
+        outside_detector = OutsideTextDetector(device=config.device, hf_token=config.runtime.hf_token)
         detect = partial(
             outside_detector.detect_outside_text,
             str(image_path),
@@ -865,9 +841,7 @@ def prepare_outside_text_work(
                         if osb_confidence > OSB_RECOVERY_REFERENCE_CONFIDENCE
                         else []
                     )
-                    outside_text_results = list(
-                        outside_text_results
-                    ) + _recover_missed_osb_text(
+                    outside_text_results = list(outside_text_results) + _recover_missed_osb_text(
                         pil_image,
                         outside_text_results,
                         bubble_data,
@@ -881,9 +855,7 @@ def prepare_outside_text_work(
                     raise
                 except Exception as e:
                     # The OSB model's own results are still usable
-                    log_message(
-                        f"Missed OSB text recovery failed: {e}", always_print=True
-                    )
+                    log_message(f"Missed OSB text recovery failed: {e}", always_print=True)
 
         if not outside_text_results:
             log_message("No outside text regions found", verbose=verbose)
@@ -915,16 +887,10 @@ def prepare_outside_text_work(
         )
         total_bubble_mask = _build_total_bubble_mask(bubble_data, img_w, img_h, verbose)
 
-        mime_type = (
-            "image/png"
-            if image_format and image_format.upper() == "PNG"
-            else "image/jpeg"
-        )
+        mime_type = "image/png" if image_format and image_format.upper() == "PNG" else "image/jpeg"
         cv2_ext = ".png" if image_format and image_format.upper() == "PNG" else ".jpg"
 
-        original_text_colors = _probe_original_text_colors(
-            pil_image, raw_outside_text_results, verbose
-        )
+        original_text_colors = _probe_original_text_colors(pil_image, raw_outside_text_results, verbose)
 
         mask_groups, _ = outside_detector.get_text_masks(
             str(image_path),

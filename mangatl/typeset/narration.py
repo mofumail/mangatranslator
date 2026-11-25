@@ -22,11 +22,11 @@ def utterance_lines(text: str) -> str:
     text = text.replace(LIST_SEP.strip().join("  "), "\n")  # list lines (see is_list)
     text = re.sub(r"\(\s*\*+\s*", "(", text)
     text = re.sub(r"\s*\*+\s*\)", ")", text)
-    t = re.sub(r'(["”’\'])\s+(?=["“‘\'])', r"\1\n", text)       # "…" "…"
-    t = re.sub(r'([.!?~…♡])\s+(?=["“‘]|\'[A-Z])', r"\1\n", t)   # narration. "…" / 'Comment
-    t = re.sub(r'(["”])\s+(?=[A-Z])', r"\1\n", t)               # "…" Narration
-    t = re.sub(r'\)\s+(?=[(*"“‘A-Z])', ")\n", t)                # (thought) next
-    t = re.sub(r'([.!?~…♡♥"”*])\s+(?=\()', r"\1\n", t)          # … (thought)
+    t = re.sub(r'(["”’\'])\s+(?=["“‘\'])', r"\1\n", text)  # "…" "…"
+    t = re.sub(r'([.!?~…♡])\s+(?=["“‘]|\'[A-Z])', r"\1\n", t)  # narration. "…" / 'Comment
+    t = re.sub(r'(["”])\s+(?=[A-Z])', r"\1\n", t)  # "…" Narration
+    t = re.sub(r'\)\s+(?=[(*"“‘A-Z])', ")\n", t)  # (thought) next
+    t = re.sub(r'([.!?~…♡♥"”*])\s+(?=\()', r"\1\n", t)  # … (thought)
     return t
 
 

@@ -61,8 +61,10 @@ def main() -> None:
             print(f"\n## {s} {page}\n\nReference (unaligned): {refs}\n")
             items = runs[letters[0]][page]
             for i, (src, _) in enumerate(items):
-                outs = {L: (runs[L].get(page, [])[i][1] if i < len(runs[L].get(page, [])) else "<missing>")
-                        for L in letters}
+                outs = {
+                    L: (runs[L].get(page, [])[i][1] if i < len(runs[L].get(page, [])) else "<missing>")
+                    for L in letters
+                }
                 if len(set(outs.values())) == 1:
                     agree_all += 1
                     print(f"- {i + 1}. `{src}` → all: {outs[letters[0]]}")

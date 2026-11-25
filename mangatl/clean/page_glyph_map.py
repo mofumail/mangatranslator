@@ -5,11 +5,17 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from mangatl.clean.glyph_mask import UpscaledGlyphMap, glyph_dilation_radius, page_glyph_probability, refine_box_mask_to_glyphs, refine_mask_to_glyphs
-from mangatl.ml.hi_sam import predict_text_probability
-from mangatl.ml.model_manager import get_model_manager
+from mangatl.clean.glyph_mask import (
+    UpscaledGlyphMap,
+    glyph_dilation_radius,
+    page_glyph_probability,
+    refine_box_mask_to_glyphs,
+    refine_mask_to_glyphs,
+)
 from mangatl.common.exceptions import CancellationError
 from mangatl.common.log import log_message
+from mangatl.ml.hi_sam import predict_text_probability
+from mangatl.ml.model_manager import get_model_manager
 from mangatl.settings import Settings
 
 
@@ -34,9 +40,7 @@ class PageGlyphMap:
     _upscaled: UpscaledGlyphMap | None = field(default=None, init=False, repr=False)
 
     @classmethod
-    def for_page(
-        cls, image: Image.Image, config: Settings, verbose: bool
-    ) -> "PageGlyphMap":
+    def for_page(cls, image: Image.Image, config: Settings, verbose: bool) -> "PageGlyphMap":
         return cls(
             image,
             verbose=verbose,
@@ -97,8 +101,7 @@ class PageGlyphMap:
                 self.upscale_boxes = False
                 self._upscaled = None
                 log_message(
-                    f"Upscaled text segmentation failed ({e}); LaMa masks use the "
-                    "page map alone",
+                    f"Upscaled text segmentation failed ({e}); LaMa masks use the page map alone",
                     always_print=True,
                 )
                 return None
@@ -116,4 +119,3 @@ class PageGlyphMap:
         if box_prob is None:
             return refine_mask_to_glyphs(box_mask, glyph_prob, radius)
         return refine_box_mask_to_glyphs(box_mask, glyph_prob, box, box_prob, radius)
-

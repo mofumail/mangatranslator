@@ -88,9 +88,7 @@ class RTDetrYOLOAdapter:
                     outputs,
                     threshold=float(conf),
                     target_sizes=[(orig_h, orig_w)],
-                    use_focal_loss=bool(
-                        getattr(self.model.config, "use_focal_loss", True)
-                    ),
+                    use_focal_loss=bool(getattr(self.model.config, "use_focal_loss", True)),
                 )[0]
         finally:
             if was_training:

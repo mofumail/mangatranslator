@@ -39,9 +39,7 @@ class LayerNorm2d(nn.Module):
 
 
 class Adapter(nn.Module):
-    def __init__(
-        self, D_features, mlp_ratio=0.25, act_layer=nn.GELU, skip_connect=True
-    ):
+    def __init__(self, D_features, mlp_ratio=0.25, act_layer=nn.GELU, skip_connect=True):
         super().__init__()
         self.skip_connect = skip_connect
         D_hidden_features = int(D_features * mlp_ratio)

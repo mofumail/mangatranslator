@@ -38,9 +38,25 @@ DB_PATH = DATA / "jobs.json"
 DEFAULT_OUT_ROOT = ROOT / "translated"
 INDEX_HTML = ROOT / "webui" / "index.html"
 ARCHIVE_EXTS = {".zip", ".cbz"}
-LANGUAGES = ["Japanese", "Korean", "Chinese (Simplified)", "Chinese (Traditional)", "English",
-             "Spanish", "French", "German", "Portuguese", "Italian", "Russian", "Indonesian",
-             "Vietnamese", "Thai", "Polish", "Turkish", "Arabic"]
+LANGUAGES = [
+    "Japanese",
+    "Korean",
+    "Chinese (Simplified)",
+    "Chinese (Traditional)",
+    "English",
+    "Spanish",
+    "French",
+    "German",
+    "Portuguese",
+    "Italian",
+    "Russian",
+    "Indonesian",
+    "Vietnamese",
+    "Thai",
+    "Polish",
+    "Turkish",
+    "Arabic",
+]
 FINAL = {"done", "failed", "cancelled", "interrupted"}
 
 
@@ -104,11 +120,24 @@ def worker() -> None:
 
 def run_job(job_id: str, job: dict[str, Any]) -> None:
     o = job["options"]
-    cmd = [sys.executable, str(ROOT / "translate.py"),
-           "--input", job["input_dir"], "--output", job["output_dir"],
-           "--source", o.get("source") or "Japanese", "--target", o.get("target") or "English",
-           "--model", o.get("model") or "26b", "--osb", o.get("osb") or "auto",
-           "--context-pages", str(o.get("context_pages", 3))]
+    cmd = [
+        sys.executable,
+        str(ROOT / "translate.py"),
+        "--input",
+        job["input_dir"],
+        "--output",
+        job["output_dir"],
+        "--source",
+        o.get("source") or "Japanese",
+        "--target",
+        o.get("target") or "English",
+        "--model",
+        o.get("model") or "26b",
+        "--osb",
+        o.get("osb") or "auto",
+        "--context-pages",
+        str(o.get("context_pages", 3)),
+    ]
     if o.get("font"):
         cmd += ["--font", o["font"]]
     if o.get("instructions"):
@@ -133,21 +162,33 @@ def run_job(job_id: str, job: dict[str, Any]) -> None:
     log_path = job_dir(job_id) / "log.txt"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     now = time.time()
-    store.update(job_id, status="running", started=now, first_started=job.get("first_started") or now,
-                 finished=None, exit_code=None, error=None)
+    store.update(
+        job_id,
+        status="running",
+        started=now,
+        first_started=job.get("first_started") or now,
+        finished=None,
+        exit_code=None,
+        error=None,
+    )
     with open(log_path, "a") as logf:
         logf.write(f"\n=== run started {time.ctime()} ===\n")
         logf.flush()
-        proc = subprocess.Popen(cmd, cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT,
-                                start_new_session=True,
-                                env={**os.environ, "PYTHONUNBUFFERED": "1"})
+        proc = subprocess.Popen(
+            cmd,
+            cwd=ROOT,
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
         running[job_id] = proc
         rc = proc.wait()
         running.pop(job_id, None)
 
     job = store.get(job_id)
     tail = read_log_tail(log_path, 200)
-    run_tail = tail[max((i for i, l in enumerate(tail) if l.startswith("=== run started")), default=0):]
+    run_tail = tail[max((i for i, l in enumerate(tail) if l.startswith("=== run started")), default=0) :]
     page_issues = page_problems(run_tail)
     if job.get("cancel_requested"):
         status = "cancelled"
@@ -159,8 +200,15 @@ def run_job(job_id: str, job: dict[str, Any]) -> None:
     if status == "failed":
         lines = [l for l in run_tail if "[translate]" in l or "rror" in l]
         err = lines[-1] if lines else f"exit code {rc}"
-    store.update(job_id, status=status, exit_code=rc, finished=time.time(),
-                 cancel_requested=False, error=err, issues=page_issues or [])
+    store.update(
+        job_id,
+        status=status,
+        exit_code=rc,
+        finished=time.time(),
+        cancel_requested=False,
+        error=err,
+        issues=page_issues or [],
+    )
 
 
 def page_problems(lines: list[str]) -> list[str] | None:
@@ -200,13 +248,21 @@ def list_pages(job: dict[str, Any]) -> list[dict[str, Any]]:
     out_dir = Path(job["output_dir"])
     pages = []
     if job["kind"] == "view":
-        imgs = sorted((p for p in out_dir.rglob("*") if is_image(p)),
-                      key=lambda p: tr.natural_key(p.relative_to(out_dir)))
+        imgs = sorted(
+            (p for p in out_dir.rglob("*") if is_image(p)),
+            key=lambda p: tr.natural_key(p.relative_to(out_dir)),
+        )
         for p in imgs:
             rel = p.relative_to(out_dir)
-            pages.append({"chapter": str(rel.parent) if str(rel.parent) != "." else "",
-                          "name": p.name, "orig": None, "tr": str(rel),
-                          "v": int(p.stat().st_mtime)})
+            pages.append(
+                {
+                    "chapter": str(rel.parent) if str(rel.parent) != "." else "",
+                    "name": p.name,
+                    "orig": None,
+                    "tr": str(rel),
+                    "v": int(p.stat().st_mtime),
+                }
+            )
         return pages
 
     in_dir = Path(job["input_dir"])
@@ -221,10 +277,15 @@ def list_pages(job: dict[str, Any]) -> list[dict[str, Any]]:
             out_rel = rel.parent / tr.translated_name(p, "png")
             out_path = out_dir / out_rel
             done = out_path.exists() and out_path.stat().st_mtime >= since
-            pages.append({"chapter": str(rel.parent) if str(rel.parent) != "." else "",
-                          "name": p.name, "orig": str(rel),
-                          "tr": str(out_rel) if done else None,
-                          "v": int(out_path.stat().st_mtime) if done else 0})
+            pages.append(
+                {
+                    "chapter": str(rel.parent) if str(rel.parent) != "." else "",
+                    "name": p.name,
+                    "orig": str(rel),
+                    "tr": str(out_rel) if done else None,
+                    "v": int(out_path.stat().st_mtime) if done else 0,
+                }
+            )
     return pages
 
 
@@ -293,16 +354,34 @@ def job_summary(job: dict[str, Any], with_pages: bool = False) -> dict[str, Any]
         cover_url = f"/api/jobs/{job['id']}/img?kind=tr&p={cover['tr']}&v={cover['v']}"
     elif pages and pages[0]["orig"]:
         cover_url = f"/api/jobs/{job['id']}/img?kind=orig&p={pages[0]['orig']}"
-    res = {k: job.get(k) for k in ("id", "name", "kind", "status", "input_dir", "output_dir",
-                                    "created", "started", "finished", "error", "options", "issues")}
+    res = {
+        k: job.get(k)
+        for k in (
+            "id",
+            "name",
+            "kind",
+            "status",
+            "input_dir",
+            "output_dir",
+            "created",
+            "started",
+            "finished",
+            "error",
+            "options",
+            "issues",
+        )
+    }
     res.update(total=len(pages), done=done, cover=cover_url)
     if with_pages:
         res["pages"] = pages
         log = read_log_tail(job_dir(job["id"]) / "log.txt", 400)
         stage = ""
         for line in reversed(log):
-            m = re.search(r"(Processing \d+/\d+: .*|\[translate\] \[\d+/\d+\] .*|llama-server ready|"
-                          r"Starting llama-server.*|Downloading .*)", line)
+            m = re.search(
+                r"(Processing \d+/\d+: .*|\[translate\] \[\d+/\d+\] .*|llama-server ready|"
+                r"Starting llama-server.*|Downloading .*)",
+                line,
+            )
             if m:
                 stage = m.group(1).replace("[translate] ", "")
                 break
@@ -336,9 +415,14 @@ def index() -> HTMLResponse:
 def config() -> dict[str, Any]:
     fonts = sorted(d.name for d in tr.FONTS_DIR.iterdir() if d.is_dir())
     models = {k: Path(v["gguf"]).exists() for k, v in tr.MODEL_PRESETS.items()}
-    return {"languages": LANGUAGES, "fonts": fonts, "models": models,
-            "default_out_root": str(DEFAULT_OUT_ROOT), "home": str(Path.home()),
-            "osb_ready": tr.OSB_TEXT_MODEL.exists()}
+    return {
+        "languages": LANGUAGES,
+        "fonts": fonts,
+        "models": models,
+        "default_out_root": str(DEFAULT_OUT_ROOT),
+        "home": str(Path.home()),
+        "osb_ready": tr.OSB_TEXT_MODEL.exists(),
+    }
 
 
 @app.get("/api/browse")
@@ -365,8 +449,13 @@ def browse(path: str = "", files: bool = False) -> dict[str, Any]:
                 continue
     except PermissionError:
         raise HTTPException(403, f"no permission to read {p}")
-    return {"path": str(p), "parent": str(p.parent) if p.parent != p else None,
-            "dirs": dirs, "archives": archives, "images": n_images}
+    return {
+        "path": str(p),
+        "parent": str(p.parent) if p.parent != p else None,
+        "dirs": dirs,
+        "archives": archives,
+        "images": n_images,
+    }
 
 
 @app.get("/api/jobs")
@@ -388,16 +477,28 @@ async def create_job(request: Request) -> dict[str, Any]:
     job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
     name = clean_name(body.get("name") or "manga")
     jd = job_dir(job_id)
-    job: dict[str, Any] = {"id": job_id, "name": name, "kind": "translate", "created": time.time(),
-                           "options": body.get("options") or {}, "uploaded": False,
-                           "status": "queued", "error": None}
+    job: dict[str, Any] = {
+        "id": job_id,
+        "name": name,
+        "kind": "translate",
+        "created": time.time(),
+        "options": body.get("options") or {},
+        "uploaded": False,
+        "status": "queued",
+        "error": None,
+    }
 
     if mode == "view":
         p = Path(body.get("path", "")).expanduser()
         if not p.is_dir():
             raise HTTPException(400, "folder not found")
-        job.update(kind="view", status="done", input_dir="", output_dir=str(p.resolve()),
-                   name=clean_name(body.get("name") or p.name))
+        job.update(
+            kind="view",
+            status="done",
+            input_dir="",
+            output_dir=str(p.resolve()),
+            name=clean_name(body.get("name") or p.name),
+        )
     elif mode == "path":
         p = Path(body.get("path", "")).expanduser()
         if p.is_dir():
@@ -417,8 +518,9 @@ async def create_job(request: Request) -> dict[str, Any]:
 
     if job["kind"] == "translate":
         out = (body.get("output_dir") or "").strip()
-        job["output_dir"] = str(Path(out).expanduser().resolve() if out
-                                else unique_dir(DEFAULT_OUT_ROOT / name))
+        job["output_dir"] = str(
+            Path(out).expanduser().resolve() if out else unique_dir(DEFAULT_OUT_ROOT / name)
+        )
         if mode == "path" and not list_pages(job):
             shutil.rmtree(jd, ignore_errors=True)
             raise HTTPException(400, "no images found there")
@@ -534,8 +636,12 @@ async def http_error(_: Request, exc: HTTPException) -> JSONResponse:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Local web UI for the manga translator")
     ap.add_argument("--port", type=int, default=7860)
-    ap.add_argument("--open", action=argparse.BooleanOptionalAction, default=False,
-                    help="Open the UI in the default browser once the server is up")
+    ap.add_argument(
+        "--open",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Open the UI in the default browser once the server is up",
+    )
     a = ap.parse_args()
     ALLOWED_HOSTS.update({f"127.0.0.1:{a.port}", f"localhost:{a.port}"})
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
@@ -544,6 +650,7 @@ def main() -> None:
     print(f"\n  Manga Translator UI:  {url}   (Ctrl+C to stop)\n", flush=True)
     if a.open:
         import webbrowser
+
         threading.Timer(1.5, webbrowser.open, [url]).start()
     uvicorn.run(app, host="127.0.0.1", port=a.port, log_level="warning")
 

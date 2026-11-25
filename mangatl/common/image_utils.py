@@ -9,9 +9,9 @@ import torch
 from PIL import Image
 
 from mangatl.common.caching import get_cache
-from mangatl.ml.model_manager import get_model_manager
 from mangatl.common.exceptions import ImageProcessingError
 from mangatl.common.log import log_message
+from mangatl.ml.model_manager import get_model_manager
 
 
 def pil_to_cv2(pil_image):
@@ -53,9 +53,7 @@ def cv2_to_pil(cv2_image):
     return Image.fromarray(cv2_image)
 
 
-def save_image_with_compression(
-    image, output_path, jpeg_quality=95, png_compression=2, verbose=False
-):
+def save_image_with_compression(image, output_path, jpeg_quality=95, png_compression=2, verbose=False):
     """
     Save an image with specified compression settings.
 
@@ -69,9 +67,7 @@ def save_image_with_compression(
     Raises:
         ImageProcessingError: If image saving fails
     """
-    output_path = (
-        Path(output_path) if not isinstance(output_path, Path) else output_path
-    )
+    output_path = Path(output_path) if not isinstance(output_path, Path) else output_path
 
     extension = output_path.suffix.lower()
     output_format = None
@@ -81,9 +77,7 @@ def save_image_with_compression(
         output_format = "JPEG"
         # JPEG doesn't support transparency - composite on white background
         if image.mode in ["RGBA", "LA"]:
-            log_message(
-                f"Converting {image.mode} to RGB for JPEG output", verbose=verbose
-            )
+            log_message(f"Converting {image.mode} to RGB for JPEG output", verbose=verbose)
             background = Image.new("RGB", image.size, (255, 255, 255))
             alpha_channel = image.split()[-1] if image.mode in ["RGBA", "LA"] else None
             background.paste(image, mask=alpha_channel)
@@ -92,9 +86,7 @@ def save_image_with_compression(
             log_message("Converting P mode to RGB for JPEG output", verbose=verbose)
             image = image.convert("RGB")
         elif image.mode != "RGB":
-            log_message(
-                f"Converting {image.mode} mode to RGB for JPEG output", verbose=verbose
-            )
+            log_message(f"Converting {image.mode} mode to RGB for JPEG output", verbose=verbose)
             image = image.convert("RGB")
         save_options["quality"] = max(1, min(jpeg_quality, 100))
         log_message(
@@ -113,9 +105,7 @@ def save_image_with_compression(
     elif extension == ".webp":
         output_format = "WEBP"
         save_options["lossless"] = True
-        log_message(
-            f"Saving WEBP image with lossless quality to {output_path}", verbose=verbose
-        )
+        log_message(f"Saving WEBP image with lossless quality to {output_path}", verbose=verbose)
 
     else:
         log_message(
@@ -208,9 +198,7 @@ def estimate_glyph_size(
     else:
         ink = crop < paper * (1 - contrast)
 
-    _, _, stats, _ = cv2.connectedComponentsWithStats(
-        (ink & interior).astype(np.uint8), 8
-    )
+    _, _, stats, _ = cv2.connectedComponentsWithStats((ink & interior).astype(np.uint8), 8)
     parts = stats[1:][stats[1:, cv2.CC_STAT_AREA] >= GLYPH_MIN_PART_AREA]
     if len(parts) == 0:
         return None
@@ -240,9 +228,7 @@ def _edge_distance_map(cleaned_mask: np.ndarray) -> np.ndarray:
     return distance_map
 
 
-def padded_safe_area_mask(
-    cleaned_mask: np.ndarray, padding_pixels: float
-) -> np.ndarray:
+def padded_safe_area_mask(cleaned_mask: np.ndarray, padding_pixels: float) -> np.ndarray:
     """Mask (0/255) of the bubble pixels at least padding_pixels from its outline."""
     return (_edge_distance_map(cleaned_mask) >= padding_pixels).astype(np.uint8) * 255
 
@@ -326,20 +312,11 @@ def calculate_centroid_expansion_box(
         cx, cy = round(centroid_x), round(centroid_y)
         mask_h, mask_w = safe_area_mask.shape
 
-        if (
-            cy < 0
-            or cy >= mask_h
-            or cx < 0
-            or cx >= mask_w
-            or safe_area_mask[cy, cx] != 255
-        ):
+        if cy < 0 or cy >= mask_h or cx < 0 or cx >= mask_w or safe_area_mask[cy, cx] != 255:
             safe_pixels = np.argwhere(safe_area_mask == 255)
             if safe_pixels.size == 0:
                 raise ImageProcessingError("No safe pixels found in safe_area_mask")
-            distances = np.sqrt(
-                (safe_pixels[:, 0] - centroid_y) ** 2
-                + (safe_pixels[:, 1] - centroid_x) ** 2
-            )
+            distances = np.sqrt((safe_pixels[:, 0] - centroid_y) ** 2 + (safe_pixels[:, 1] - centroid_x) ** 2)
             nearest_idx = np.argmin(distances)
             cy, cx = safe_pixels[nearest_idx]
             centroid_x, centroid_y = float(cx), float(cy)
@@ -362,9 +339,7 @@ def calculate_centroid_expansion_box(
         min_width_dist = min(dist_to_left_edge, dist_to_right_edge)
         min_height_dist = min(dist_to_top_edge, dist_to_bottom_edge)
         safe_width_base = min_width_dist - 1 if min_width_dist > 1 else min_width_dist
-        safe_height_base = (
-            min_height_dist - 1 if min_height_dist > 1 else min_height_dist
-        )
+        safe_height_base = min_height_dist - 1 if min_height_dist > 1 else min_height_dist
         max_safe_width = 2 * max(0, safe_width_base)
         max_safe_height = 2 * max(0, safe_height_base)
 
@@ -404,13 +379,9 @@ def calculate_centroid_expansion_box(
             raise ImageProcessingError("Failed to create safe area mask")
 
     except (cv2.error, ValueError, IndexError, ZeroDivisionError, OverflowError) as e:
-        log_message(
-            f"Safe area calculation error: {e}", verbose=verbose, always_print=True
-        )
+        log_message(f"Safe area calculation error: {e}", verbose=verbose, always_print=True)
     except Exception as e:
-        log_message(
-            f"Safe area calculation failed: {e}", verbose=verbose, always_print=True
-        )
+        log_message(f"Safe area calculation failed: {e}", verbose=verbose, always_print=True)
 
     raise ImageProcessingError("Safe area calculation failed")
 
@@ -427,9 +398,7 @@ def image_to_tensor(image: Image.Image, device: torch.device) -> torch.Tensor:
 
 def tensor_to_image(tensor: torch.Tensor) -> Image.Image:
     """Converts a PyTorch tensor to a PIL Image."""
-    img_np = (
-        tensor.squeeze(0).permute(1, 2, 0).clamp(0, 1).cpu().numpy() * 255
-    ).astype(np.uint8)
+    img_np = (tensor.squeeze(0).permute(1, 2, 0).clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
     return Image.fromarray(img_np)
 
 
@@ -491,9 +460,7 @@ def upscale_image_to_dimension(
             verbose=verbose,
         )
         current_image = _upscale_image(model, current_image, device)
-        log_message(
-            f"...to {current_image.width}x{current_image.height}", verbose=verbose
-        )
+        log_message(f"...to {current_image.width}x{current_image.height}", verbose=verbose)
 
     cache.set_upscaled_image(cache_key, current_image, verbose)
     return current_image
@@ -554,9 +521,7 @@ def resize_lanczos_antiring(image: Image.Image, size: tuple[int, int]) -> Image.
     """
     resized = np.asarray(image.resize(size, Image.LANCZOS))
     lo = hi = np.asarray(image)
-    for axis, (src_n, dst_n) in enumerate(
-        zip(image.size[::-1], size[::-1], strict=False)
-    ):
+    for axis, (src_n, dst_n) in enumerate(zip(image.size[::-1], size[::-1], strict=False)):
         scale = src_n / dst_n
         # Downscaling stretches the kernel, so the main lobe covers more source pixels
         k = max(scale, 1.0)
@@ -590,9 +555,7 @@ def resize_to_max_side(
     return image.resize((new_width, new_height), Image.LANCZOS)
 
 
-def resize_to_min_side(
-    image: Image.Image, min_side: int, verbose: bool = False
-) -> Image.Image:
+def resize_to_min_side(image: Image.Image, min_side: int, verbose: bool = False) -> Image.Image:
     """Resize so that the smallest side equals min_side (aspect ratio preserved)."""
     width, height = image.size
 
@@ -601,9 +564,7 @@ def resize_to_min_side(
             f"Invalid image dimensions: {width}x{height}. Cannot resize 0x0 images.",
             always_print=True,
         )
-        raise ImageProcessingError(
-            f"Invalid image dimensions: {width}x{height}. Cannot resize 0x0 images."
-        )
+        raise ImageProcessingError(f"Invalid image dimensions: {width}x{height}. Cannot resize 0x0 images.")
 
     current_min = min(width, height)
     if current_min == min_side:
@@ -639,9 +600,7 @@ def convert_image_to_target_mode(
         return pil_image
 
     if target_mode == "RGB":
-        if pil_image.mode in {"RGBA", "LA"} or (
-            pil_image.mode == "P" and "transparency" in pil_image.info
-        ):
+        if pil_image.mode in {"RGBA", "LA"} or (pil_image.mode == "P" and "transparency" in pil_image.info):
             log_message(
                 f"Converting {pil_image.mode} to RGB (flattening transparency)",
                 verbose=verbose,
@@ -670,16 +629,12 @@ def convert_image_to_target_mode(
                 try:
                     background_comp = Image.new("RGB", pil_image.size, (255, 255, 255))
                     img_rgba_for_composite = (
-                        pil_image
-                        if pil_image.mode == "RGBA"
-                        else pil_image.convert("RGBA")
+                        pil_image if pil_image.mode == "RGBA" else pil_image.convert("RGBA")
                     )
                     pil_image = Image.alpha_composite(
                         background_comp.convert("RGBA"), img_rgba_for_composite
                     ).convert("RGB")
-                    log_message(
-                        "Alpha composite conversion successful", verbose=verbose
-                    )
+                    log_message("Alpha composite conversion successful", verbose=verbose)
                 except Exception as composite_err:
                     log_message(
                         f"Warning: Alpha composite failed, using simple convert: {composite_err}",
@@ -730,9 +685,7 @@ def process_bubble_image_cached(
     if mode == "min" and min(bubble_image_pil.size) >= target_min_side:
         return bubble_image_pil
     cache = get_cache()
-    cache_key = cache.get_bubble_processing_cache_key(
-        bubble_image_pil, target_min_side, mode, model_type
-    )
+    cache_key = cache.get_bubble_processing_cache_key(bubble_image_pil, target_min_side, mode, model_type)
     cached_result = cache.get_upscaled_image(cache_key)
     if cached_result is not None:
         log_message("  - Using cached bubble processing result", always_print=True)

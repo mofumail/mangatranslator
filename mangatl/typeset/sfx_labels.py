@@ -12,9 +12,8 @@ import re
 import numpy as np
 from PIL import ImageDraw, ImageFont
 
-from mangatl.typeset.fonts import find_font_variants
 from mangatl.common.log import log_message
-
+from mangatl.typeset.fonts import find_font_variants
 
 # Sound effects: source all kana (plus small-tsu, long marks, hearts, punctuation)
 _KANA_SFX = re.compile(r"^[ぁ-ゖァ-ヺーヽヾ・ッっー〜~♡♥!！?？.…、。\s]+$")
@@ -53,10 +52,15 @@ def _place_label(size: tuple[int, int], box, page_wh, taken, gray) -> tuple[int,
     W, H = page_wh
     cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
     gap = max(4, h // 4)
-    sides = {"right": (x1 + gap, cy - h // 2), "left": (x0 - gap - w, cy - h // 2),
-             "below": (cx - w // 2, y1 + gap), "above": (cx - w // 2, y0 - gap - h)}
-    order = (["right", "left", "below", "above"] if (y1 - y0) > (x1 - x0)
-             else ["below", "above", "right", "left"])
+    sides = {
+        "right": (x1 + gap, cy - h // 2),
+        "left": (x0 - gap - w, cy - h // 2),
+        "below": (cx - w // 2, y1 + gap),
+        "above": (cx - w // 2, y0 - gap - h),
+    }
+    order = (
+        ["right", "left", "below", "above"] if (y1 - y0) > (x1 - x0) else ["below", "above", "right", "left"]
+    )
 
     def overlap(a, b):
         return max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
@@ -68,10 +72,10 @@ def _place_label(size: tuple[int, int], box, page_wh, taken, gray) -> tuple[int,
         if gray is None:
             return False
         if side in ("below", "above"):
-            strip = gray[y1:y + h, x:x + w] if side == "below" else gray[y:y0, x:x + w]
+            strip = gray[y1 : y + h, x : x + w] if side == "below" else gray[y:y0, x : x + w]
             lines = (strip < 80).mean(axis=1) if strip.size else []
         else:
-            strip = gray[y:y + h, x1:x + w] if side == "right" else gray[y:y + h, x:x0]
+            strip = gray[y : y + h, x1 : x + w] if side == "right" else gray[y : y + h, x:x0]
             lines = (strip < 80).mean(axis=0) if strip.size else []
         return bool(len(lines)) and float(np.max(lines)) > 0.9
 
@@ -83,7 +87,7 @@ def _place_label(size: tuple[int, int], box, page_wh, taken, gray) -> tuple[int,
         r = (x, y, x + w, y + h)
         if any(overlap(r, t) for t in taken) or crosses_border(side, x, y):
             continue
-        busy = float(np.std(gray[y:y + h, x:x + w])) if gray is not None else 0.0
+        busy = float(np.std(gray[y : y + h, x : x + w])) if gray is not None else 0.0
         score = busy + 6 * rank
         if best_score is None or score < best_score:
             best, best_score = (x, y), score
@@ -116,22 +120,20 @@ def draw_labels(image, labels: list[tuple], sorted_bubble_data: list[dict], conf
     mode = image.mode
     page = image.convert("RGB")
     gray = np.asarray(page.convert("L"), dtype=np.float32)
-    taken = [tuple(int(v) for v in b["bbox"]) for b in sorted_bubble_data
-             if not b.get("_sfx_label")]
+    taken = [tuple(int(v) for v in b["bbox"]) for b in sorted_bubble_data if not b.get("_sfx_label")]
     draw = ImageDraw.Draw(page)
     for bbox, label in labels:
         box = tuple(int(v) for v in bbox)
         # big effects get big labels, like a letterer's
         side = max(box[2] - box[0], box[3] - box[1])
-        size = round(min(max(side * SFX_LABEL_SHARE, base * SFX_LABEL_SCALE[0]),
-                         base * SFX_LABEL_SCALE[1]))
+        size = round(min(max(side * SFX_LABEL_SHARE, base * SFX_LABEL_SCALE[0]), base * SFX_LABEL_SCALE[1]))
         font = ImageFont.truetype(str(font_path), size)
         stroke = max(2, round(size * 0.14))
         l, t, r, b = draw.textbbox((0, 0), label, font=font, stroke_width=stroke)
         x, y = _place_label((r - l, b - t), box, page.size, taken, gray)
-        draw.text((x - l, y - t), label, font=font, fill=(0, 0, 0),
-                  stroke_width=stroke, stroke_fill=(255, 255, 255))
+        draw.text(
+            (x - l, y - t), label, font=font, fill=(0, 0, 0), stroke_width=stroke, stroke_fill=(255, 255, 255)
+        )
         taken.append((x, y, x + r - l, y + b - t))
         log_message(f"SFX label {label!r} beside {box}", verbose=config.verbose)
     return page.convert(mode) if mode != "RGB" else page
-

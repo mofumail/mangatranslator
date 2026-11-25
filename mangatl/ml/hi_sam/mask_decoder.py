@@ -34,14 +34,10 @@ class MaskDecoder(nn.Module):
         self.mask_tokens = nn.Embedding(self.num_mask_tokens, transformer_dim)
 
         self.output_upscaling = nn.Sequential(
-            nn.ConvTranspose2d(
-                transformer_dim, transformer_dim // 4, kernel_size=2, stride=2
-            ),
+            nn.ConvTranspose2d(transformer_dim, transformer_dim // 4, kernel_size=2, stride=2),
             LayerNorm2d(transformer_dim // 4),
             activation(),
-            nn.ConvTranspose2d(
-                transformer_dim // 4, transformer_dim // 8, kernel_size=2, stride=2
-            ),
+            nn.ConvTranspose2d(transformer_dim // 4, transformer_dim // 8, kernel_size=2, stride=2),
             activation(),
         )
         self.output_hypernetworks_mlps = nn.ModuleList(
@@ -74,12 +70,8 @@ class MaskDecoder(nn.Module):
             nn.Conv2d(hr_dim, hr_dim, kernel_size=3, padding=1),
             activation(),
         )
-        self.output_hypernetworks_mlps_hr = MLP(
-            transformer_dim, transformer_dim, hr_dim, 3
-        )
-        self.iou_prediction_head_hr = MLP(
-            transformer_dim, iou_head_hidden_dim, 1, iou_head_depth
-        )
+        self.output_hypernetworks_mlps_hr = MLP(transformer_dim, transformer_dim, hr_dim, 3)
+        self.iou_prediction_head_hr = MLP(transformer_dim, iou_head_hidden_dim, 1, iou_head_depth)
 
     def forward(
         self,
@@ -88,12 +80,8 @@ class MaskDecoder(nn.Module):
         sparse_prompt_embeddings: torch.Tensor,
     ) -> torch.Tensor:
         """High-resolution (4x the embedding grid x 4) text logits, B x 1 x H x W."""
-        output_tokens = torch.cat(
-            [self.iou_token.weight, self.mask_tokens.weight], dim=0
-        )
-        output_tokens = output_tokens.unsqueeze(0).expand(
-            sparse_prompt_embeddings.size(0), -1, -1
-        )
+        output_tokens = torch.cat([self.iou_token.weight, self.mask_tokens.weight], dim=0)
+        output_tokens = output_tokens.unsqueeze(0).expand(sparse_prompt_embeddings.size(0), -1, -1)
         tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1)
 
         src = torch.repeat_interleave(image_embeddings, tokens.shape[0], dim=0)
@@ -121,9 +109,7 @@ class MLP(nn.Module):
         super().__init__()
         self.num_layers = num_layers
         h = [hidden_dim] * (num_layers - 1)
-        self.layers = nn.ModuleList(
-            nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim])
-        )
+        self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim]))
 
     def forward(self, x):
         for i, layer in enumerate(self.layers):

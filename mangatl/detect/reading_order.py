@@ -99,9 +99,7 @@ def sort_panels_by_reading_order(panels, reading_direction="rtl"):
                 dist_x = cand_box[0] - c_box[2]
 
             if is_row_neighbor:
-                y_inter = max(
-                    0, min(c_box[3], cand_box[3]) - max(c_box[1], cand_box[1])
-                )
+                y_inter = max(0, min(c_box[3], cand_box[3]) - max(c_box[1], cand_box[1]))
                 if y_inter > 0:
                     row_candidates.append((dist_x, cand))
 

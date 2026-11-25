@@ -32,8 +32,8 @@ def chrf(hyp: str, ref: str, n_max: int = 6, beta: float = 2.0) -> float:
     hyp, ref = hyp.replace(" ", ""), ref.replace(" ", "")
     precs, recs = [], []
     for n in range(1, n_max + 1):
-        h = Counter(hyp[i:i + n] for i in range(len(hyp) - n + 1))
-        r = Counter(ref[i:i + n] for i in range(len(ref) - n + 1))
+        h = Counter(hyp[i : i + n] for i in range(len(hyp) - n + 1))
+        r = Counter(ref[i : i + n] for i in range(len(ref) - n + 1))
         if not h or not r:
             continue
         overlap = sum((h & r).values())
@@ -99,13 +99,16 @@ def main() -> None:
                 a = a.resize((round(a.width * h / a.height), h))
                 b = b.resize((round(b.width * h / b.height), h))
                 s = Image.new("RGB", (a.width + b.width + 20, h), "white")
-                s.paste(a, (0, 0)); s.paste(b, (a.width + 20, 0))
+                s.paste(a, (0, 0))
+                s.paste(b, (a.width + 20, 0))
                 (HERE / "out" / label / "sheet").mkdir(exist_ok=True)
                 s.save(HERE / "out" / label / "sheet" / f"{page}.jpg", quality=88)
     if scores:
         print(f"\nchrF vs pro: {label} {100 * sum(scores) / len(scores):.1f} over {len(scores)} regions")
     if scores2:
-        print(f"chrF vs pro: {other} {100 * sum(scores2) / len(scores2):.1f} over {len(scores2)} matched regions")
+        print(
+            f"chrF vs pro: {other} {100 * sum(scores2) / len(scores2):.1f} over {len(scores2)} matched regions"
+        )
 
 
 if __name__ == "__main__":

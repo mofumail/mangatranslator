@@ -87,9 +87,7 @@ def record_failed_images(
         headers = [f"# output_dir: {out_dir}"]
         if glossary_path:
             headers.append(f"# glossary: {Path(glossary_path).resolve()}")
-        out_file.write_text(
-            "\n".join(headers + [str(p) for p in copies]) + "\n", encoding="utf-8"
-        )
+        out_file.write_text("\n".join(headers + [str(p) for p in copies]) + "\n", encoding="utf-8")
         return out_file
     except OSError as e:
         log_message(
@@ -173,9 +171,7 @@ def read_image_paths_from_txt(txt_path: str | Path) -> list[Path]:
         if not text or text.startswith("#"):
             continue
         # Allow optional surrounding quotes
-        if (text.startswith('"') and text.endswith('"')) or (
-            text.startswith("'") and text.endswith("'")
-        ):
+        if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
             text = text[1:-1].strip()
         if not text:
             continue

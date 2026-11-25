@@ -56,8 +56,11 @@ def main() -> None:
             items = runs[lb].get(page, [])
             hits = [it for it in items if jp in (it["ocr"] or "")]
             if jp == "エ":  # the stretched-vowel bubbles: every item that is only エ and !
-                hits = [it for it in items if (it["ocr"] or "").strip("!！ ") and
-                        set((it["ocr"] or "").strip()) <= set("エェ!！ ")]
+                hits = [
+                    it
+                    for it in items
+                    if (it["ocr"] or "").strip("!！ ") and set((it["ocr"] or "").strip()) <= set("エェ!！ ")
+                ]
             text = " / ".join(repr(it["tl"]) for it in hits) or "(not found)"
             print(f"  {lb:<{width}} {text}")
 

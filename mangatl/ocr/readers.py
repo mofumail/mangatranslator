@@ -1,13 +1,12 @@
 """Local OCR models reading crops: manga-ocr and PaddleOCR-VL 1.6."""
 
 from PIL import Image
-from mangatl.ml.model_manager import get_model_manager
+
 from mangatl.common.log import log_message
+from mangatl.ml.model_manager import get_model_manager
 
 
-def extract_text_with_manga_ocr(
-    images: list[Image.Image], verbose: bool = False
-) -> list[str]:
+def extract_text_with_manga_ocr(images: list[Image.Image], verbose: bool = False) -> list[str]:
     """Extract text from images using manga-ocr library.
 
     Args:
@@ -44,9 +43,7 @@ def extract_text_with_manga_ocr(
                 extracted_texts.append(text.strip() if text else "")
 
             except Exception as e:
-                log_message(
-                    f"manga-ocr failed for image {i + 1}: {e}", always_print=True
-                )
+                log_message(f"manga-ocr failed for image {i + 1}: {e}", always_print=True)
                 extracted_texts.append("[OCR FAILED]")
 
         return extracted_texts
@@ -80,9 +77,7 @@ def _get_paddle_ocr_vl_size(processor, max_pixels: int) -> dict:
     }
 
 
-def extract_text_with_paddle_ocr_vl(
-    images: list[Image.Image], verbose: bool = False
-) -> list[str]:
+def extract_text_with_paddle_ocr_vl(images: list[Image.Image], verbose: bool = False) -> list[str]:
     """Extract text from images using PaddleOCR-VL-1.6.
 
     Args:

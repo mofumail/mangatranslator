@@ -6,9 +6,22 @@ import numpy as np
 import skia
 import uharfbuzz as hb
 
-from mangatl.typeset.text import NO_SPACE_BEFORE_MARKER, STYLE_PATTERN, WORD_CORE_PATTERN, find_optimal_breaks_dp, is_detached_trailing_punctuation, is_rtl_script, parse_styled_segments, split_hangul_word_for_wrapping, split_thai_word_for_wrapping, strip_no_space_before_marker, tokenize_styled_text, try_hyphenate_word
 from mangatl.common.exceptions import RenderingError
 from mangatl.common.log import log_message
+from mangatl.typeset.text import (
+    NO_SPACE_BEFORE_MARKER,
+    STYLE_PATTERN,
+    WORD_CORE_PATTERN,
+    find_optimal_breaks_dp,
+    is_detached_trailing_punctuation,
+    is_rtl_script,
+    parse_styled_segments,
+    split_hangul_word_for_wrapping,
+    split_thai_word_for_wrapping,
+    strip_no_space_before_marker,
+    tokenize_styled_text,
+    try_hyphenate_word,
+)
 
 # Epsilon to guard rounding when converting from HarfBuzz 26.6 fixed-point.
 VISUAL_WIDTH_EPSILON = 0.0
@@ -141,9 +154,7 @@ class _SkiaPathPen:
         self.path.quadTo(*self._point(control), *self._point(point))
 
     def curveTo(self, control_1, control_2, point):
-        self.path.cubicTo(
-            *self._point(control_1), *self._point(control_2), *self._point(point)
-        )
+        self.path.cubicTo(*self._point(control_1), *self._point(control_2), *self._point(point))
 
     def closePath(self):
         self.path.close()
@@ -394,9 +405,7 @@ def _build_vertical_layout(
             current_y += step_height
 
     visual_top = min(unit["origin_y"] + unit["top"] for unit in lines_data_at_size)
-    visual_bottom = max(
-        unit["origin_y"] + unit["bottom"] for unit in lines_data_at_size
-    )
+    visual_bottom = max(unit["origin_y"] + unit["bottom"] for unit in lines_data_at_size)
     content_top = min(0.0, visual_top)
     content_bottom = max(current_y, visual_bottom)
     if content_top < 0.0:
@@ -442,9 +451,21 @@ def check_fit(
     wraps inside those lines, so long utterances would shrink the whole block. Wrap each
     paragraph at this font size (_check_fit_lines) and stack them. (Vertical text with explicit
     breaks takes this path too.)"""
-    rest = (regular_hb_face, regular_typeface, loaded_hb_faces, features_to_enable, line_spacing_mult,
-            hyphenate_before_scaling, hyphenation_min_word_length, badness_exponent, word_width_cache,
-            verbose, detach_trailing_punctuation, vertical_stack, hyphenation_language)
+    rest = (
+        regular_hb_face,
+        regular_typeface,
+        loaded_hb_faces,
+        features_to_enable,
+        line_spacing_mult,
+        hyphenate_before_scaling,
+        hyphenation_min_word_length,
+        badness_exponent,
+        word_width_cache,
+        verbose,
+        detach_trailing_punctuation,
+        vertical_stack,
+        hyphenation_language,
+    )
     if "\n" not in text:
         return _check_fit_lines(font_size, text, max_render_width, max_render_height, *rest)
     lines, metrics, line_height, widest = [], None, None, 0.0
@@ -460,8 +481,13 @@ def check_fit(
     block_height = (-metrics.fAscent + metrics.fDescent) + (len(lines) - 1) * line_height
     if block_height > max_render_height:
         return None
-    return {"lines": lines, "metrics": metrics, "max_line_width": widest,
-            "line_height": line_height, "block_height": block_height}
+    return {
+        "lines": lines,
+        "metrics": metrics,
+        "max_line_width": widest,
+        "line_height": line_height,
+        "block_height": block_height,
+    }
 
 
 def _check_fit_lines(
@@ -516,9 +542,7 @@ def _check_fit_lines(
         skia_font_test = skia.Font(regular_typeface, font_size)
         try:
             metrics = skia_font_test.getMetrics()
-            single_line_height = (
-                -metrics.fAscent + metrics.fDescent + metrics.fLeading
-            ) * line_spacing_mult
+            single_line_height = (-metrics.fAscent + metrics.fDescent + metrics.fLeading) * line_spacing_mult
             if single_line_height <= 0:
                 single_line_height = font_size * 1.2 * line_spacing_mult
         except Exception as e:
@@ -546,22 +570,15 @@ def _check_fit_lines(
             current_max_line_width = 0.0
             lines_data_at_size = []
             for line_text in explicit_lines:
-                width = calculate_styled_line_width(
-                    line_text, font_size, loaded_hb_faces, features_to_enable
-                )
-                lines_data_at_size.append(
-                    {"text_with_markers": line_text, "width": width}
-                )
+                width = calculate_styled_line_width(line_text, font_size, loaded_hb_faces, features_to_enable)
+                lines_data_at_size.append({"text_with_markers": line_text, "width": width})
                 current_max_line_width = max(current_max_line_width, width)
 
             total_block_height = (-metrics.fAscent + metrics.fDescent) + (
                 len(explicit_lines) - 1
             ) * single_line_height
 
-            if (
-                current_max_line_width <= max_render_width
-                and total_block_height <= max_render_height
-            ):
+            if current_max_line_width <= max_render_width and total_block_height <= max_render_height:
                 return {
                     "lines": lines_data_at_size,
                     "metrics": metrics,
@@ -571,9 +588,7 @@ def _check_fit_lines(
                 }
             return None
 
-        tokens: list[tuple[str, bool]] = tokenize_styled_text(
-            text, detach_trailing_punctuation
-        )
+        tokens: list[tuple[str, bool]] = tokenize_styled_text(text, detach_trailing_punctuation)
         augmented_tokens: list[str] = []
 
         if hyphenate_before_scaling:
@@ -640,9 +655,7 @@ def _check_fit_lines(
             GLUE_TRAILING_PUNCT_RE = re.compile(r"^[,.;:!?…]+$")
             GLUE_CLOSERS_RE = re.compile(r"^[\)\]\}\u2019\u201D\'\"]+$")
 
-            def _glue_trailing_punctuation(
-                tokens_list: list[str], _detach: bool = True
-            ) -> list[str]:
+            def _glue_trailing_punctuation(tokens_list: list[str], _detach: bool = True) -> list[str]:
                 glued: list[str] = []
                 for tok in tokens_list:
                     clean_tok = strip_no_space_before_marker(tok)
@@ -653,18 +666,13 @@ def _check_fit_lines(
                         glued.append(tok)
                         continue
 
-                    if glued and (
-                        GLUE_TRAILING_PUNCT_RE.match(content)
-                        or GLUE_CLOSERS_RE.match(content)
-                    ):
+                    if glued and (GLUE_TRAILING_PUNCT_RE.match(content) or GLUE_CLOSERS_RE.match(content)):
                         glued[-1] = glued[-1] + clean_tok
                     else:
                         glued.append(tok)
                 return glued
 
-            augmented_tokens = _glue_trailing_punctuation(
-                augmented_tokens, detach_trailing_punctuation
-            )
+            augmented_tokens = _glue_trailing_punctuation(augmented_tokens, detach_trailing_punctuation)
         except Exception:
             pass
 
@@ -684,9 +692,7 @@ def _check_fit_lines(
 
             return width_val
 
-        space_width = calculate_styled_line_width(
-            " ", font_size, loaded_hb_faces, features_to_enable
-        )
+        space_width = calculate_styled_line_width(" ", font_size, loaded_hb_faces, features_to_enable)
 
         wrapped_lines_text = find_optimal_breaks_dp(
             augmented_tokens,
@@ -706,9 +712,7 @@ def _check_fit_lines(
             width = calculate_styled_line_width(
                 line_text_with_markers, font_size, loaded_hb_faces, features_to_enable
             )
-            lines_data_at_size.append(
-                {"text_with_markers": line_text_with_markers, "width": width}
-            )
+            lines_data_at_size.append({"text_with_markers": line_text_with_markers, "width": width})
             current_max_line_width = max(current_max_line_width, width)
 
         total_block_height = (-metrics.fAscent + metrics.fDescent) + (
@@ -721,10 +725,7 @@ def _check_fit_lines(
             verbose=verbose,
         )
 
-        if (
-            current_max_line_width <= max_render_width
-            and total_block_height <= max_render_height
-        ):
+        if current_max_line_width <= max_render_width and total_block_height <= max_render_height:
             log_message(f"Size {font_size} fits", verbose=verbose)
             return {
                 "lines": lines_data_at_size,
@@ -836,10 +837,27 @@ def find_optimal_layout(
     def run(hyph: bool, detach: bool) -> dict | None:
         try:
             return _search_layout(
-                text, max_render_width, max_render_height, regular_hb_face, regular_typeface,
-                loaded_hb_faces, features_to_enable, min_font_size, max_font_size, line_spacing_mult,
-                hyph, hyphenation_min_word_length, badness_exponent, verbose, bubble_id,
-                safe_area_mask, box_top_left, detach, vertical_stack, hyphenation_language)
+                text,
+                max_render_width,
+                max_render_height,
+                regular_hb_face,
+                regular_typeface,
+                loaded_hb_faces,
+                features_to_enable,
+                min_font_size,
+                max_font_size,
+                line_spacing_mult,
+                hyph,
+                hyphenation_min_word_length,
+                badness_exponent,
+                verbose,
+                bubble_id,
+                safe_area_mask,
+                box_top_left,
+                detach,
+                vertical_stack,
+                hyphenation_language,
+            )
         except Exception:
             return None
 
@@ -856,11 +874,27 @@ def find_optimal_layout(
     valid = [o for o in options if o is not None]
     if not valid:  # raises the search's own error
         return _search_layout(
-            text, max_render_width, max_render_height, regular_hb_face, regular_typeface,
-            loaded_hb_faces, features_to_enable, min_font_size, max_font_size, line_spacing_mult,
-            hyphenate_before_scaling, hyphenation_min_word_length, badness_exponent, verbose,
-            bubble_id, safe_area_mask, box_top_left, detach_trailing_punctuation, vertical_stack,
-            hyphenation_language)
+            text,
+            max_render_width,
+            max_render_height,
+            regular_hb_face,
+            regular_typeface,
+            loaded_hb_faces,
+            features_to_enable,
+            min_font_size,
+            max_font_size,
+            line_spacing_mult,
+            hyphenate_before_scaling,
+            hyphenation_min_word_length,
+            badness_exponent,
+            verbose,
+            bubble_id,
+            safe_area_mask,
+            box_top_left,
+            detach_trailing_punctuation,
+            vertical_stack,
+            hyphenation_language,
+        )
     best = max(o.get("font_size", 0) for o in valid)
     for o in valid:  # in order of preference
         if o.get("font_size", 0) >= LAYOUT_KEEP_SHARE * best:
@@ -991,11 +1025,7 @@ def _search_layout(
                 # Squeezing narrower won't help (only makes it taller)
                 break
 
-            if (
-                safe_area_mask is not None
-                and box_top_left is not None
-                and not vertical_stack
-            ):
+            if safe_area_mask is not None and box_top_left is not None and not vertical_stack:
                 line_ink_paths = [
                     _styled_line_ink_path(
                         line.get("text_with_markers", ""),
@@ -1053,9 +1083,7 @@ def _search_layout(
             f"Text too large for bubble at min size {min_font_size}: '{clean_text[:30]}'",
             always_print=True,
         )
-        raise RenderingError(
-            f"Text too large for bubble at minimum font size {min_font_size}"
-        )
+        raise RenderingError(f"Text too large for bubble at minimum font size {min_font_size}")
 
     if best_fit_size < max_font_size:
         bubble_desc = f"bubble {bubble_id}" if bubble_id else "bubble"

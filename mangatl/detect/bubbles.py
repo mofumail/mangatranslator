@@ -7,34 +7,22 @@ from PIL import Image
 
 from mangatl.common.caching import get_cache
 from mangatl.common.device import get_best_device
-from mangatl.ml.model_manager import ModelType, get_model_manager
 from mangatl.common.exceptions import ImageProcessingError, ModelError
 from mangatl.common.log import log_message
+from mangatl.ml.model_manager import ModelType, get_model_manager
 
 IOA_THRESHOLD = 0.50  # 50% IoA threshold for conjoined bubble detection
 SAM_MASK_THRESHOLD = 0.5  # mask binarization threshold
 IOA_OVERLAP_THRESHOLD = 0.5  # IoA threshold for general overlap detection between boxes
 IOU_DUPLICATE_THRESHOLD = 0.7  # IoU threshold for duplicate primary detection
-OSB_TEXT_MATCH_IOA_THRESHOLD = (
-    0.2  # Minimum text-box overlap ratio for bubble assignment
-)
-AMBIGUOUS_TEXT_MATCH_RATIO = (
-    0.85  # Skip nudge boxes that match sibling bubbles nearly equally
-)
-OSB_TEXT_CONTAIN_IOA_THRESHOLD = (
-    0.9  # Drop larger OSB boxes that nearly contain a smaller one
-)
+OSB_TEXT_MATCH_IOA_THRESHOLD = 0.2  # Minimum text-box overlap ratio for bubble assignment
+AMBIGUOUS_TEXT_MATCH_RATIO = 0.85  # Skip nudge boxes that match sibling bubbles nearly equally
+OSB_TEXT_CONTAIN_IOA_THRESHOLD = 0.9  # Drop larger OSB boxes that nearly contain a smaller one
 OVERLAP_NUDGE_INSET_RATIO = 0.08  # Keep cut slightly inside the overlap-zone edges
 MIN_OVERLAP_SPLIT_SHARE = 0.08  # Minimum share of overlap zone kept by each child
-SYNTHETIC_CONJOINED_IOA_THRESHOLD = (
-    0.15  # Primary bbox overlap signaling a split conjoined bubble
-)
-AXIS_DOMINANCE_RATIO = (
-    3.0  # Center-offset ratio to classify a box pair as axis-aligned (~18° cone)
-)
-CONJOINED_BOX_PAD_MIN_COVERAGE = (
-    0.3  # Parent-mask share of a child box below which the whole box is added
-)
+SYNTHETIC_CONJOINED_IOA_THRESHOLD = 0.15  # Primary bbox overlap signaling a split conjoined bubble
+AXIS_DOMINANCE_RATIO = 3.0  # Center-offset ratio to classify a box pair as axis-aligned (~18° cone)
+CONJOINED_BOX_PAD_MIN_COVERAGE = 0.3  # Parent-mask share of a child box below which the whole box is added
 
 
 def _box_contains(inner, outer) -> bool:
@@ -76,9 +64,7 @@ def _text_box_meaningfully_matches_box(t_box, b_box) -> bool:
     text_center_x = (t_box[0] + t_box[2]) / 2.0
     text_center_y = (t_box[1] + t_box[3]) / 2.0
     text_ioa = intersection / text_area
-    return text_ioa >= OSB_TEXT_MATCH_IOA_THRESHOLD or _point_in_box(
-        text_center_x, text_center_y, b_box
-    )
+    return text_ioa >= OSB_TEXT_MATCH_IOA_THRESHOLD or _point_in_box(text_center_x, text_center_y, b_box)
 
 
 def _get_text_box_corners(t_box) -> list[tuple[float, float]]:
@@ -123,16 +109,8 @@ def _expand_boxes_with_osb_text(
                 verbose=False,
                 imgsz=640,
             )[0]
-            osb_boxes = (
-                osb_results.boxes.xyxy
-                if osb_results.boxes is not None
-                else torch.tensor([])
-            )
-            osb_confs = (
-                osb_results.boxes.conf
-                if osb_results.boxes is not None
-                else torch.tensor([])
-            )
+            osb_boxes = osb_results.boxes.xyxy if osb_results.boxes is not None else torch.tensor([])
+            osb_confs = osb_results.boxes.conf if osb_results.boxes is not None else torch.tensor([])
             cache.set_yolo_detection(cache_key, (osb_results, osb_boxes, osb_confs))
 
         if osb_boxes is None or len(osb_boxes) == 0:
@@ -168,9 +146,7 @@ def _expand_boxes_with_osb_text(
                 max(b[3], t_box[3]),
             ]
 
-        return torch.tensor(
-            pb_np, device=primary_boxes.device, dtype=primary_boxes.dtype
-        )
+        return torch.tensor(pb_np, device=primary_boxes.device, dtype=primary_boxes.dtype)
     except Exception as e:
         log_message(f"OSB text verification skipped: {e}", verbose=verbose)
         return primary_boxes
@@ -311,8 +287,7 @@ def _match_text_boxes_to_bubbles(osb_text_boxes, boxes):
         meaningful_matches.sort(key=lambda item: item[1], reverse=True)
         ambiguous = (
             len(meaningful_matches) > 1
-            and meaningful_matches[1][1] / meaningful_matches[0][1]
-            >= AMBIGUOUS_TEXT_MATCH_RATIO
+            and meaningful_matches[1][1] / meaningful_matches[0][1] >= AMBIGUOUS_TEXT_MATCH_RATIO
         )
         if meaningful_matches and not ambiguous:
             text_boxes_for[meaningful_matches[0][0]].append(t_box)
@@ -415,10 +390,7 @@ def _detect_overlapping_primaries(
             box_a = primary_boxes[idx_a].tolist()
             box_b = primary_boxes[idx_b].tolist()
 
-            if (
-                _calculate_ioa(box_a, box_b) > ioa_threshold
-                or _calculate_ioa(box_b, box_a) > ioa_threshold
-            ):
+            if _calculate_ioa(box_a, box_b) > ioa_threshold or _calculate_ioa(box_b, box_a) > ioa_threshold:
                 union(idx_a, idx_b)
                 has_overlap = True
 
@@ -430,9 +402,7 @@ def _detect_overlapping_primaries(
         root = find(idx)
         group_map.setdefault(root, []).append(idx)
 
-    synthetic_groups = [
-        sorted(members) for members in group_map.values() if len(members) >= 2
-    ]
+    synthetic_groups = [sorted(members) for members in group_map.values() if len(members) >= 2]
     if not synthetic_groups:
         return [], simple_indices
 
@@ -469,9 +439,7 @@ def _fallback_to_yolo_mask(primary_results, i, mask_type="points"):
 
         if mask_type == "points":
             mask_points = masks[i].xy[0]
-            return (
-                mask_points.tolist() if hasattr(mask_points, "tolist") else mask_points
-            )
+            return mask_points.tolist() if hasattr(mask_points, "tolist") else mask_points
         elif mask_type == "binary":
             mask_tensor = masks.data[i]
             orig_h, orig_w = primary_results.orig_shape
@@ -575,16 +543,12 @@ def _filter_encompassing_osb_text_boxes(
     return np.asarray(kept)
 
 
-def _get_group_osb_text_boxes(
-    osb_text_boxes: np.ndarray | None, primary_box
-) -> np.ndarray | None:
+def _get_group_osb_text_boxes(osb_text_boxes: np.ndarray | None, primary_box) -> np.ndarray | None:
     """Scope OSB text boxes to those intersecting a primary bubble box."""
     if osb_text_boxes is None or len(osb_text_boxes) == 0:
         return None
 
-    px0, py0, px1, py1 = (
-        primary_box.tolist() if hasattr(primary_box, "tolist") else primary_box
-    )
+    px0, py0, px1, py1 = primary_box.tolist() if hasattr(primary_box, "tolist") else primary_box
     hits = []
     for tb in osb_text_boxes:
         if tb[0] < px1 and tb[2] > px0 and tb[1] < py1 and tb[3] > py0:
@@ -613,9 +577,7 @@ def _seed_mask_from_box(parent_mask: np.ndarray, box) -> np.ndarray:
     if parent_coords.size == 0:
         return seed_mask
 
-    distances = (parent_coords[:, 1] - center_x) ** 2 + (
-        parent_coords[:, 0] - center_y
-    ) ** 2
+    distances = (parent_coords[:, 1] - center_x) ** 2 + (parent_coords[:, 0] - center_y) ** 2
     nearest_y, nearest_x = parent_coords[int(np.argmin(distances))]
     seed_mask[nearest_y, nearest_x] = True
     return seed_mask
@@ -642,9 +604,7 @@ def _split_overlap_zone_with_line(
     normal_y = -line_vec_x / line_length
 
     def _signed_distance(point_x, point_y):
-        return (point_x - line_start[0]) * normal_x + (
-            point_y - line_start[1]
-        ) * normal_y
+        return (point_x - line_start[0]) * normal_x + (point_y - line_start[1]) * normal_y
 
     pixel_y, pixel_x = np.where(overlap_mask)
     if len(pixel_x) == 0:
@@ -655,17 +615,13 @@ def _split_overlap_zone_with_line(
     dy = center_b[1] - center_a[1]
     text_boxes_a = text_boxes_a or []
     text_boxes_b = text_boxes_b or []
-    require_text_safe_split = (
-        require_text_safe_split and bool(text_boxes_a) and bool(text_boxes_b)
-    )
+    require_text_safe_split = require_text_safe_split and bool(text_boxes_a) and bool(text_boxes_b)
 
     offset = 0.0
     if require_text_safe_split:
         raw_lower_bound = float(np.min(pixel_dist))
         raw_upper_bound = float(np.max(pixel_dist))
-        nudge_inset = max(
-            1.0, (raw_upper_bound - raw_lower_bound) * OVERLAP_NUDGE_INSET_RATIO
-        )
+        nudge_inset = max(1.0, (raw_upper_bound - raw_lower_bound) * OVERLAP_NUDGE_INSET_RATIO)
         lower_bound = raw_lower_bound + nudge_inset
         upper_bound = raw_upper_bound - nudge_inset
 
@@ -730,13 +686,8 @@ def _split_overlap_zone_with_line(
     mask_a_pixels, mask_b_pixels = _classify_pixels(offset)
     if require_text_safe_split and offset != 0.0:
         total_overlap_pixels = len(pixel_x)
-        min_pixels = max(
-            1, int(np.ceil(total_overlap_pixels * MIN_OVERLAP_SPLIT_SHARE))
-        )
-        if (
-            np.count_nonzero(mask_a_pixels) < min_pixels
-            or np.count_nonzero(mask_b_pixels) < min_pixels
-        ):
+        min_pixels = max(1, int(np.ceil(total_overlap_pixels * MIN_OVERLAP_SPLIT_SHARE)))
+        if np.count_nonzero(mask_a_pixels) < min_pixels or np.count_nonzero(mask_b_pixels) < min_pixels:
             return None
 
     mask_a = np.zeros_like(overlap_mask, dtype=bool)
@@ -806,9 +757,7 @@ def _split_overlap_zone_with_box_diagonal(
     oy1 = min(box_a[3], box_b[3])
 
     if ox1 <= ox0 or oy1 <= oy0 or not np.any(overlap_mask):
-        return np.zeros_like(overlap_mask, dtype=bool), np.zeros_like(
-            overlap_mask, dtype=bool
-        )
+        return np.zeros_like(overlap_mask, dtype=bool), np.zeros_like(overlap_mask, dtype=bool)
 
     center_a = ((box_a[0] + box_a[2]) / 2.0, (box_a[1] + box_a[3]) / 2.0)
     center_b = ((box_b[0] + box_b[2]) / 2.0, (box_b[1] + box_b[3]) / 2.0)
@@ -880,9 +829,7 @@ def _split_overlap_zone_with_box_diagonal(
         if split_masks is not None:
             return split_masks
 
-    return np.zeros_like(overlap_mask, dtype=bool), np.zeros_like(
-        overlap_mask, dtype=bool
-    )
+    return np.zeros_like(overlap_mask, dtype=bool), np.zeros_like(overlap_mask, dtype=bool)
 
 
 def _expand_resolved_masks_within_parent(
@@ -904,9 +851,7 @@ def _expand_resolved_masks_within_parent(
 
         if np.any(seed):
             inv_seed = np.where(seed, 0, 1).astype(np.uint8)
-            distance_maps.append(
-                cv2.distanceTransform(inv_seed, cv2.DIST_L2, 5).astype(np.float32)
-            )
+            distance_maps.append(cv2.distanceTransform(inv_seed, cv2.DIST_L2, 5).astype(np.float32))
         else:
             distance_maps.append(np.full(parent_mask.shape, np.inf, dtype=np.float32))
 
@@ -942,9 +887,7 @@ def _split_conjoined_mask(
         return [base_mask.astype(np.uint8) * 255]
 
     img_h, img_w = base_mask.shape
-    box_masks = [
-        _build_rect_mask_from_box(box, img_h, img_w) > 0 for box in group_boxes
-    ]
+    box_masks = [_build_rect_mask_from_box(box, img_h, img_w) > 0 for box in group_boxes]
     resolved_masks = [np.logical_and(base_mask, box_mask) for box_mask in box_masks]
     text_boxes_for = None
     if osb_text_boxes is not None and len(osb_text_boxes) > 0:
@@ -959,9 +902,7 @@ def _split_conjoined_mask(
     overlap_count = 0
     for i in range(len(group_boxes)):
         for j in range(i + 1, len(group_boxes)):
-            overlap_zone = np.logical_and(
-                base_mask, np.logical_and(box_masks[i], box_masks[j])
-            )
+            overlap_zone = np.logical_and(base_mask, np.logical_and(box_masks[i], box_masks[j]))
             if not np.any(overlap_zone):
                 continue
 
@@ -1000,21 +941,13 @@ def _get_detection_metadata(
     conjoined_confidence: float,
 ):
     """Return confidence/class metadata for a detection source."""
-    if (
-        source == "primary"
-        and primary_results is not None
-        and len(primary_results.boxes) > 0
-    ):
+    if source == "primary" and primary_results is not None and len(primary_results.boxes) > 0:
         safe_idx = min(orig_idx, len(primary_results.boxes.conf) - 1)
         conf = float(primary_results.boxes.conf[safe_idx])
         cls_id = int(primary_results.boxes.cls[safe_idx])
         return conf, primary_model.names[cls_id]
 
-    if (
-        source == "secondary"
-        and secondary_results is not None
-        and len(secondary_results.boxes) > 0
-    ):
+    if source == "secondary" and secondary_results is not None and len(secondary_results.boxes) > 0:
         safe_idx = min(orig_idx, len(secondary_results.boxes.conf) - 1)
         conf = float(secondary_results.boxes.conf[safe_idx])
         cls_id = int(secondary_results.boxes.cls[safe_idx])
@@ -1104,9 +1037,7 @@ def _build_segmentation_detections(
         parent_mask = None
 
         if parent_source == "primary":
-            parent_mask = _fallback_to_yolo_mask(
-                primary_results, parent_orig_idx, "binary"
-            )
+            parent_mask = _fallback_to_yolo_mask(primary_results, parent_orig_idx, "binary")
 
         if parent_mask is None:
             parent_mask = _build_rect_mask_from_box(parent_box, img_h, img_w)
@@ -1114,9 +1045,7 @@ def _build_segmentation_detections(
         group_boxes = [secondary_boxes[s_idx] for s_idx in s_indices]
         group_osb = _get_group_osb_text_boxes(osb_text_boxes_np, grouping_parent_box)
 
-        parent_mask = _pad_parent_mask_with_uncovered_boxes(
-            parent_mask, group_boxes, img_h, img_w
-        )
+        parent_mask = _pad_parent_mask_with_uncovered_boxes(parent_mask, group_boxes, img_h, img_w)
 
         split_masks = _split_conjoined_mask(
             parent_mask,
@@ -1164,9 +1093,7 @@ def _build_segmentation_detections(
         group_boxes = [grouping_primary_boxes[idx] for idx in member_indices]
         group_osb = _get_group_osb_text_boxes(osb_text_boxes_np, parent_box)
 
-        parent_mask = _pad_parent_mask_with_uncovered_boxes(
-            parent_mask, group_boxes, img_h, img_w
-        )
+        parent_mask = _pad_parent_mask_with_uncovered_boxes(parent_mask, group_boxes, img_h, img_w)
 
         split_masks = _split_conjoined_mask(
             parent_mask,
@@ -1233,9 +1160,7 @@ def _split_secondary_classes(
             filtered_boxes.append(s_box)
             filtered_sources.append(secondary_sources[i])
 
-    secondary_boxes = (
-        torch.stack(filtered_boxes) if filtered_boxes else secondary_boxes[:0]
-    )
+    secondary_boxes = torch.stack(filtered_boxes) if filtered_boxes else secondary_boxes[:0]
     secondary_sources = filtered_sources
     return secondary_boxes, secondary_sources
 
@@ -1279,9 +1204,7 @@ def _add_missed_secondary_boxes(
     return primary_boxes, primary_sources
 
 
-def _drop_text_free_primaries(
-    primary_boxes, primary_sources: list, text_free_boxes: list, osb_enabled: bool
-):
+def _drop_text_free_primaries(primary_boxes, primary_sources: list, text_free_boxes: list, osb_enabled: bool):
     """Remove primary boxes that overlap a `text_free` detection (left to OSB)."""
     indices_to_remove = []
     primary_boxes_list = primary_boxes.tolist()
@@ -1300,16 +1223,12 @@ def _drop_text_free_primaries(
             indices_to_remove.append(i)
 
     if indices_to_remove:
-        action = (
-            "routing to OSB pipeline" if osb_enabled else "discarding (OSB disabled)"
-        )
+        action = "routing to OSB pipeline" if osb_enabled else "discarding (OSB disabled)"
         log_message(
             f"Removing {len(indices_to_remove)} bubbles marked text_free ({action})",
             always_print=True,
         )
-        keep_indices = [
-            i for i in range(len(primary_boxes)) if i not in indices_to_remove
-        ]
+        keep_indices = [i for i in range(len(primary_boxes)) if i not in indices_to_remove]
         if keep_indices:
             primary_boxes = primary_boxes[keep_indices]
             primary_sources = [primary_sources[i] for i in keep_indices]
@@ -1358,11 +1277,7 @@ def detect_speech_bubbles(
     _device = device if device is not None else get_best_device()
     try:
         if image_override is not None:
-            image_pil = (
-                image_override
-                if image_override.mode == "RGB"
-                else image_override.convert("RGB")
-            )
+            image_pil = image_override if image_override.mode == "RGB" else image_override.convert("RGB")
             image_cv = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
         else:
             image_cv = cv2.imread(str(image_path))
@@ -1400,11 +1315,7 @@ def detect_speech_bubbles(
             imgsz=primary_imgsz,
             retina_masks=True,
         )[0]
-        primary_boxes = (
-            primary_results.boxes.xyxy
-            if primary_results.boxes is not None
-            else torch.tensor([])
-        )
+        primary_boxes = primary_results.boxes.xyxy if primary_results.boxes is not None else torch.tensor([])
         cache.set_yolo_detection(yolo_cache_key, (primary_results, primary_boxes))
 
     primary_sources = [("primary", idx) for idx in range(len(primary_boxes))]
@@ -1423,9 +1334,7 @@ def detect_speech_bubbles(
 
     if len(primary_boxes) > 1:
         original_count = len(primary_boxes)
-        primary_boxes, primary_sources = _remove_contained_boxes(
-            primary_boxes, primary_sources
-        )
+        primary_boxes, primary_sources = _remove_contained_boxes(primary_boxes, primary_sources)
         if len(primary_boxes) < original_count:
             log_message(
                 f"Removed {original_count - len(primary_boxes)} contained detections",
@@ -1436,9 +1345,7 @@ def detect_speech_bubbles(
         log_message("No detections found", verbose=verbose)
         return detections, text_free_boxes
 
-    log_message(
-        f"Detected {len(primary_boxes)} speech bubbles with YOLO", always_print=True
-    )
+    log_message(f"Detected {len(primary_boxes)} speech bubbles with YOLO", always_print=True)
 
     secondary_boxes = torch.tensor([])
     secondary_sources = []
@@ -1460,13 +1367,9 @@ def detect_speech_bubbles(
                 imgsz=640,
             )[0]
             secondary_boxes = (
-                secondary_results.boxes.xyxy
-                if secondary_results.boxes is not None
-                else torch.tensor([])
+                secondary_results.boxes.xyxy if secondary_results.boxes is not None else torch.tensor([])
             )
-            secondary_sources = [
-                ("secondary", idx) for idx in range(len(secondary_boxes))
-            ]
+            secondary_sources = [("secondary", idx) for idx in range(len(secondary_boxes))]
 
             if len(secondary_boxes) > 1:
                 orig_sec_count = len(secondary_boxes)
@@ -1530,9 +1433,7 @@ def detect_speech_bubbles(
             verbose,
         )
         # Retrieve cached OSB text boxes for bisector nudge during overlap resolution
-        osb_text_boxes_np = _get_cached_osb_text_boxes(
-            cache, model_manager, image_pil, confidence
-        )
+        osb_text_boxes_np = _get_cached_osb_text_boxes(cache, model_manager, image_pil, confidence)
 
     conjoined_indices = []
     simple_indices = list(range(len(primary_boxes)))
@@ -1628,11 +1529,7 @@ def detect_panels(
 
     try:
         if image_override is not None:
-            image_pil = (
-                image_override
-                if image_override.mode == "RGB"
-                else image_override.convert("RGB")
-            )
+            image_pil = image_override if image_override.mode == "RGB" else image_override.convert("RGB")
             image_cv = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
         else:
             image_cv = cv2.imread(str(image_path))

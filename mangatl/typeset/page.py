@@ -4,24 +4,25 @@ import dataclasses
 import math
 import re
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional
+
 import cv2
 import numpy as np
 from PIL import Image
-from mangatl.common.scaling import scale_font_size, scale_scalar
-from mangatl.ocr.line_ocr import script_ratios
-from mangatl.typeset import sfx_labels
-from mangatl.common.exceptions import FontError, ImageProcessingError, RenderingError
-from mangatl.common.log import log_message
-from mangatl.clean.bubbles import retry_cleaning_with_otsu
-from mangatl.common.image_utils import estimate_glyph_size
-from mangatl.detect.tilt import compute_effective_tilt_angle
+
+from mangatl.clean.bubbles import inpaints_colored_bubbles, retry_cleaning_with_otsu
 from mangatl.clean.outside_text import paint_pending_osb_fill, paint_pending_osb_fills
-from mangatl.typeset.fonts import find_font_variants, get_cap_height_ratio
-from mangatl.typeset.text import supports_long_word_breaking
-from mangatl.typeset.renderer import RenderingConfig, render_text_skia
-from mangatl.settings import PROVIDER, Settings
-from mangatl.clean.bubbles import inpaints_colored_bubbles
 from mangatl.common.cancellation import raise_if_manager_cancelled
+from mangatl.common.exceptions import FontError, ImageProcessingError, RenderingError
+from mangatl.common.image_utils import estimate_glyph_size
+from mangatl.common.log import log_message
+from mangatl.common.scaling import scale_font_size, scale_scalar
+from mangatl.detect.tilt import compute_effective_tilt_angle
+from mangatl.ocr.line_ocr import script_ratios
+from mangatl.settings import PROVIDER, Settings
+from mangatl.typeset import sfx_labels
+from mangatl.typeset.fonts import find_font_variants, get_cap_height_ratio
+from mangatl.typeset.renderer import RenderingConfig, render_text_skia
+from mangatl.typeset.text import supports_long_word_breaking
 
 if TYPE_CHECKING:
     from mangatl.common.cancellation import CancellationManager
@@ -51,11 +52,7 @@ def _page_glyph_size(
     page_image: np.ndarray, bubbles_info: list[dict[str, Any]], full_width: bool
 ) -> float | None:
     """Typical original lettering size across the page's speech bubbles, None if unmeasurable."""
-    gray = (
-        page_image
-        if page_image.ndim == 2
-        else cv2.cvtColor(page_image, cv2.COLOR_BGR2GRAY)
-    )
+    gray = page_image if page_image.ndim == 2 else cv2.cvtColor(page_image, cv2.COLOR_BGR2GRAY)
     measured = []
     for info in bubbles_info:
         mask = info.get("mask")
@@ -115,9 +112,7 @@ def resolve_main_max_font(
     if not config.typesetting.bubbles.auto_font_size:
         return max_font
 
-    cjk_source = config.translation.source_language.lower().startswith(
-        AUTO_FONT_CJK_LANGUAGE_PREFIXES
-    )
+    cjk_source = config.translation.source_language.lower().startswith(AUTO_FONT_CJK_LANGUAGE_PREFIXES)
     if strip_glyph_size:
         glyph_size = strip_glyph_size[0]
     else:
@@ -132,9 +127,7 @@ def resolve_main_max_font(
         cap_height = AUTO_FONT_TYPICAL_CAP_HEIGHT * processing_scale
     else:
         cap_height = glyph_size * (AUTO_FONT_CJK_GLYPH_RATIO if cjk_source else 1.0)
-    regular_font_path = find_font_variants(config.typesetting.bubbles.font_dir, verbose=verbose)[
-        "regular"
-    ]
+    regular_font_path = find_font_variants(config.typesetting.bubbles.font_dir, verbose=verbose)["regular"]
     auto_max = round(cap_height / get_cap_height_ratio(str(regular_font_path)))
     auto_max = max(min_font, min(max_font, auto_max))
     log_message(f"Auto font size: {auto_max}", verbose=verbose)
@@ -153,9 +146,7 @@ class _RenderSizes(NamedTuple):
     osb_outline_ratio: float
 
 
-def scaled_render_sizes(
-    config: Settings, processing_scale: float
-) -> _RenderSizes:
+def scaled_render_sizes(config: Settings, processing_scale: float) -> _RenderSizes:
     main_min_font = scale_font_size(
         config.typesetting.bubbles.min_font_size, processing_scale, minimum=4, maximum=256
     )
@@ -203,16 +194,13 @@ def _paste_original_crop(image: Image.Image, bubble: dict[str, Any]) -> Image.Im
     return restored
 
 
-def _text_render_config(
-    config: Settings, sizes: _RenderSizes, is_outside_text: bool
-) -> RenderingConfig:
+def _text_render_config(config: Settings, sizes: _RenderSizes, is_outside_text: bool) -> RenderingConfig:
     ts = config.typesetting
     style = ts.outside if is_outside_text else ts.bubbles
     # Hyphenating languages insert hyphens; Korean/Thai use
     # no-hyphen emergency breaks under the same user setting.
-    should_hyphenate = (
-        ts.hyphenate_before_scaling
-        and supports_long_word_breaking(config.translation.target_language)
+    should_hyphenate = ts.hyphenate_before_scaling and supports_long_word_breaking(
+        config.translation.target_language
     )
     return RenderingConfig(
         min_font_size=sizes.osb_min_font if is_outside_text else sizes.main_min_font,
@@ -223,9 +211,7 @@ def _text_render_config(
         hyphenation_min_word_length=ts.hyphenation_min_word_length,
         hyphenation_language=config.translation.target_language,
         badness_exponent=ts.badness_exponent,
-        padding_pixels=(
-            sizes.osb_padding_pixels if is_outside_text else sizes.padding_pixels
-        ),
+        padding_pixels=(sizes.osb_padding_pixels if is_outside_text else sizes.padding_pixels),
         outline_ratio=sizes.osb_outline_ratio if is_outside_text else 0.0,
         supersampling_factor=ts.supersampling,
         detach_trailing_punctuation=ts.detach_trailing_punctuation,
@@ -238,9 +224,7 @@ def _text_render_config(
 _OsbAttempt = tuple[float, bool, tuple[float, float] | None]
 
 
-def _osb_render_attempts(
-    bubble: dict[str, Any], config: Settings, sizes: _RenderSizes
-) -> list[_OsbAttempt]:
+def _osb_render_attempts(bubble: dict[str, Any], config: Settings, sizes: _RenderSizes) -> list[_OsbAttempt]:
     """(rotation, vertical stack, layout dimensions) to try for an outside text, in order."""
     if bubble.get("mt_narration"):  # narration / dialogue on the art: upright (typeset.narration)
         return [(0.0, False, None), (0.0, True, None)]
@@ -302,11 +286,7 @@ def _render_osb_attempt(
     text_bg_rgb = None
     if bubble.get("needs_text_background"):
         if text_color_rgb:
-            lum = (
-                0.299 * text_color_rgb[0]
-                + 0.587 * text_color_rgb[1]
-                + 0.114 * text_color_rgb[2]
-            )
+            lum = 0.299 * text_color_rgb[0] + 0.587 * text_color_rgb[1] + 0.114 * text_color_rgb[2]
             text_bg_rgb = (255, 255, 255) if lum < 128 else (0, 0, 0)
         else:
             text_bg_rgb = (0, 0, 0) if is_dark_text else (255, 255, 255)
@@ -345,13 +325,10 @@ def _fitting_osb_attempts(
     attempts = _osb_render_attempts(bubble, config, sizes)
     for k, attempt in enumerate(attempts):
         try:
-            _render_osb_attempt(
-                image, bubble, text, bubble_id, config, sizes, attempt, True
-            )
+            _render_osb_attempt(image, bubble, text, bubble_id, config, sizes, attempt, True)
         except Exception as e:
             log_message(
-                f"OSB layout failed at {attempt[0]:.1f} deg "
-                f"(vertical_stack={attempt[1]}): {e}",
+                f"OSB layout failed at {attempt[0]:.1f} deg (vertical_stack={attempt[1]}): {e}",
                 verbose=config.verbose,
             )
             continue
@@ -374,13 +351,10 @@ def _render_outside_text(
     log_message(f"Rendering outside text {bbox}: '{text[:30]}...'", verbose=verbose)
     for attempt in attempts:
         try:
-            return _render_osb_attempt(
-                image, bubble, text, bubble_id, config, sizes, attempt
-            )
+            return _render_osb_attempt(image, bubble, text, bubble_id, config, sizes, attempt)
         except Exception as e:
             log_message(
-                f"OSB render failed at {attempt[0]:.1f} deg "
-                f"(vertical_stack={attempt[1]}): {e}",
+                f"OSB render failed at {attempt[0]:.1f} deg (vertical_stack={attempt[1]}): {e}",
                 verbose=verbose,
             )
 
@@ -419,8 +393,11 @@ def _emphasis_sizes(
         # a letterer exaggerates a little: shouts read bigger than their glyph ratio
         scale = min((est[0] / page) ** 1.5, EMPHASIS_MAX_SCALE)
         bigger = round(sizes.main_max_font * scale)
-        log_message(f"Bubble {bubble_id}: source lettering {est[0] / page:.1f}x the page's, "
-                    f"max font {sizes.main_max_font} -> {bigger}", verbose=config.verbose)
+        log_message(
+            f"Bubble {bubble_id}: source lettering {est[0] / page:.1f}x the page's, "
+            f"max font {sizes.main_max_font} -> {bigger}",
+            verbose=config.verbose,
+        )
         sizes = sizes._replace(main_max_font=bigger)
     return sizes
 
@@ -459,20 +436,23 @@ def _render_bubble(
     """
     sizes = _emphasis_sizes(bubble, bubble_id, sizes, page_glyphs, config)
     outlined = bool(render_info and render_info.get("is_colored"))
-    rendered = _render_bubble_once(image, bubble, text, bubble_id, render_info, page_cv, config,
-                                   sizes, processing_scale, outlined)
+    rendered = _render_bubble_once(
+        image, bubble, text, bubble_id, render_info, page_cv, config, sizes, processing_scale, outlined
+    )
     if rendered is not None:
         return rendered
     smaller = sizes._replace(main_min_font=max(4, sizes.main_min_font // 2))
-    rendered = _render_bubble_once(image, bubble, text, bubble_id, render_info, page_cv, config,
-                                   smaller, processing_scale, outlined)
+    rendered = _render_bubble_once(
+        image, bubble, text, bubble_id, render_info, page_cv, config, smaller, processing_scale, outlined
+    )
     if rendered is not None:
-        log_message(f"Bubble {bubble_id}: fitted below the minimum font size",
-                    always_print=True)
+        log_message(f"Bubble {bubble_id}: fitted below the minimum font size", always_print=True)
         return rendered
     if "original_crop_pil" in bubble:
-        log_message(f"Bubble {bubble_id}: translation does not fit, kept the original "
-                    f"lettering ('{text[:30]}')", always_print=True)
+        log_message(
+            f"Bubble {bubble_id}: translation does not fit, kept the original lettering ('{text[:30]}')",
+            always_print=True,
+        )
         return _paste_original_crop(image, bubble)
     return None
 
@@ -550,13 +530,9 @@ def _render_bubble_once(
                     "base_mask": base_mask,
                     "bbox": bbox,
                     "is_seg": is_seg_mask,
-                    "is_colored": (
-                        render_info.get("is_colored", False) if render_info else False
-                    ),
+                    "is_colored": (render_info.get("is_colored", False) if render_info else False),
                     "text_bbox": render_info.get("text_bbox") if render_info else None,
-                    "text_color_bgr": (
-                        render_info.get("text_color_bgr") if render_info else None
-                    ),
+                    "text_color_bgr": (render_info.get("text_color_bgr") if render_info else None),
                 },
                 config.cleaning.threshold,
                 config.cleaning.roi_shrink_px,
@@ -575,20 +551,14 @@ def _render_bubble_once(
                         "mask": cleaned_mask,
                         "color": bubble_color_bgr,
                         "base_mask": base_mask,
-                        "is_colored": retry_result.get(
-                            "is_colored", render_info.get("is_colored", False)
-                        ),
-                        "text_bbox": retry_result.get(
-                            "text_bbox", render_info.get("text_bbox")
-                        ),
+                        "is_colored": retry_result.get("is_colored", render_info.get("is_colored", False)),
+                        "text_bbox": retry_result.get("text_bbox", render_info.get("text_bbox")),
                     }
                 )
             try:
                 return render(cleaned_mask, bubble_color_bgr, raise_on_safe_error=False)
             except (RenderingError, FontError, ImageProcessingError) as e2:
-                log_message(
-                    f"Text rendering failed after Otsu retry: {e2}", verbose=verbose
-                )
+                log_message(f"Text rendering failed after Otsu retry: {e2}", verbose=verbose)
 
         log_message(
             f"Safe area calculation failed for {bbox}, using padded bbox fallback"
@@ -611,8 +581,12 @@ def _render_action(bubble: dict[str, Any], text: str, provider_tag: str) -> str:
     (speed lines or artwork the detector mistook for lettering) and for sound effects that get
     a label beside the artist's lettering (typeset.sfx_labels)."""
     action = _basic_render_action(bubble, text, provider_tag)
-    if (action == "render" and bubble.get("is_outside_text") and "original_crop_pil" in bubble
-            and _junk_read(bubble.get("ocr_text", ""))):
+    if (
+        action == "render"
+        and bubble.get("is_outside_text")
+        and "original_crop_pil" in bubble
+        and _junk_read(bubble.get("ocr_text", ""))
+    ):
         action = "keep_original"
     if bubble.get("_sfx_label") and action not in ("ocr_failed", "invalid"):  # label mode only
         action = "keep_original"
@@ -642,9 +616,7 @@ def _basic_render_action(bubble: dict[str, Any], text: str, provider_tag: str) -
         return "ocr_failed"
     if (
         not text
-        or text.startswith(
-            ("API Error", "[Translation Error]", "[Translation Error:", provider_tag)
-        )
+        or text.startswith(("API Error", "[Translation Error]", "[Translation Error:", provider_tag))
         or trimmed_text in INVALID_TRANSLATION_VALUES
     ):
         return "invalid"
@@ -673,17 +645,13 @@ def _paint_osb_fills(
     Returns the page and, per rendered outside text index, the attempts to draw it with.
     """
     attempts_by_index = {}
-    for i, (bubble, text) in enumerate(
-        zip(sorted_bubble_data, translated_texts, strict=True)
-    ):
+    for i, (bubble, text) in enumerate(zip(sorted_bubble_data, translated_texts, strict=True)):
         if not bubble.get("is_outside_text", False):
             continue
         action = _render_action(bubble, text, provider_tag)
         attempts = []
         if action == "render":
-            attempts = _fitting_osb_attempts(
-                image, bubble, text.upper(), str(i + 1), config, sizes
-            )
+            attempts = _fitting_osb_attempts(image, bubble, text.upper(), str(i + 1), config, sizes)
             attempts_by_index[i] = attempts
             if attempts:
                 image = paint_pending_osb_fill(image, bubble, attempts[0][0])
@@ -710,11 +678,24 @@ def render_translations(
 ) -> Image.Image:
     """Render the page's translations (_render_page_texts); with --sfx label, sound effects keep
     their lettering and get an English label beside it (typeset.sfx_labels)."""
-    labels = (sfx_labels.mark_labels(sorted_bubble_data, translated_texts)
-              if config.typesetting.sfx == "label" else [])
-    image = _render_page_texts(image, sorted_bubble_data, translated_texts, processed_bubbles_info,
-                               page_cv, config, sizes, processing_scale, empty_bubbles,
-                               cancellation_manager, page_glyphs)
+    labels = (
+        sfx_labels.mark_labels(sorted_bubble_data, translated_texts)
+        if config.typesetting.sfx == "label"
+        else []
+    )
+    image = _render_page_texts(
+        image,
+        sorted_bubble_data,
+        translated_texts,
+        processed_bubbles_info,
+        page_cv,
+        config,
+        sizes,
+        processing_scale,
+        empty_bubbles,
+        cancellation_manager,
+        page_glyphs,
+    )
     return sfx_labels.draw_labels(image, labels, sorted_bubble_data, config, sizes)
 
 
@@ -749,8 +730,7 @@ def _render_page_texts(
     log_message("Rendering translations...", verbose=verbose)
     if len(translated_texts) != len(sorted_bubble_data):
         log_message(
-            f"Warning: Bubble/translation count mismatch "
-            f"({len(sorted_bubble_data)}/{len(translated_texts)})",
+            f"Warning: Bubble/translation count mismatch ({len(sorted_bubble_data)}/{len(translated_texts)})",
             always_print=True,
         )
         # blocks erased on purpose (mt_skip: other-language text) are not "left empty"
@@ -761,9 +741,7 @@ def _render_page_texts(
     image, osb_attempts = _paint_osb_fills(
         image, sorted_bubble_data, translated_texts, provider_tag, config, sizes
     )
-    for i, (bubble, text) in enumerate(
-        zip(sorted_bubble_data, translated_texts, strict=True)
-    ):
+    for i, (bubble, text) in enumerate(zip(sorted_bubble_data, translated_texts, strict=True)):
         raise_if_manager_cancelled(cancellation_manager)
         bubble["translation"] = text
         bbox = bubble["bbox"]
@@ -789,9 +767,7 @@ def _render_page_texts(
             continue
 
         if action == "invalid":
-            log_message(
-                f"Skipping {entry_type} {bbox} - invalid translation", verbose=verbose
-            )
+            log_message(f"Skipping {entry_type} {bbox} - invalid translation", verbose=verbose)
             if not bubble.get("mt_skip"):  # erased on purpose (other-language block)
                 empty_bubbles.append(bbox)
             continue
@@ -808,9 +784,7 @@ def _render_page_texts(
         if is_outside_text:
             text = text.upper()
             bubble["translation"] = text
-            rendered = _render_outside_text(
-                image, bubble, text, str(i + 1), config, sizes, osb_attempts[i]
-            )
+            rendered = _render_outside_text(image, bubble, text, str(i + 1), config, sizes, osb_attempts[i])
         else:
             rendered = _render_bubble(
                 image,

@@ -12,12 +12,18 @@ LLM_DIR = ROOT / "models" / "llm"
 #   26b: MoE 26B-A4B, experts in system RAM -> ~2.4 GB VRAM, ~10 s/page, best translations
 #   12b: dense 12B fully on GPU            -> ~7.4 GB VRAM,  ~6 s/page, a few more meaning errors
 MODEL_PRESETS = {
-    "26b": dict(gguf=LLM_DIR / "gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf", cpu_moe=99,
-                mmproj=LLM_DIR / "gemma-4-26B-A4B-mmproj-F16.gguf",
-                repo="unsloth/gemma-4-26B-A4B-it-qat-GGUF"),
-    "12b": dict(gguf=LLM_DIR / "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf", cpu_moe=0,
-                mmproj=LLM_DIR / "mmproj-F16.gguf",
-                repo="unsloth/gemma-4-12B-it-qat-GGUF"),
+    "26b": dict(
+        gguf=LLM_DIR / "gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
+        cpu_moe=99,
+        mmproj=LLM_DIR / "gemma-4-26B-A4B-mmproj-F16.gguf",
+        repo="unsloth/gemma-4-26B-A4B-it-qat-GGUF",
+    ),
+    "12b": dict(
+        gguf=LLM_DIR / "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+        cpu_moe=0,
+        mmproj=LLM_DIR / "mmproj-F16.gguf",
+        repo="unsloth/gemma-4-12B-it-qat-GGUF",
+    ),
 }
 CJK_LANGUAGES = ("chinese", "japanese", "korean")
 
@@ -87,7 +93,12 @@ def build(
     s.runtime.verbose = verbose
     s.server.launch = not llm_url
     s.server.model, s.server.gguf, s.server.mmproj = model, gguf, mmproj
-    s.server.port, s.server.ctx, s.server.cpu_moe, s.server.extra_args = port, ctx, cpu_moe or 0, llm_server_args
+    s.server.port, s.server.ctx, s.server.cpu_moe, s.server.extra_args = (
+        port,
+        ctx,
+        cpu_moe or 0,
+        llm_server_args,
+    )
 
     s.detection.outside_text.enabled = outside_text
     s.detection.outside_text.cover_with_bubbles = outside_text
@@ -102,7 +113,9 @@ def build(
     t.reading_direction = reading_direction or ("rtl" if japanese else "ltr")
     t.context_pages = context_pages if batch else 0
     t.glossary = batch  # names/terms memory, shared by all chapters of a run
-    t.glossary_path = (Path(glossary).expanduser().resolve() if glossary else output / "glossary.txt") if batch else None
+    t.glossary_path = (
+        (Path(glossary).expanduser().resolve() if glossary else output / "glossary.txt") if batch else None
+    )
     t.instructions, t.honorifics, t.adult = instructions, honorifics, adult
     t.ocr_correction, t.vision = ocr_correction, vision
 

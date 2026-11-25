@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-from mangatl.translate import service as tr
 from mangatl.common.log import log_message
+from mangatl.translate import service as tr
 
 VISION_SHORT_MAX = {"osb": 10, "bubble": 5}  # letters/kana/kanji in the source, punctuation not counted
 
@@ -23,8 +23,14 @@ def _short_item(ocr: str, osb: bool) -> bool:
     return 1 <= n <= VISION_SHORT_MAX["osb" if osb else "bubble"]
 
 
-def revise_short_items(config, bubble_metadata: list[dict], ocr_texts: list[str], texts: list[str],
-                       full_image_b64: str | None, full_image_mime_type: str | None) -> list[str]:
+def revise_short_items(
+    config,
+    bubble_metadata: list[dict],
+    ocr_texts: list[str],
+    texts: list[str],
+    full_image_b64: str | None,
+    full_image_mime_type: str | None,
+) -> list[str]:
     """translation.vision = "short": translate the page from text as usual, then show the model the page
     image and let it redo only the short items: sound effects, gasps, one- or two-word lines
     and cut-off words, whose meaning depends on the picture. Measured: the page image fixes
@@ -40,9 +46,13 @@ def revise_short_items(config, bubble_metadata: list[dict], ocr_texts: list[str]
         page_mime = full_image_mime_type or "image/jpeg"
         if not page_b64 or len(ocr) != len(texts) or len(meta) != len(texts):
             return texts
-        short = [i for i, (o, m, t) in enumerate(zip(ocr, meta, texts))
-                 if _short_item(o, bool(m.get("is_outside_text")))
-                 and t and not t.strip().upper().startswith("[OCR FAILED")]
+        short = [
+            i
+            for i, (o, m, t) in enumerate(zip(ocr, meta, texts))
+            if _short_item(o, bool(m.get("is_outside_text")))
+            and t
+            and not t.strip().upper().startswith("[OCR FAILED")
+        ]
         if not short:
             return texts
         lines = []
@@ -66,14 +76,15 @@ def revise_short_items(config, bubble_metadata: list[dict], ocr_texts: list[str]
             + tr._format_special_instructions(config)
         )
         system = tr._build_system_prompt_translation(
-            config.translation.target_language, full_page_context=True,
+            config.translation.target_language,
+            full_page_context=True,
             ero_doujinshi_mode=config.translation.adult,
-            input_language=config.translation.source_language)
+            input_language=config.translation.source_language,
+        )
         parts = [{"text": tr._FULL_PAGE_LABEL}, tr._image_part(page_mime, page_b64)]
         reply = tr._call_llm_endpoint(config, parts, prompt, system_prompt=system) or ""
     except Exception as e:  # never lose the page over the second look
-        log_message(f"Short-item vision pass failed ({e}); keeping text-only lines",
-                    always_print=True)
+        log_message(f"Short-item vision pass failed ({e}); keeping text-only lines", always_print=True)
         return texts
     wanted_set = set(short)
     texts = list(texts)
@@ -84,8 +95,12 @@ def revise_short_items(config, bubble_metadata: list[dict], ocr_texts: list[str]
         i, new = int(m.group(1)) - 1, m.group(2)
         if "||" in new:  # echoed "source || translation"
             new = new.rsplit("||", 1)[1].strip()
-        if (len(new) > 2 and new[0] == new[-1] == '"' and '"' not in new[1:-1]
-                and not texts[i].startswith('"')):  # quoted the line as dialogue
+        if (
+            len(new) > 2
+            and new[0] == new[-1] == '"'
+            and '"' not in new[1:-1]
+            and not texts[i].startswith('"')
+        ):  # quoted the line as dialogue
             new = new[1:-1]
         if i in wanted_set and new and _words(new) == _words(texts[i]):
             continue  # only markup, case or punctuation changed: keep the draft's styling
@@ -93,4 +108,3 @@ def revise_short_items(config, bubble_metadata: list[dict], ocr_texts: list[str]
             log_message(f"Vision, item {i + 1}: {texts[i]!r} -> {new!r}", always_print=True)
             texts[i] = new
     return texts
-

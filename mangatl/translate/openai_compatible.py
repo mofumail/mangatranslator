@@ -4,9 +4,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from mangatl.common.exceptions import ValidationError
 from mangatl.common.log import log_message
-from mangatl.translate.model_metadata import is_azure_url, is_gemini_no_sampling_model
-
 from mangatl.translate.http import api_error, post_with_retries
+from mangatl.translate.model_metadata import is_azure_url, is_gemini_no_sampling_model
 
 
 def build_openai_compatible_url(base_url: str) -> str:
@@ -22,9 +21,7 @@ def build_openai_compatible_url(base_url: str) -> str:
         prefix = parsed.path.split("/openai")[0].rstrip("/")
         prefix = prefix.removesuffix("/chat/completions").removesuffix("/v1")
         query = "&".join(
-            param
-            for param in parsed.query.split("&")
-            if param and not param.startswith("api-version=")
+            param for param in parsed.query.split("&") if param and not param.startswith("api-version=")
         )
         return urlunsplit(
             (
@@ -63,9 +60,7 @@ def build_chat_messages(
     """
     text_part = next((p for p in reversed(parts) if "text" in p), None)
     if not text_part:
-        raise ValidationError(
-            f"Invalid 'parts' format for {label}: No text prompt found."
-        )
+        raise ValidationError(f"Invalid 'parts' format for {label}: No text prompt found.")
 
     user_content = []
     for part in parts:
@@ -89,9 +84,7 @@ def build_chat_messages(
     return messages
 
 
-def read_chat_reply(
-    result: dict[str, Any], label: str, debug: bool = False
-) -> str | None:
+def read_chat_reply(result: dict[str, Any], label: str, debug: bool = False) -> str | None:
     """Read the answer text from a Chat Completions body.
 
     Returns "" when the first choice has no content, and None when there are no choices.
@@ -147,11 +140,7 @@ def routed_sampling_params(
     params = {}
 
     temperature = generation_config.get("temperature")
-    if (
-        temperature is not None
-        and not gemini_no_sampling
-        and not (is_anthropic_model and no_sampling)
-    ):
+    if temperature is not None and not gemini_no_sampling and not (is_anthropic_model and no_sampling):
         if is_anthropic_model or (cap_openai_temperature and is_openai_model):
             temperature = min(temperature, 1.0)
         params["temperature"] = temperature
@@ -161,12 +150,7 @@ def routed_sampling_params(
         params["top_p"] = top_p
 
     top_k = generation_config.get("top_k")
-    if (
-        top_k is not None
-        and not is_openai_model
-        and not is_anthropic_model
-        and not no_sampling
-    ):
+    if top_k is not None and not is_openai_model and not is_anthropic_model and not no_sampling:
         params["top_k"] = top_k
 
     return params
@@ -231,22 +215,14 @@ def call_openai_compatible_endpoint(
 
     metadata = generation_config.get("_metadata", {})
     # OpenAI reasoning models reject max_tokens on chat completions
-    token_limit_key = (
-        "max_completion_tokens"
-        if metadata.get("is_openai_reasoning", False)
-        else "max_tokens"
-    )
+    token_limit_key = "max_completion_tokens" if metadata.get("is_openai_reasoning", False) else "max_tokens"
     payload = {
         "model": model_name,
         "messages": messages,
         token_limit_key: generation_config.get("max_tokens", 4096),
     }
 
-    payload.update(
-        routed_sampling_params(
-            model_name, generation_config, cap_openai_temperature=False
-        )
-    )
+    payload.update(routed_sampling_params(model_name, generation_config, cap_openai_temperature=False))
 
     reasoning_effort = generation_config.get("reasoning_effort")
     if reasoning_effort and metadata.get("is_anthropic_model", False):
@@ -257,9 +233,7 @@ def call_openai_compatible_endpoint(
     elif reasoning_effort and reasoning_effort != "none":
         payload["reasoning_effort"] = reasoning_effort
 
-    supports_verbosity = metadata.get("supports_verbosity", False) or metadata.get(
-        "is_gpt5_model", False
-    )
+    supports_verbosity = metadata.get("supports_verbosity", False) or metadata.get("is_gpt5_model", False)
     if supports_verbosity and generation_config.get("verbosity"):
         payload["verbosity"] = generation_config["verbosity"]
 

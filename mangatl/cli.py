@@ -1,6 +1,6 @@
 """Run the pipeline on one input with a settings file (written by translate.py).
 
-    python -m mangatl.cli --settings run/settings.json --input chapter/ --output run/ --batch
+python -m mangatl.cli --settings run/settings.json --input chapter/ --output run/ --batch
 """
 
 import argparse
@@ -21,8 +21,9 @@ from mangatl.inputs.archive import ARCHIVE_SUFFIXES, safe_extract_zip
 def main():
     parser = argparse.ArgumentParser(description="Translate manga pages with a settings file.")
     parser.add_argument("--settings", required=True, help="settings.json (see mangatl/settings.py)")
-    parser.add_argument("--input", required=True,
-                        help="Image; with --batch: directory, ZIP/CBZ archive, or failed_paths.txt")
+    parser.add_argument(
+        "--input", required=True, help="Image; with --batch: directory, ZIP/CBZ archive, or failed_paths.txt"
+    )
     parser.add_argument("--output", default=None, help="Output file; with --batch: output directory")
     parser.add_argument("--batch", action="store_true", help="Translate a folder / archive")
     args = parser.parse_args()
@@ -31,12 +32,12 @@ def main():
 
     init_file_logging()
 
-    from mangatl.ml.model_manager import get_model_manager, migrate_model_dirs
-    from mangatl.pipeline.page import translate_and_render
-    from mangatl.pipeline.batch import batch_translate_images
-    from mangatl.settings import Settings
     from mangatl.common import eval_hooks
     from mangatl.common.log import log_message
+    from mangatl.ml.model_manager import get_model_manager, migrate_model_dirs
+    from mangatl.pipeline.batch import batch_translate_images
+    from mangatl.pipeline.page import translate_and_render
+    from mangatl.settings import Settings
 
     config = Settings.load(args.settings)
     eval_hooks.configure(config.debug)
@@ -107,9 +108,7 @@ def main():
             )
             path_list_temp_dir_obj = tempfile.TemporaryDirectory()
             temp_dir_path = Path(path_list_temp_dir_obj.name)
-            source_path_map, path_list_run_dir, glossary_path = stage_path_list(
-                input_path, temp_dir_path
-            )
+            source_path_map, path_list_run_dir, glossary_path = stage_path_list(input_path, temp_dir_path)
             if not source_path_map:
                 log_message(
                     f"Error: no existing image paths found in '{args.input}'.",
@@ -136,9 +135,7 @@ def main():
 
         if args.output:
             if not output_dir.exists():
-                log_message(
-                    f"Creating output directory: {output_dir}", always_print=True
-                )
+                log_message(f"Creating output directory: {output_dir}", always_print=True)
                 output_dir.mkdir(parents=True, exist_ok=True)
             elif not output_dir.is_dir():
                 log_message(
@@ -186,20 +183,14 @@ def main():
     else:
         input_path = Path(args.input)
         if not input_path.is_file():
-            log_message(
-                f"Error: Input '{args.input}' is not a valid file.", always_print=True
-            )
+            log_message(f"Error: Input '{args.input}' is not a valid file.", always_print=True)
             sys.exit(1)
 
         output_path_arg = args.output
         original_ext = input_path.suffix.lower()
         output_format = config.output.format
         if output_format == "auto":
-            output_ext = (
-                original_ext
-                if original_ext in [".jpg", ".jpeg", ".png", ".webp"]
-                else ".png"
-            )
+            output_ext = original_ext if original_ext in [".jpg", ".jpeg", ".png", ".webp"] else ".png"
         elif output_format == "png":
             output_ext = ".png"
         elif output_format == "jpeg":
@@ -211,9 +202,7 @@ def main():
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             output_dir = Path("./output")
             output_dir.mkdir(parents=True, exist_ok=True)
-            output_path = (
-                output_dir / f"{input_path.stem}_translated_{timestamp}{output_ext}"
-            )
+            output_path = output_dir / f"{input_path.stem}_translated_{timestamp}{output_ext}"
             log_message(
                 f"--output not specified, using default: {output_path}",
                 always_print=True,
@@ -239,7 +228,6 @@ def main():
         except Exception as e:
             log_message(f"Error processing {input_path}: {e}", always_print=True)
             raise SystemExit(1) from e
-
 
 
 if __name__ == "__main__":

@@ -61,10 +61,7 @@ def get_best_dtype(device: torch.device | None = None) -> torch.dtype:
     if device_type == "xpu":
         # Intel XPU supports bfloat16 on most ARC GPUs
         try:
-            if (
-                hasattr(torch.xpu, "is_bf16_supported")
-                and torch.xpu.is_bf16_supported()
-            ):
+            if hasattr(torch.xpu, "is_bf16_supported") and torch.xpu.is_bf16_supported():
                 return torch.bfloat16
         except Exception:
             pass
@@ -92,9 +89,7 @@ def empty_cache(device: torch.device | None = None) -> None:
         device_type = device.type
         if device_type == "cuda" and torch.cuda.is_available():
             torch.cuda.empty_cache()
-        elif (
-            device_type == "xpu" and hasattr(torch, "xpu") and torch.xpu.is_available()
-        ):
+        elif device_type == "xpu" and hasattr(torch, "xpu") and torch.xpu.is_available():
             torch.xpu.empty_cache()
         elif device_type == "mps" and torch.backends.mps.is_available():
             torch.mps.empty_cache()
@@ -200,9 +195,7 @@ def synchronize(device: torch.device | None = None) -> None:
         device_type = device.type
         if device_type == "cuda" and torch.cuda.is_available():
             torch.cuda.synchronize()
-        elif (
-            device_type == "xpu" and hasattr(torch, "xpu") and torch.xpu.is_available()
-        ):
+        elif device_type == "xpu" and hasattr(torch, "xpu") and torch.xpu.is_available():
             torch.xpu.synchronize()
         elif device_type == "mps" and torch.backends.mps.is_available():
             torch.mps.synchronize()

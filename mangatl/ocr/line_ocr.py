@@ -38,8 +38,10 @@ def is_japanese(text: str) -> bool:
 # sentence particles and simplified-only forms.
 ZH_MARKERS = set("们呢吧吗么这嗯哦啊呀您她说让没还对给吃过时间样边见")
 # Simplified forms Japanese never uses (Japanese writes 這説話時過対開関門見譲還発気...)
-ZH_SIMPLIFIED = set("们这说话时过对开关门见让还发气车东经书长问间听现实认识应该样边头动从觉为无么个给吗呢吧"
-                    "爱乐欢够难变种进远连级员单层战视请谁论读课谢买卖脑脸点儿哪")
+ZH_SIMPLIFIED = set(
+    "们这说话时过对开关门见让还发气车东经书长问间听现实认识应该样边头动从觉为无么个给吗呢吧"
+    "爱乐欢够难变种进远连级员单层战视请谁论读课谢买卖脑脸点儿哪"
+)
 
 
 def is_other_cjk(text: str) -> bool:
@@ -136,8 +138,8 @@ def read_region(meta: dict, models_dir: Path, rtl: bool = True) -> str | None:
     detected lines, otherwise the whole region in one pass (sound effects, short asides; Hayai
     was trained on onomatopoeia, manga-ocr was not). None (keep upstream's read) if the page
     is unknown."""
-    from mangatl.ocr import hayai as hayai_ocr
     from mangatl.detect import text_lines
+    from mangatl.ocr import hayai as hayai_ocr
 
     token = meta.get("mt_page")
     box = meta.get("original_bbox") or meta.get("bbox")
@@ -151,14 +153,21 @@ def read_region(meta: dict, models_dir: Path, rtl: bool = True) -> str | None:
         if x2 - x1 < 4 or y2 - y1 < 4:
             return None
         crop = page.crop((max(0, x1), max(0, y1), min(W, x2), min(H, y2))).convert("RGB")
-        tight, padded = (t.strip() for t in hayai_ocr.get(models_dir).read(
-            [crop, _pad_mean(crop)], max_patches=512, max_new_tokens=64))
+        tight, padded = (
+            t.strip()
+            for t in hayai_ocr.get(models_dir).read(
+                [crop, _pad_mean(crop)], max_patches=512, max_new_tokens=64
+            )
+        )
         return pick_sfx_read(tight, padded) or None
     pieces = []
     for line in lines:
         pad = max(2, int(0.1 * line.thickness))
-        pieces.append(page.crop((max(0, line.x1 - pad), max(0, line.y1 - pad),
-                                 min(W, line.x2 + pad), min(H, line.y2 + pad))))
+        pieces.append(
+            page.crop(
+                (max(0, line.x1 - pad), max(0, line.y1 - pad), min(W, line.x2 + pad), min(H, line.y2 + pad))
+            )
+        )
     texts = [t.strip() for t in hayai_ocr.get(models_dir).read(pieces, max_patches=512, max_new_tokens=160)]
     texts = [t for t in texts if t]
     if not texts:

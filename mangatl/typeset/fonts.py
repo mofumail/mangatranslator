@@ -83,28 +83,14 @@ def get_font_features(font_path: str) -> dict[str, list[str]]:
     try:
         font = TTFont(font_path, fontNumber=0)
 
-        if (
-            "GSUB" in font
-            and hasattr(font["GSUB"].table, "FeatureList")
-            and font["GSUB"].table.FeatureList
-        ):
-            features["GSUB"] = sorted(
-                [fr.FeatureTag for fr in font["GSUB"].table.FeatureList.FeatureRecord]
-            )
+        if "GSUB" in font and hasattr(font["GSUB"].table, "FeatureList") and font["GSUB"].table.FeatureList:
+            features["GSUB"] = sorted([fr.FeatureTag for fr in font["GSUB"].table.FeatureList.FeatureRecord])
 
-        if (
-            "GPOS" in font
-            and hasattr(font["GPOS"].table, "FeatureList")
-            and font["GPOS"].table.FeatureList
-        ):
-            features["GPOS"] = sorted(
-                [fr.FeatureTag for fr in font["GPOS"].table.FeatureList.FeatureRecord]
-            )
+        if "GPOS" in font and hasattr(font["GPOS"].table, "FeatureList") and font["GPOS"].table.FeatureList:
+            features["GPOS"] = sorted([fr.FeatureTag for fr in font["GPOS"].table.FeatureList.FeatureRecord])
 
     except ImportError:
-        log_message(
-            "fontTools not available - font features disabled", always_print=True
-        )
+        log_message("fontTools not available - font features disabled", always_print=True)
     except Exception as e:
         log_message(
             f"Font feature inspection failed for {os.path.basename(font_path)}: {e}",
@@ -185,9 +171,20 @@ def get_cap_height_ratio(font_path: str) -> float:
 
 # Closest stand-ins for characters lettering fonts often lack, tried in order
 GLYPH_SUBSTITUTES = {
-    "—": ["–", "--"], "–": ["-"], "―": ["—", "–", "--"], "~": ["〜", "-"], "〜": ["~", "-"],
-    "‘": ["'"], "’": ["'"], "“": ['"'], "”": ['"'], "…": ["..."],
-    "♥": ["♡"], "♡": ["♥"], "★": ["☆"], "☆": ["★"],
+    "—": ["–", "--"],
+    "–": ["-"],
+    "―": ["—", "–", "--"],
+    "~": ["〜", "-"],
+    "〜": ["~", "-"],
+    "‘": ["'"],
+    "’": ["'"],
+    "“": ['"'],
+    "”": ['"'],
+    "…": ["..."],
+    "♥": ["♡"],
+    "♡": ["♥"],
+    "★": ["☆"],
+    "☆": ["★"],
 }
 
 
@@ -207,8 +204,7 @@ def sanitize_text_for_font(text: str, font_path: str, verbose: bool = False) -> 
         # Draw it from the symbol font (as the tilde operator, which lettering fonts lack,
         # so it always takes that route), or drop it if there is no symbol font.
         if ord("~") not in supported:
-            text = re.sub(r"[~〜]+", lambda m: "∼" * min(len(m.group()), 2) if symbols_on else "",
-                          text)
+            text = re.sub(r"[~〜]+", lambda m: "∼" * min(len(m.group()), 2) if symbols_on else "", text)
         out = []
         for ch in text:
             if ord(ch) in supported or ch.isspace():
@@ -222,9 +218,12 @@ def sanitize_text_for_font(text: str, font_path: str, verbose: bool = False) -> 
         text = "".join(out)
     if symbols_on and symbols.SYMBOL_CHARS & set(text):
         text = text.replace("♡", "♥")  # the outline heart is too thin next to lettering
-        return "".join(seg if is_sym else _drop_unsupported_glyphs(seg, font_path, verbose)
-                       for is_sym, seg in ((k, "".join(g)) for k, g in
-                                           itertools.groupby(text, key=lambda c: c in symbols.SYMBOL_CHARS)))
+        return "".join(
+            seg if is_sym else _drop_unsupported_glyphs(seg, font_path, verbose)
+            for is_sym, seg in (
+                (k, "".join(g)) for k, g in itertools.groupby(text, key=lambda c: c in symbols.SYMBOL_CHARS)
+            )
+        )
     return _drop_unsupported_glyphs(text, font_path, verbose)
 
 
@@ -266,11 +265,7 @@ def _drop_unsupported_glyphs(text: str, font_path: str, verbose: bool = False) -
     for char in text:
         codepoint = ord(char)
 
-        if (
-            char in STYLE_MARKER_CHARS
-            or char in WHITESPACE_CHARS
-            or codepoint in supported_codepoints
-        ):
+        if char in STYLE_MARKER_CHARS or char in WHITESPACE_CHARS or codepoint in supported_codepoints:
             sanitized_chars.append(char)
         else:
             removed_chars.append(char)
@@ -340,19 +335,16 @@ def inspect_variable_font(font_path: Path | str) -> dict | None:
             return None
 
         fvar = tt["fvar"]
-        axes = {
-            axis.axisTag: (axis.minValue, axis.defaultValue, axis.maxValue)
-            for axis in fvar.axes
-        }
+        axes = {axis.axisTag: (axis.minValue, axis.defaultValue, axis.maxValue) for axis in fvar.axes}
 
         instances = []
         name_table = tt.get("name")
         for i, inst in enumerate(fvar.instances):
             name_str = ""
             if name_table:
-                record = name_table.getName(
-                    inst.subfamilyNameID, 3, 1
-                ) or name_table.getName(inst.subfamilyNameID, 1, 0)
+                record = name_table.getName(inst.subfamilyNameID, 3, 1) or name_table.getName(
+                    inst.subfamilyNameID, 1, 0
+                )
                 if record:
                     name_str = record.toStr()
             instances.append(
@@ -426,9 +418,7 @@ def resolve_variable_font_style(
     }
 
 
-def get_variable_font_style_info(
-    font_path: Path | str, style: str = "regular"
-) -> dict | None:
+def get_variable_font_style_info(font_path: Path | str, style: str = "regular") -> dict | None:
     """
     Returns the variable font style parameters (instance_index and coords) for a given font file and style.
     Returns None if the font is static.
@@ -456,9 +446,7 @@ def get_variable_font_style_info(
     return style_info
 
 
-def auto_map_variable_fonts(
-    font_files: list[Path], verbose: bool = False
-) -> dict[str, Path | None] | None:
+def auto_map_variable_fonts(font_files: list[Path], verbose: bool = False) -> dict[str, Path | None] | None:
     """
     Auto-maps styles (regular, bold, italic, bold_italic) from variable font files.
     Returns mapping if variable fonts are found, or None if no variable fonts exist.
@@ -499,12 +487,8 @@ def auto_map_variable_fonts(
         variants["regular"] = roman_font["path"]
         get_variable_font_style_info(roman_font["path"], "regular")
 
-        has_bold_axis = (
-            "wght" in roman_font["axes"] and roman_font["axes"]["wght"][2] >= 600
-        )
-        has_bold_instance = any(
-            inst["coords"].get("wght", 0) >= 600 for inst in roman_font["instances"]
-        )
+        has_bold_axis = "wght" in roman_font["axes"] and roman_font["axes"]["wght"][2] >= 600
+        has_bold_instance = any(inst["coords"].get("wght", 0) >= 600 for inst in roman_font["instances"])
         if has_bold_axis or has_bold_instance:
             variants["bold"] = roman_font["path"]
             get_variable_font_style_info(roman_font["path"], "bold")
@@ -512,9 +496,7 @@ def auto_map_variable_fonts(
     if italic_font:
         variants["italic"] = italic_font["path"]
         get_variable_font_style_info(italic_font["path"], "italic")
-        has_bold_italic_axis = (
-            "wght" in italic_font["axes"] and italic_font["axes"]["wght"][2] >= 600
-        )
+        has_bold_italic_axis = "wght" in italic_font["axes"] and italic_font["axes"]["wght"][2] >= 600
         has_bold_italic_instance = any(
             inst["coords"].get("wght", 0) >= 600 for inst in italic_font["instances"]
         )
@@ -566,9 +548,7 @@ def find_font_variants(font_dir: str, verbose: bool = False) -> dict[str, Path |
     try:
         font_dir_path = Path(resolved_dir)
         if font_dir_path.exists() and font_dir_path.is_dir():
-            font_files = list(font_dir_path.glob("*.ttf")) + list(
-                font_dir_path.glob("*.otf")
-            )
+            font_files = list(font_dir_path.glob("*.ttf")) + list(font_dir_path.glob("*.otf"))
         else:
             log_message(f"Font directory not found: {font_dir_path}", always_print=True)
             _font_variants_cache[resolved_dir] = font_variants
@@ -668,12 +648,7 @@ def find_font_variants(font_dir: str, verbose: bool = False) -> dict[str, Path |
         is_bold = any(kw in stem_lower for kw in FONT_KEYWORDS["bold"])
         is_italic = any(kw in stem_lower for kw in FONT_KEYWORDS["italic"])
         assigned = False
-        if (
-            is_regular
-            and not is_bold
-            and not is_italic
-            and not font_variants["regular"]
-        ):
+        if is_regular and not is_bold and not is_italic and not font_variants["regular"]:
             font_variants["regular"] = font_file
             assigned = True
             log_message(f"Found regular: {font_file.name}", verbose=verbose)
@@ -692,11 +667,7 @@ def find_font_variants(font_dir: str, verbose: bool = False) -> dict[str, Path |
             stem_lower = font_file.stem.lower()
             is_bold = any(kw in stem_lower for kw in FONT_KEYWORDS["bold"])
             is_italic = any(kw in stem_lower for kw in FONT_KEYWORDS["italic"])
-            if (
-                not is_bold
-                and not is_italic
-                and not any(kw in stem_lower for kw in FONT_KEYWORDS["regular"])
-            ):
+            if not is_bold and not is_italic and not any(kw in stem_lower for kw in FONT_KEYWORDS["regular"]):
                 font_name_lower = font_file.name.lower()
                 is_likely_specific = any(
                     spec in font_name_lower
@@ -723,9 +694,7 @@ def find_font_variants(font_dir: str, verbose: bool = False) -> dict[str, Path |
 
     # Pass 5: Fallback to first available
     if not font_variants["regular"]:
-        first_available = next(
-            (f for f in font_files if f not in identified_files), None
-        )
+        first_available = next((f for f in font_files if f not in identified_files), None)
         if first_available:
             font_variants["regular"] = first_available
             if first_available not in identified_files:
@@ -760,9 +729,7 @@ def find_font_variants(font_dir: str, verbose: bool = False) -> dict[str, Path |
         )
         raise FontError(f"No regular font found in directory: {resolved_dir}")
     else:
-        found_variants = [
-            f"{style}: {path.name}" for style, path in font_variants.items() if path
-        ]
+        found_variants = [f"{style}: {path.name}" for style, path in font_variants.items() if path]
         log_message(f"Font variants: {', '.join(found_variants)}", verbose=verbose)
 
     _font_variants_cache[resolved_dir] = font_variants

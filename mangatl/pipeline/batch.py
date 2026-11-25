@@ -10,16 +10,16 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Optional
+
+from mangatl.common.cancellation import CancellationManager
 from mangatl.common.coordinator import BatchRequestCoordinator
-from mangatl.translate.glossary import default_glossary_path, load_terms
-from mangatl.inputs.archive import copy_comic_info
 from mangatl.common.exceptions import CancellationError, TranslationError, ValidationError
 from mangatl.common.log import log_message
+from mangatl.inputs.archive import copy_comic_info
 from mangatl.inputs.path_list import record_failed_images, resolve_source_path
-from mangatl.settings import Settings
 from mangatl.pipeline.page import translate_and_render
-from mangatl.common.cancellation import CancellationManager
-
+from mangatl.settings import Settings
+from mangatl.translate.glossary import default_glossary_path, load_terms
 
 NATURAL_SORT_TOKEN_RE = re.compile(r"(\d+)")
 
@@ -48,9 +48,7 @@ def _build_previous_context_texts(
     Parallel callers that require deterministic prior-page text context should
     wait for the required previous pages before calling this helper.
     """
-    requested_count = int(
-        config.translation.context_pages
-    )
+    requested_count = int(config.translation.context_pages)
     if requested_count <= 0 or ocr_text_history is None:
         return []
 
@@ -146,9 +144,7 @@ def _should_run_failed_retry(
         return False
     if not failed_jobs:
         return False
-    return not (
-        cancellation_manager is not None and cancellation_manager.is_cancelled()
-    )
+    return not (cancellation_manager is not None and cancellation_manager.is_cancelled())
 
 
 def _retry_failed_batch_images(
@@ -242,8 +238,7 @@ def _retry_failed_batch_images(
             failed_paths = [p for p in failed_paths if p != source_path]
             if len(failed_paths) == before_len:
                 log_message(
-                    f"Retry success path cleanup: source_path not in "
-                    f"failed_image_paths ({source_path!r})",
+                    f"Retry success path cleanup: source_path not in failed_image_paths ({source_path!r})",
                     always_print=True,
                 )
             results["failed_image_paths"] = failed_paths
@@ -255,8 +250,7 @@ def _retry_failed_batch_images(
         except CancellationError:
             attempted -= 1
             log_message(
-                f"Batch retry cancelled during {display_path}; "
-                "remaining retries skipped.",
+                f"Batch retry cancelled during {display_path}; remaining retries skipped.",
                 always_print=True,
             )
             break
@@ -314,9 +308,7 @@ async def _batch_translate_pages(
     ocr_text_history: dict[Path, list[str]] = {}
     ocr_text_history_lock = threading.Lock()
     ocr_text_ready_events = [threading.Event() for _ in image_files]
-    requested_text_context_count = int(
-        config.translation.context_pages
-    )
+    requested_text_context_count = int(config.translation.context_pages)
 
     log_message(
         f"Starting batch processing: {total_images} images, {n_workers} worker(s)",
@@ -340,9 +332,7 @@ async def _batch_translate_pages(
                 ocr_text_history[img_path] = texts
 
     if n_workers > 1 and config.runtime.parallel_within_pages:
-        request_coordinator = BatchRequestCoordinator(
-            n_workers, cancellation_manager=cancellation_manager
-        )
+        request_coordinator = BatchRequestCoordinator(n_workers, cancellation_manager=cancellation_manager)
         config.request_coordinator = request_coordinator
         config.request_coordinator = request_coordinator
         log_message(
@@ -366,9 +356,7 @@ async def _batch_translate_pages(
         if cancellation_manager and cancellation_manager.is_cancelled():
             raise CancellationError("Batch process cancelled by user.")
         if progress_callback:
-            progress_callback(
-                0.0, f"Processing image 1/{total_images}: {first_display}"
-            )
+            progress_callback(0.0, f"Processing image 1/{total_images}: {first_display}")
         first_previous_context_texts = _build_previous_context_texts(
             image_files,
             0,
@@ -400,9 +388,7 @@ async def _batch_translate_pages(
     if progress_callback:
         has_errors = results["error_count"] > 0
         suffix = " (with errors)" if has_errors else ""
-        progress_callback(
-            1 / total_images, f"Completed 1/{total_images} images{suffix}"
-        )
+        progress_callback(1 / total_images, f"Completed 1/{total_images} images{suffix}")
 
     # -- Phase 2: process remaining images in parallel --
     remaining = image_files[1:]
@@ -438,6 +424,7 @@ async def _batch_translate_pages(
             f"Processing {index + 1}/{total_images}: {display_path}",
             always_print=True,
         )
+
         def previous_context_texts_provider() -> list[list[str]]:
             _wait_for_required_previous_ocr(index)
             return _build_previous_context_texts(
@@ -465,16 +452,12 @@ async def _batch_translate_pages(
     async def _worker(img_path: Path, index: int, executor: ThreadPoolExecutor):
         nonlocal completed_count, cancelled
         try:
-            if cancelled or (
-                cancellation_manager and cancellation_manager.is_cancelled()
-            ):
+            if cancelled or (cancellation_manager and cancellation_manager.is_cancelled()):
                 cancelled = True
                 return
 
             async with sem:
-                if cancelled or (
-                    cancellation_manager and cancellation_manager.is_cancelled()
-                ):
+                if cancelled or (cancellation_manager and cancellation_manager.is_cancelled()):
                     cancelled = True
                     return
 
@@ -494,9 +477,7 @@ async def _batch_translate_pages(
                         # instead of waiting for a worker thread's page to finish
                         _process_single(img_path, index)
                     else:
-                        await loop.run_in_executor(
-                            executor, _process_single, img_path, index
-                        )
+                        await loop.run_in_executor(executor, _process_single, img_path, index)
                     with results_lock:
                         results["success_count"] += 1
                         completed_count += 1
@@ -517,9 +498,7 @@ async def _batch_translate_pages(
                     progress = count / total_images
                     has_errors = results["error_count"] > 0
                     suffix = " (with errors)" if has_errors else ""
-                    progress_callback(
-                        progress, f"Completed {count}/{total_images} images{suffix}"
-                    )
+                    progress_callback(progress, f"Completed {count}/{total_images} images{suffix}")
         except CancellationError:
             cancelled = True
             raise
@@ -607,17 +586,11 @@ def batch_translate_images(
                 if file_path.suffix.lower() in image_extensions:
                     image_files.append(file_path)
     else:
-        image_files = [
-            f
-            for f in input_dir.iterdir()
-            if f.is_file() and f.suffix.lower() in image_extensions
-        ]
+        image_files = [f for f in input_dir.iterdir() if f.is_file() and f.suffix.lower() in image_extensions]
 
     def _batch_sort_key(path: Path):
         try:
-            sort_path = (
-                path.relative_to(input_dir) if preserve_structure else Path(path.name)
-            )
+            sort_path = path.relative_to(input_dir) if preserve_structure else Path(path.name)
         except ValueError:
             sort_path = path
         return natural_path_sort_key(sort_path)
@@ -634,9 +607,7 @@ def batch_translate_images(
     elif config.translation.glossary_path:
         glossary_path = config.translation.glossary_path
     else:
-        glossary_path = glossary_path or str(
-            default_glossary_path(glossary_name or image_files[0].stem)
-        )
+        glossary_path = glossary_path or str(default_glossary_path(glossary_name or image_files[0].stem))
         config = config.updated(**{"translation.glossary_path": Path(glossary_path)})
     if glossary_path:
         _check_glossary_path(Path(glossary_path))
@@ -649,9 +620,7 @@ def batch_translate_images(
     os.makedirs(output_dir, exist_ok=True)
     try:
         if progress_callback:
-            progress_callback(
-                0.0, f"Starting batch processing of {total_images} images..."
-            )
+            progress_callback(0.0, f"Starting batch processing of {total_images} images...")
 
         results = asyncio.run(
             _batch_translate_pages(
@@ -685,9 +654,7 @@ def batch_translate_images(
             shutil.rmtree(output_dir, ignore_errors=True)
         raise
 
-    copy_comic_info(
-        input_dir, output_dir, config.translation.target_language, preserve_structure
-    )
+    copy_comic_info(input_dir, output_dir, config.translation.target_language, preserve_structure)
 
     if progress_callback:
         progress_callback(1.0, "Processing complete")

@@ -26,10 +26,7 @@ class BatchRequestCoordinator:
         self._local = threading.local()
 
     def _check_cancelled(self) -> None:
-        if (
-            self._cancellation_manager is not None
-            and self._cancellation_manager.is_cancelled()
-        ):
+        if self._cancellation_manager is not None and self._cancellation_manager.is_cancelled():
             raise CancellationError("Batch process cancelled by user.")
 
     def in_slot(self) -> bool:
@@ -66,10 +63,7 @@ class BatchRequestCoordinator:
         max_workers = min(len(jobs), self.max_requests)
         results: list[R | None] = [None] * len(jobs)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [
-                (index, executor.submit(self.run, job))
-                for index, job in enumerate(jobs)
-            ]
+            futures = [(index, executor.submit(self.run, job)) for index, job in enumerate(jobs)]
             for index, future in futures:
                 results[index] = future.result()
 
@@ -78,10 +72,7 @@ class BatchRequestCoordinator:
 
 def bboxes_overlap(first: BBox, second: BBox) -> bool:
     return not (
-        first[2] <= second[0]
-        or second[2] <= first[0]
-        or first[3] <= second[1]
-        or second[3] <= first[1]
+        first[2] <= second[0] or second[2] <= first[0] or first[3] <= second[1] or second[3] <= first[1]
     )
 
 
@@ -138,9 +129,7 @@ def partition_non_overlapping_waves(
             waves.append([item])
             continue
 
-        if current_bboxes and any(
-            bboxes_overlap(bbox, other) for other in current_bboxes
-        ):
+        if current_bboxes and any(bboxes_overlap(bbox, other) for other in current_bboxes):
             waves.append(current_wave)
             current_wave = []
             current_bboxes = []

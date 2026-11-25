@@ -41,3 +41,20 @@ torchvision = { index = "pytorch-cu130" }
 name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
 explicit = true
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.8", "pyright>=1.1.390"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py313"
+extend-exclude = ["vendor", "eval/runs", "bin", "models", "translated", "webui_data"]
+
+[tool.ruff.lint]
+select = ["F", "E9", "I", "W"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["mangatl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

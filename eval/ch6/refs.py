@@ -24,10 +24,12 @@ from PIL import Image
 
 HERE = Path(__file__).resolve().parent
 CACHE = HERE / "ref_cache.json"
-PROMPT = ("This is a crop of an English manga page. Transcribe the English lettering that sits in "
-          "the middle of the crop (a speech bubble, caption or sound effect), exactly as written, "
-          "joining its lines with spaces. Ignore text cut off at the crop edges. If there is no "
-          "English text, answer with -. Output only the transcription.")
+PROMPT = (
+    "This is a crop of an English manga page. Transcribe the English lettering that sits in "
+    "the middle of the crop (a speech bubble, caption or sound effect), exactly as written, "
+    "joining its lines with spaces. Ignore text cut off at the crop edges. If there is no "
+    "English text, answer with -. Output only the transcription."
+)
 
 
 def align(jp: np.ndarray, en: np.ndarray) -> np.ndarray:
@@ -56,12 +58,22 @@ def read(url: str, crop: Image.Image) -> str:
     buf = io.BytesIO()
     crop.convert("RGB").save(buf, "PNG")
     b64 = base64.b64encode(buf.getvalue()).decode()
-    body = {"messages": [{"role": "user", "content": [
-        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
-        {"type": "text", "text": PROMPT}]}],
-        "temperature": 0, "max_tokens": 200}
-    req = urllib.request.Request(f"{url}/v1/chat/completions", json.dumps(body).encode(),
-                                 {"Content-Type": "application/json"})
+    body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                    {"type": "text", "text": PROMPT},
+                ],
+            }
+        ],
+        "temperature": 0,
+        "max_tokens": 200,
+    }
+    req = urllib.request.Request(
+        f"{url}/v1/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"}
+    )
     with urllib.request.urlopen(req, timeout=300) as r:
         text = json.load(r)["choices"][0]["message"]["content"].strip()
     return "" if text in ("-", "") else " ".join(text.split())
@@ -97,8 +109,7 @@ def main() -> None:
             ex1, ey1 = q.max(axis=0)
             # English lettering often spills past the Japanese text area
             px, py = 0.25 * (ex1 - ex0) + 8, 0.15 * (ey1 - ey0) + 8
-            box = (max(0, int(ex0 - px)), max(0, int(ey0 - py)),
-                   min(W, int(ex1 + px)), min(H, int(ey1 + py)))
+            box = (max(0, int(ex0 - px)), max(0, int(ey0 - py)), min(W, int(ex1 + px)), min(H, int(ey1 + py)))
             if box[2] - box[0] < 8 or box[3] - box[1] < 8:
                 cache[key] = ""
                 continue

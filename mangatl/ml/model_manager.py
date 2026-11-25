@@ -15,10 +15,10 @@ from transformers import (
 from ultralytics import YOLO
 
 from mangatl.common.device import empty_cache, get_best_device, get_best_dtype, get_device_info
-from mangatl.ml.rtdetr_adapter import RTDetrYOLOAdapter
 from mangatl.common.download import download_file
 from mangatl.common.exceptions import ModelError
 from mangatl.common.log import log_message
+from mangatl.ml.rtdetr_adapter import RTDetrYOLOAdapter
 
 
 class ModelType(Enum):
@@ -106,45 +106,26 @@ class ModelManager:
             self._text_sam_parked = False
 
             self._initialized = True
-            log_message(
-                f"Model Manager initialized on device: {self.device}", always_print=True
-            )
+            log_message(f"Model Manager initialized on device: {self.device}", always_print=True)
 
     def _apply_models_dir(self, models_dir: Path) -> None:
         self.models_dir = Path(models_dir).resolve()
         self.model_paths = self._init_model_paths()
-
 
     def _init_model_paths(self):
         """Initialize model file paths."""
         model_dir = self.models_dir
         detection_dir = model_dir / "detection"
         return {
-            ModelType.UPSCALE: (
-                model_dir / "upscale" / "2x-AnimeSharpV4_RCAN.safetensors"
-            ),
-            ModelType.UPSCALE_LITE: (
-                model_dir / "upscale" / "2x-AnimeSharpV4_Fast_RCAN_PU.safetensors"
-            ),
-            ModelType.YOLO_SPEECH_BUBBLE: (
-                detection_dir / "yolo" / "yolov8m_seg-speech-bubble.pt"
-            ),
-            ModelType.YOLO_SPEECH_BUBBLE_2: (
-                detection_dir / "yolo" / "manga109-segmentation-bubble.pt"
-            ),
-            ModelType.RTDETR_CONJOINED_BUBBLE: (
-                detection_dir / "rtdetr" / "comic-text-and-bubble-detector"
-            ),
+            ModelType.UPSCALE: (model_dir / "upscale" / "2x-AnimeSharpV4_RCAN.safetensors"),
+            ModelType.UPSCALE_LITE: (model_dir / "upscale" / "2x-AnimeSharpV4_Fast_RCAN_PU.safetensors"),
+            ModelType.YOLO_SPEECH_BUBBLE: (detection_dir / "yolo" / "yolov8m_seg-speech-bubble.pt"),
+            ModelType.YOLO_SPEECH_BUBBLE_2: (detection_dir / "yolo" / "manga109-segmentation-bubble.pt"),
+            ModelType.RTDETR_CONJOINED_BUBBLE: (detection_dir / "rtdetr" / "comic-text-and-bubble-detector"),
             ModelType.YOLO_OSBTEXT: (detection_dir / "yolo" / "animetext_yolov12x.pt"),
-            ModelType.YOLO_PANEL: (
-                detection_dir / "yolo" / "manga109_v2023.12.07_l_yolov11.pt"
-            ),
-            ModelType.LAMA_MANGA: (
-                model_dir / "inpainting" / "lama" / "lama-manga.safetensors"
-            ),
-            ModelType.TEXT_SAM: (
-                detection_dir / "text_sam" / "koharu-text-sam-ts-l.safetensors"
-            ),
+            ModelType.YOLO_PANEL: (detection_dir / "yolo" / "manga109_v2023.12.07_l_yolov11.pt"),
+            ModelType.LAMA_MANGA: (model_dir / "inpainting" / "lama" / "lama-manga.safetensors"),
+            ModelType.TEXT_SAM: (detection_dir / "text_sam" / "koharu-text-sam-ts-l.safetensors"),
             ModelType.MANGA_OCR: (model_dir / "ocr" / "manga-ocr-base"),
             ModelType.PADDLE_OCR_VL: (model_dir / "ocr" / "paddleocr-vl-1.6"),
         }
@@ -153,8 +134,7 @@ class ModelManager:
         """Initialize model download URLs."""
         return {
             ModelType.UPSCALE: (
-                "https://huggingface.co/Kim2091/2x-AnimeSharpV4/resolve/main/"
-                "2x-AnimeSharpV4_RCAN.safetensors"
+                "https://huggingface.co/Kim2091/2x-AnimeSharpV4/resolve/main/2x-AnimeSharpV4_RCAN.safetensors"
             ),
             ModelType.UPSCALE_LITE: (
                 "https://huggingface.co/Kim2091/2x-AnimeSharpV4/resolve/main/"
@@ -230,12 +210,9 @@ class ModelManager:
         ):
             try:
                 path.rmdir()
-                log_message(
-                    f"Removed empty download directory {path}.", verbose=verbose
-                )
+                log_message(f"Removed empty download directory {path}.", verbose=verbose)
             except OSError:
                 pass
-
 
     def _ensure_hf_file(
         self,
@@ -331,9 +308,7 @@ class ModelManager:
         bin_file = target_dir / "pytorch_model.bin"
 
         is_downloaded = False
-        if target_dir.exists() and (
-            safetensors_file.exists() or (bin_file.exists() and revision is None)
-        ):
+        if target_dir.exists() and (safetensors_file.exists() or (bin_file.exists() and revision is None)):
             is_downloaded = True
 
         if is_downloaded:
@@ -359,9 +334,7 @@ class ModelManager:
                 token=effective_token,
                 revision=revision,
             )
-            log_message(
-                f"Downloaded repository {repo_id} successfully.", verbose=verbose
-            )
+            log_message(f"Downloaded repository {repo_id} successfully.", verbose=verbose)
         except Exception as e:
             if target_dir.exists():
                 target_resolved = target_dir.resolve()
@@ -389,17 +362,13 @@ class ModelManager:
             if self.is_loaded(ModelType.UPSCALE):
                 return self.models[ModelType.UPSCALE]
 
-            log_message(
-                "Loading upscale model (2x-AnimeSharpV4_RCAN)...", verbose=verbose
-            )
+            log_message("Loading upscale model (2x-AnimeSharpV4_RCAN)...", verbose=verbose)
             path = self.model_paths[ModelType.UPSCALE]
 
             # Try HF download first, fallback to direct URL
             try:
                 hf_info = self.model_hf_repos[ModelType.UPSCALE]
-                path = self._ensure_hf_file(
-                    hf_info["repo_id"], hf_info["filename"], path, verbose=verbose
-                )
+                path = self._ensure_hf_file(hf_info["repo_id"], hf_info["filename"], path, verbose=verbose)
             except Exception:
                 download_file(path, self.model_urls[ModelType.UPSCALE])
 
@@ -411,13 +380,9 @@ class ModelManager:
                     for key in f.keys():  # noqa: SIM118
                         state_dict[key] = f.get_tensor(key)
             else:
-                state_dict = torch.load(
-                    path, map_location=self.device, weights_only=False
-                )
+                state_dict = torch.load(path, map_location=self.device, weights_only=False)
 
-            model = (
-                ModelLoader().load_from_state_dict(state_dict).to(self.device).eval()
-            )
+            model = ModelLoader().load_from_state_dict(state_dict).to(self.device).eval()
             self.models[ModelType.UPSCALE] = model
             log_message("Upscale model loaded.", verbose=verbose)
             return model
@@ -437,9 +402,7 @@ class ModelManager:
             # Try HF download first, fallback to direct URL
             try:
                 hf_info = self.model_hf_repos[ModelType.UPSCALE_LITE]
-                path = self._ensure_hf_file(
-                    hf_info["repo_id"], hf_info["filename"], path, verbose=verbose
-                )
+                path = self._ensure_hf_file(hf_info["repo_id"], hf_info["filename"], path, verbose=verbose)
             except Exception:
                 download_file(path, self.model_urls[ModelType.UPSCALE_LITE])
 
@@ -451,13 +414,9 @@ class ModelManager:
                     for key in f.keys():  # noqa: SIM118
                         state_dict[key] = f.get_tensor(key)
             else:
-                state_dict = torch.load(
-                    path, map_location=self.device, weights_only=False
-                )
+                state_dict = torch.load(path, map_location=self.device, weights_only=False)
 
-            model = (
-                ModelLoader().load_from_state_dict(state_dict).to(self.device).eval()
-            )
+            model = ModelLoader().load_from_state_dict(state_dict).to(self.device).eval()
             self.models[ModelType.UPSCALE_LITE] = model
             log_message("Upscale lite model loaded.", verbose=verbose)
             return model
@@ -472,9 +431,7 @@ class ModelManager:
             return ModelType.YOLO_SPEECH_BUBBLE_2
         return ModelType.YOLO_SPEECH_BUBBLE
 
-    def load_yolo_speech_bubble(
-        self, model_path: str | None = None, verbose: bool = False
-    ):
+    def load_yolo_speech_bubble(self, model_path: str | None = None, verbose: bool = False):
         """Load YOLO model for speech bubble detection.
 
         Args:
@@ -487,21 +444,13 @@ class ModelManager:
             if self.is_loaded(model_type):
                 return self.models[model_type]
 
-            log_message(
-                "Loading YOLO speech bubble detection model...", verbose=verbose
-            )
+            log_message("Loading YOLO speech bubble detection model...", verbose=verbose)
 
-            path = (
-                self.model_paths[model_type]
-                if model_path is None
-                else Path(model_path).resolve()
-            )
+            path = self.model_paths[model_type] if model_path is None else Path(model_path).resolve()
 
             if path == self.model_paths[model_type]:
                 hf_info = self.model_hf_repos[model_type]
-                path = self._ensure_hf_file(
-                    hf_info["repo_id"], hf_info["filename"], path, verbose=verbose
-                )
+                path = self._ensure_hf_file(hf_info["repo_id"], hf_info["filename"], path, verbose=verbose)
 
             model = YOLO(str(path))
             self.models[model_type] = model
@@ -518,9 +467,7 @@ class ModelManager:
             if self.is_loaded(ModelType.RTDETR_CONJOINED_BUBBLE):
                 return self.models[ModelType.RTDETR_CONJOINED_BUBBLE]
 
-            log_message(
-                "Loading RT-DETR conjoined bubble detection model...", verbose=verbose
-            )
+            log_message("Loading RT-DETR conjoined bubble detection model...", verbose=verbose)
             path = self.model_paths[ModelType.RTDETR_CONJOINED_BUBBLE]
             hf_info = self.model_hf_repos[ModelType.RTDETR_CONJOINED_BUBBLE]
             path = self._ensure_hf_repo(hf_info["repo_id"], path, verbose=verbose)
@@ -727,9 +674,7 @@ class ModelManager:
                 if hasattr(config, "text_config"):
                     config.text_config.tie_word_embeddings = False
 
-                processor = AutoProcessor.from_pretrained(
-                    model_path_str, token=token, backend="torchvision"
-                )
+                processor = AutoProcessor.from_pretrained(model_path_str, token=token, backend="torchvision")
 
                 # Prefer flash_attention_2 on CUDA, fall back to sdpa on Windows/CPU
                 dtype = self.dtype if self.device.type == "cuda" else None
@@ -746,9 +691,7 @@ class ModelManager:
                             .to(self.device)
                             .eval()
                         )
-                        log_message(
-                            f"PaddleOCR-VL-1.6 loaded with {attn_impl}", verbose=verbose
-                        )
+                        log_message(f"PaddleOCR-VL-1.6 loaded with {attn_impl}", verbose=verbose)
                         break
                     except (ImportError, ValueError, RuntimeError):
                         if attn_impl == "eager":
@@ -764,7 +707,6 @@ class ModelManager:
             self.models[ModelType.PADDLE_OCR_VL] = (processor, model)
             log_message("PaddleOCR-VL-1.6 initialized.", verbose=verbose)
             return self.models[ModelType.PADDLE_OCR_VL]
-
 
     def set_device(self, device: torch.device):
         """Override the auto-detected device (e.g. --cpu). Call before loading models."""
@@ -793,7 +735,6 @@ class ModelManager:
             elif "HF_TOKEN" in os.environ:
                 del os.environ["HF_TOKEN"]
 
-
     def load_lama_manga(self, verbose: bool = False):
         """Load the manga-finetuned Big-LaMa inpainting model through spandrel."""
         with self._lock:
@@ -811,13 +752,8 @@ class ModelManager:
                 verbose=verbose,
             )
             # The checkpoint dropped the "generator." prefix that spandrel detects LaMa by
-            state_dict = {
-                f"generator.{key}": tensor
-                for key, tensor in load_file(str(path)).items()
-            }
-            model = (
-                ModelLoader().load_from_state_dict(state_dict).to(self.device).eval()
-            )
+            state_dict = {f"generator.{key}": tensor for key, tensor in load_file(str(path)).items()}
+            model = ModelLoader().load_from_state_dict(state_dict).to(self.device).eval()
             self.models[ModelType.LAMA_MANGA] = model
             log_message("LaMa manga inpainting model loaded.", verbose=verbose)
             return model
@@ -850,9 +786,7 @@ class ModelManager:
             log_message("SAM-TS-L text segmentation model loaded.", verbose=verbose)
             return model
 
-    def unload_model(
-        self, model_type: ModelType, force_gc: bool = True, verbose: bool = False
-    ):
+    def unload_model(self, model_type: ModelType, force_gc: bool = True, verbose: bool = False):
         """Unload a specific model and free memory.
 
         Args:
@@ -873,9 +807,7 @@ class ModelManager:
 
     def _unload_models(self, model_types, verbose: bool = False) -> bool:
         """Unload each loaded model in `model_types`; True if any was loaded."""
-        loaded = [
-            model_type for model_type in model_types if self.is_loaded(model_type)
-        ]
+        loaded = [model_type for model_type in model_types if self.is_loaded(model_type)]
         for model_type in loaded:
             self.unload_model(model_type, force_gc=False, verbose=verbose)
         if loaded:
@@ -901,7 +833,6 @@ class ModelManager:
         if self._unload_models(ocr_models, verbose):
             log_message("OCR models unloaded.", verbose=verbose)
 
-
     def unload_lama_manga(self, verbose: bool = False):
         """Unload the LaMa manga inpainting model and the text segmenter it uses."""
         if self._unload_models((ModelType.LAMA_MANGA, ModelType.TEXT_SAM), verbose):
@@ -917,9 +848,7 @@ class ModelManager:
         """
         if self.device.type == "cpu":
             if self._unload_models((ModelType.TEXT_SAM,), verbose):
-                log_message(
-                    "SAM-TS-L text segmentation model unloaded.", verbose=verbose
-                )
+                log_message("SAM-TS-L text segmentation model unloaded.", verbose=verbose)
             return
         with self._lock:
             if not self.is_loaded(ModelType.TEXT_SAM) or self._text_sam_parked:
@@ -952,8 +881,7 @@ class ModelManager:
             log_message(f"Device: {stats['device']}", always_print=True)
         else:
             log_message(
-                f"GPU Memory - Allocated: {stats['allocated_gb']} GB, "
-                f"Reserved: {stats['reserved_gb']} GB",
+                f"GPU Memory - Allocated: {stats['allocated_gb']} GB, Reserved: {stats['reserved_gb']} GB",
                 always_print=True,
             )
 

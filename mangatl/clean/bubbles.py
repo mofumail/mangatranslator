@@ -6,17 +6,16 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from mangatl.common.coordinator import expanded_mask_bbox, partition_non_overlapping_waves, paste_image_region
-from mangatl.common.scaling import scale_area, scale_kernel, scale_scalar
-from mangatl.common.cancellation import raise_if_cancelled
-from mangatl.common.exceptions import CancellationError, CleaningError, ImageProcessingError, ValidationError
-from mangatl.common.log import log_message
-
-from mangatl.detect.bubbles import detect_speech_bubbles
 from mangatl.clean.glyph_mask import art_in_fill, glyphs_missed_by_fill
-from mangatl.common.image_utils import pil_to_cv2
 from mangatl.clean.inpainting import make_inpainter
 from mangatl.clean.page_glyph_map import PageGlyphMap
+from mangatl.common.cancellation import raise_if_cancelled
+from mangatl.common.coordinator import expanded_mask_bbox, partition_non_overlapping_waves, paste_image_region
+from mangatl.common.exceptions import CancellationError, CleaningError, ImageProcessingError, ValidationError
+from mangatl.common.image_utils import pil_to_cv2
+from mangatl.common.log import log_message
+from mangatl.common.scaling import scale_area, scale_kernel, scale_scalar
+from mangatl.detect.bubbles import detect_speech_bubbles
 from mangatl.settings import Settings
 
 GRAYSCALE_MIDPOINT = 128  # Threshold for determining black vs white bubbles
@@ -56,9 +55,7 @@ def _resample_inpainted_bubble_color(
         bubble_info["color"] = (mean_val, mean_val, mean_val)
 
 
-def _bubble_inpaint_mask(
-    mask: np.ndarray, glyph_map: PageGlyphMap | None, inpaint_method: str
-) -> np.ndarray:
+def _bubble_inpaint_mask(mask: np.ndarray, glyph_map: PageGlyphMap | None, inpaint_method: str) -> np.ndarray:
     """LaMa erases every masked pixel, so it gets only the letters."""
     if glyph_map is None or inpaint_method != "lama_manga":
         return mask
@@ -85,9 +82,7 @@ def _inpaint_colored_bubbles_with_coordinator(
                 "index": idx,
                 "bubble_info": bubble_info,
                 "mask": mask_bool,
-                "inpaint_mask": _bubble_inpaint_mask(
-                    mask_bool, glyph_map, inpaint_method
-                ),
+                "inpaint_mask": _bubble_inpaint_mask(mask_bool, glyph_map, inpaint_method),
                 "seed": base_seed + idx if base_seed > 0 else base_seed,
                 "bbox_tuple": bubble_info.get("bbox"),
                 "context_bbox": context_bbox,
@@ -153,13 +148,9 @@ def _inpaint_colored_bubbles_with_coordinator(
             if context_bbox is None:
                 pil_working = result_image
             else:
-                pil_working = paste_image_region(
-                    pil_working, result_image, context_bbox
-                )
+                pil_working = paste_image_region(pil_working, result_image, context_bbox)
             bubble_info["inpainted"] = True
-            _resample_inpainted_bubble_color(
-                pil_working, bubble_info, candidate["mask"]
-            )
+            _resample_inpainted_bubble_color(pil_working, bubble_info, candidate["mask"])
 
     return pil_working
 
@@ -180,17 +171,13 @@ def _polygon_mask(
         elif points.ndim == 2 and points.shape[1] == 2:
             points_int = np.round(points).astype(int).reshape((-1, 1, 2))
         else:
-            log_message(
-                f"Skipping detection {bbox}: invalid mask format", verbose=verbose
-            )
+            log_message(f"Skipping detection {bbox}: invalid mask format", verbose=verbose)
             return None
         yolo_mask = np.zeros((img_height, img_width), dtype=np.uint8)
         cv2.fillPoly(yolo_mask, [points_int], 255)
         return _normalize_mask(yolo_mask)
     except Exception as e:
-        log_message(
-            f"Error processing YOLO mask for detection {bbox}: {e}", always_print=True
-        )
+        log_message(f"Error processing YOLO mask for detection {bbox}: {e}", always_print=True)
         return None
 
 
@@ -213,9 +200,7 @@ def _build_adaptive_shrink_mask(
     """
     adjacency_margin = max(1, round(JUNCTION_ADJACENCY_MARGIN * processing_scale))
 
-    dist_map = cv2.distanceTransform(
-        roi_mask, cv2.DIST_L2, DISTANCE_TRANSFORM_MASK_SIZE
-    )
+    dist_map = cv2.distanceTransform(roi_mask, cv2.DIST_L2, DISTANCE_TRANSFORM_MASK_SIZE)
     shrunk = np.where(dist_map >= roi_shrink_px, 255, 0).astype(np.uint8)
 
     x1, y1, x2, y2 = detection_bbox
@@ -243,9 +228,7 @@ def _build_adaptive_shrink_mask(
         junction_slice = dist_map[zone_y1:zone_y2, zone_x1:zone_x2]
         # Not scaled: ROI edge pixels sit at distance exactly 1.0, so a scaled
         # threshold drops that ring and strands text straddling the split line
-        restored = np.where(junction_slice >= JUNCTION_MIN_SHRINK, 255, 0).astype(
-            np.uint8
-        )
+        restored = np.where(junction_slice >= JUNCTION_MIN_SHRINK, 255, 0).astype(np.uint8)
         np.bitwise_or(
             shrunk[zone_y1:zone_y2, zone_x1:zone_x2],
             restored,
@@ -314,23 +297,15 @@ def process_single_bubble(
         base_mask = _normalize_mask(base_mask)
 
         if dilation_kernel is None:
-            dilation_kernel = cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE, DILATION_KERNEL_SIZE
-            )
+            dilation_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, DILATION_KERNEL_SIZE)
         if constraint_erosion_kernel is None:
-            constraint_erosion_kernel = cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE, EROSION_KERNEL_SIZE
-            )
+            constraint_erosion_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, EROSION_KERNEL_SIZE)
 
         # Work on a crop around the bubble instead of the whole page. The margin covers
         # the dilation, the double erosion and a zero ring for the distance transform,
         # so the results match full-page processing exactly.
         bx, by, bw, bh = cv2.boundingRect(base_mask)
-        margin = (
-            max(dilation_kernel.shape) // 2
-            + 2 * (max(constraint_erosion_kernel.shape) // 2)
-            + 2
-        )
+        margin = max(dilation_kernel.shape) // 2 + 2 * (max(constraint_erosion_kernel.shape) // 2) + 2
         ox, oy = max(0, bx - margin), max(0, by - margin)
         crop = (
             slice(oy, min(img_height, by + bh + margin)),
@@ -368,23 +343,17 @@ def process_single_bubble(
         roi_gray[roi_indices] = img_gray[roi_indices]
 
         # Invert for black bubbles to detect text properly
-        roi_for_thresholding = (
-            cv2.bitwise_not(roi_gray) if is_black_bubble else roi_gray
-        )
+        roi_for_thresholding = cv2.bitwise_not(roi_gray) if is_black_bubble else roi_gray
         thresholded_roi = np.zeros_like(img_gray)
 
         if use_otsu_threshold:
             roi_pixels_for_otsu = roi_for_thresholding[roi_indices]
-            thresh_val, _ = cv2.threshold(
-                roi_pixels_for_otsu, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-            )
+            thresh_val, _ = cv2.threshold(roi_pixels_for_otsu, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             log_message(
                 f"{'[SAM]' if is_seg else ''}  Otsu threshold: {thresh_val}",
                 verbose=verbose,
             )
-            _, thresholded_roi = cv2.threshold(
-                roi_for_thresholding, thresh_val, 255, cv2.THRESH_BINARY
-            )
+            _, thresholded_roi = cv2.threshold(roi_for_thresholding, thresh_val, 255, cv2.THRESH_BINARY)
         else:
             threshold = thresholding_value
             if auto_threshold:
@@ -397,13 +366,10 @@ def process_single_bubble(
                 bg_level = float(np.percentile(bg_pixels, 75))
                 threshold = round(thresholding_value * bg_level / 255)
                 log_message(
-                    f"{'[SAM]' if is_seg else ''}  Auto threshold: {threshold} "
-                    f"(background={bg_level:.0f})",
+                    f"{'[SAM]' if is_seg else ''}  Auto threshold: {threshold} (background={bg_level:.0f})",
                     verbose=verbose,
                 )
-            _, thresholded_roi = cv2.threshold(
-                roi_for_thresholding, threshold, 255, cv2.THRESH_BINARY
-            )
+            _, thresholded_roi = cv2.threshold(roi_for_thresholding, threshold, 255, cv2.THRESH_BINARY)
 
         thresholded_roi = cv2.bitwise_and(thresholded_roi, roi_mask)
 
@@ -416,22 +382,14 @@ def process_single_bubble(
                 processing_scale=processing_scale,
             )
         else:
-            dist_map = cv2.distanceTransform(
-                roi_mask, cv2.DIST_L2, DISTANCE_TRANSFORM_MASK_SIZE
-            )
-            shrunk_roi_mask = np.where(dist_map >= float(roi_shrink_px), 255, 0).astype(
-                np.uint8
-            )
+            dist_map = cv2.distanceTransform(roi_mask, cv2.DIST_L2, DISTANCE_TRANSFORM_MASK_SIZE)
+            shrunk_roi_mask = np.where(dist_map >= float(roi_shrink_px), 255, 0).astype(np.uint8)
         thresholded_roi = cv2.bitwise_and(thresholded_roi, shrunk_roi_mask)
 
         # Use eroded mask to avoid erasing bubble outlines
-        eroded_constraint_mask = cv2.erode(
-            base_mask, constraint_erosion_kernel, iterations=1
-        )
+        eroded_constraint_mask = cv2.erode(base_mask, constraint_erosion_kernel, iterations=1)
 
-        contours, _ = cv2.findContours(
-            thresholded_roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
+        contours, _ = cv2.findContours(thresholded_roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         valid_contours = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
@@ -442,11 +400,7 @@ def process_single_bubble(
                 continue
             cx = int(m["m10"] / m["m00"])
             cy = int(m["m01"] / m["m00"])
-            if (
-                0 <= cx < crop_width
-                and 0 <= cy < crop_height
-                and eroded_constraint_mask[cy, cx] == 255
-            ):
+            if 0 <= cx < crop_width and 0 <= cy < crop_height and eroded_constraint_mask[cy, cx] == 255:
                 valid_contours.append(cnt)
 
         log_message(
@@ -457,9 +411,7 @@ def process_single_bubble(
         text_bbox = None
         if valid_contours:
             validated_mask = np.zeros((crop_height, crop_width), dtype=np.uint8)
-            cv2.drawContours(
-                validated_mask, valid_contours, -1, 255, thickness=cv2.FILLED
-            )
+            cv2.drawContours(validated_mask, valid_contours, -1, 255, thickness=cv2.FILLED)
 
             boundary_contours, _ = cv2.findContours(
                 validated_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -492,15 +444,9 @@ def process_single_bubble(
 
                 if classify_colored:
                     # Sample bubble interior excluding exact text pixels and outline to determine if colored
-                    sampling_mask = cv2.erode(
-                        base_mask, constraint_erosion_kernel, iterations=2
-                    )
-                    text_mask = cv2.bitwise_and(
-                        cv2.bitwise_not(thresholded_roi), shrunk_roi_mask
-                    )
-                    text_mask_dilated = cv2.dilate(
-                        text_mask, np.ones((3, 3), np.uint8), iterations=1
-                    )
+                    sampling_mask = cv2.erode(base_mask, constraint_erosion_kernel, iterations=2)
+                    text_mask = cv2.bitwise_and(cv2.bitwise_not(thresholded_roi), shrunk_roi_mask)
+                    text_mask_dilated = cv2.dilate(text_mask, np.ones((3, 3), np.uint8), iterations=1)
                     sampling_mask[text_mask_dilated == 255] = 0
 
                     if image_bgr is not None:
@@ -510,24 +456,12 @@ def process_single_bubble(
 
                         if sample_pixels_bgr.size > 0:
                             med_bgr = np.median(sample_pixels_bgr, axis=0).astype(int)
-                            diffs = np.max(
-                                np.abs(sample_pixels_bgr.astype(int) - med_bgr), axis=1
-                            )
-                            solid_ratio = float(np.count_nonzero(diffs <= 15)) / float(
-                                len(sample_pixels_bgr)
-                            )
+                            diffs = np.max(np.abs(sample_pixels_bgr.astype(int) - med_bgr), axis=1)
+                            solid_ratio = float(np.count_nonzero(diffs <= 15)) / float(len(sample_pixels_bgr))
 
-                            if (
-                                med_bgr[0] >= 245
-                                and med_bgr[1] >= 245
-                                and med_bgr[2] >= 245
-                            ):
+                            if med_bgr[0] >= 245 and med_bgr[1] >= 245 and med_bgr[2] >= 245:
                                 fill_color_bgr = (255, 255, 255)
-                            elif (
-                                med_bgr[0] <= 10
-                                and med_bgr[1] <= 10
-                                and med_bgr[2] <= 10
-                            ):
+                            elif med_bgr[0] <= 10 and med_bgr[1] <= 10 and med_bgr[2] <= 10:
                                 fill_color_bgr = (0, 0, 0)
                             else:
                                 fill_color_bgr = (
@@ -544,14 +478,10 @@ def process_single_bubble(
                             sample_pixels = masked_pixels
                         sample_values = sample_pixels.astype(np.uint8).flatten()
                         med_val = (
-                            int(np.median(sample_values))
-                            if sample_values.size > 0
-                            else int(mean_pixel_value)
+                            int(np.median(sample_values)) if sample_values.size > 0 else int(mean_pixel_value)
                         )
                         diffs = np.abs(sample_values.astype(int) - med_val)
-                        solid_ratio = float(np.count_nonzero(diffs <= 15)) / float(
-                            max(len(sample_values), 1)
-                        )
+                        solid_ratio = float(np.count_nonzero(diffs <= 15)) / float(max(len(sample_values), 1))
                         if med_val >= 245:
                             fill_color_bgr = (255, 255, 255)
                         elif med_val <= 10:
@@ -593,24 +523,16 @@ def process_single_bubble(
 
                 text_color_bgr = None
                 if image_bgr is not None:
-                    text_mask = cv2.bitwise_and(
-                        cv2.bitwise_not(thresholded_roi), shrunk_roi_mask
-                    )
-                    sample_mask = cv2.erode(
-                        text_mask, np.ones((3, 3), np.uint8), iterations=1
-                    )
+                    text_mask = cv2.bitwise_and(cv2.bitwise_not(thresholded_roi), shrunk_roi_mask)
+                    sample_mask = cv2.erode(text_mask, np.ones((3, 3), np.uint8), iterations=1)
                     text_pixels_bgr = image_bgr[sample_mask == 255]
                     # Fallback if erosion obliterates thin text
                     if text_pixels_bgr.size == 0:
                         text_pixels_bgr = image_bgr[text_mask == 255]
 
                     if text_pixels_bgr.size > 0:
-                        sampled_bgr = tuple(
-                            np.median(text_pixels_bgr, axis=0).astype(int)
-                        )
-                        hsv = cv2.cvtColor(
-                            np.uint8([[sampled_bgr]]), cv2.COLOR_BGR2HSV
-                        )[0][0]
+                        sampled_bgr = tuple(np.median(text_pixels_bgr, axis=0).astype(int))
+                        hsv = cv2.cvtColor(np.uint8([[sampled_bgr]]), cv2.COLOR_BGR2HSV)[0][0]
                         if hsv[1] < 25:
                             b, g, r = (
                                 fill_color_bgr[0],
@@ -618,9 +540,7 @@ def process_single_bubble(
                                 fill_color_bgr[2],
                             )
                             luminance = 0.114 * b + 0.587 * g + 0.299 * r
-                            text_color_bgr = (
-                                (0, 0, 0) if luminance >= 128 else (255, 255, 255)
-                            )
+                            text_color_bgr = (0, 0, 0) if luminance >= 128 else (255, 255, 255)
                         else:
                             text_color_bgr = sampled_bgr
 
@@ -731,11 +651,7 @@ def clean_speech_bubbles(
                 osb_text_hf_token=osb_text_hf_token,
                 bubble_detector_model=bubble_detector_model,
             )
-            detections = (
-                detection_result[0]
-                if isinstance(detection_result, tuple)
-                else detection_result
-            )
+            detections = detection_result[0] if isinstance(detection_result, tuple) else detection_result
         else:
             raise ValidationError(
                 "Bubble detection requires an image path, but an image object "
@@ -820,9 +736,7 @@ def clean_speech_bubbles(
                             "base_mask": base_mask,
                             "bbox": bbox,
                             "is_seg": is_seg_mask,
-                            "neighbor_bboxes": detection.get(
-                                "conjoined_neighbor_bboxes"
-                            ),
+                            "neighbor_bboxes": detection.get("conjoined_neighbor_bboxes"),
                         },
                         thresholding_value,
                         roi_shrink_px,
@@ -837,8 +751,7 @@ def clean_speech_bubbles(
                     )
                 if not retry_res:
                     log_message(
-                        f"Error processing {'SAM' if is_seg_mask else 'YOLO'} mask "
-                        f"for detection {bbox}: {e}",
+                        f"Error processing {'SAM' if is_seg_mask else 'YOLO'} mask for detection {bbox}: {e}",
                         always_print=True,
                     )
                     continue
@@ -866,22 +779,14 @@ def clean_speech_bubbles(
             log_message(f"Detection {bbox}: processed successfully", verbose=verbose)
 
         if inpaint_colored_bubbles and inpaint_method not in ("opencv", "none"):
-            colored_bubbles = [
-                b for b in processed_bubbles if b.get("is_colored", False)
-            ]
+            colored_bubbles = [b for b in processed_bubbles if b.get("is_colored", False)]
             if colored_bubbles:
                 log_message(
                     f"Inpainting {len(colored_bubbles)} colored bubbles",
                     always_print=True,
                 )
-                pil_working = Image.fromarray(
-                    cv2.cvtColor(cleaned_image, cv2.COLOR_BGR2RGB)
-                )
-                base_seed = (
-                    random.randint(1, 999999)
-                    if seed == -1
-                    else max(0, int(seed))
-                )
+                pil_working = Image.fromarray(cv2.cvtColor(cleaned_image, cv2.COLOR_BGR2RGB))
+                base_seed = random.randint(1, 999999) if seed == -1 else max(0, int(seed))
                 try:
                     inpainter = make_inpainter(
                         inpaint_method,
@@ -907,12 +812,8 @@ def clean_speech_bubbles(
                             raise_if_cancelled()
                             mask_np = bubble_info["mask"]
                             mask_bool = mask_np.astype(bool)
-                            inpaint_mask = _bubble_inpaint_mask(
-                                mask_bool, glyph_map, inpaint_method
-                            )
-                            region_seed = (
-                                base_seed + idx if base_seed > 0 else base_seed
-                            )
+                            inpaint_mask = _bubble_inpaint_mask(mask_bool, glyph_map, inpaint_method)
+                            region_seed = base_seed + idx if base_seed > 0 else base_seed
                             bbox_tuple = bubble_info.get("bbox")
                             ocr_params = {
                                 "type": "colored_bubble",
@@ -938,9 +839,7 @@ def clean_speech_bubbles(
                                         ocr_params=ocr_params,
                                     )
                                 bubble_info["inpainted"] = True
-                                _resample_inpainted_bubble_color(
-                                    pil_working, bubble_info, mask_bool
-                                )
+                                _resample_inpainted_bubble_color(pil_working, bubble_info, mask_bool)
                             except CancellationError:
                                 raise
                             except Exception as e:
@@ -950,9 +849,7 @@ def clean_speech_bubbles(
                                 )
                                 continue
 
-                    cleaned_image = cv2.cvtColor(
-                        np.array(pil_working.convert("RGB")), cv2.COLOR_RGB2BGR
-                    )
+                    cleaned_image = cv2.cvtColor(np.array(pil_working.convert("RGB")), cv2.COLOR_RGB2BGR)
                 except CancellationError:
                     raise
                 except Exception as e:
@@ -979,15 +876,11 @@ def clean_speech_bubbles(
                 combined_mask = np.bitwise_or.reduce(masks)
 
                 if cleaned_image.shape[2] == 4:
-                    cleaned_image[combined_mask == 255, :3] = (
-                        color_bgr  # Preserve alpha channel
-                    )
+                    cleaned_image[combined_mask == 255, :3] = color_bgr  # Preserve alpha channel
                 else:
                     cleaned_image[combined_mask == 255] = color_bgr
 
-        log_message(
-            f"Cleaned {len(processed_bubbles)} speech bubbles", always_print=True
-        )
+        log_message(f"Cleaned {len(processed_bubbles)} speech bubbles", always_print=True)
         return cleaned_image, processed_bubbles
     except OSError as e:
         raise ImageProcessingError(f"Error loading image {image_input}: {e!s}") from e

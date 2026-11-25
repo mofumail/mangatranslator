@@ -16,8 +16,7 @@ def get_max_tokens_cap(provider: str, model_name: str | None) -> int | None:
     model_lower = model_name.lower()
 
     is_openai_model = provider == "OpenAI" or (
-        provider == "OpenRouter"
-        and ("openai/" in model_lower or model_lower.startswith("gpt-"))
+        provider == "OpenRouter" and ("openai/" in model_lower or model_lower.startswith("gpt-"))
     )
     if is_openai_model and "chat" in model_lower:
         return 16384
@@ -136,19 +135,12 @@ def is_openai_reasoning_model(model_name: str | None) -> bool:
     if not model_name:
         return False
     lm = model_name.lower()
-    return (
-        lm.startswith(("gpt-5", "gpt-6"))
-        or "/gpt-5" in lm
-        or "/gpt-6" in lm
-        or is_gpt6_series(model_name)
-    )
+    return lm.startswith(("gpt-5", "gpt-6")) or "/gpt-5" in lm or "/gpt-6" in lm or is_gpt6_series(model_name)
 
 
 def clamp_gpt6_reasoning_effort(model_name: str | None, effort: str) -> str:
     """GPT-6 has no "minimal" effort, and Astra / 6.1 Sol have no "none"; both become "low"."""
-    if effort == "minimal" or (
-        effort == "none" and (is_gpt6_astra(model_name) or is_gpt61_sol(model_name))
-    ):
+    if effort == "minimal" or (effort == "none" and (is_gpt6_astra(model_name) or is_gpt61_sol(model_name))):
         return "low"
     return effort
 
@@ -326,11 +318,7 @@ def anthropic_model_flags(model_name: str | None) -> dict[str, bool]:
             "is_claude_adaptive_default": True,
             "is_claude_between_tools": True,
         }
-    if (
-        is_sonnet_5_model(model_name)
-        or is_opus_5_model(model_name)
-        or is_haiku_55_model(model_name)
-    ):
+    if is_sonnet_5_model(model_name) or is_opus_5_model(model_name) or is_haiku_55_model(model_name):
         return {
             "is_claude_effort": True,
             "is_claude_effort_max": True,
@@ -407,5 +395,3 @@ def is_gemini_no_sampling_model(model_name: str | None) -> bool:
         or is_gemini_35_flash_lite_model(model_name)
         or is_gemini_4_model(model_name)
     )
-
-

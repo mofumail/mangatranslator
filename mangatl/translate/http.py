@@ -18,9 +18,7 @@ RETRY_STATUSES = {429, 500, 502, 503, 504, 529}
 
 def api_error(error: Any, label: str) -> TranslationError:
     """Build the error to raise for the `error` a response body carries."""
-    message = (
-        error.get("message", "Unknown error") if isinstance(error, dict) else str(error)
-    )
+    message = error.get("message", "Unknown error") if isinstance(error, dict) else str(error)
     return TranslationError(f"{label} API returned error: {message}")
 
 
@@ -92,22 +90,14 @@ def post_with_retries(
             log_message(f"HTTP {status_code}, retrying in {delay:.1f}s", verbose=debug)
         except requests.exceptions.RequestException as e:
             if not can_retry:
-                raise TranslationError(
-                    f"{label} API Connection Error after retries: {e!s}"
-                ) from e
-            log_message(
-                f"Connection error, retrying in {delay:.1f}s: {e!s}", verbose=debug
-            )
+                raise TranslationError(f"{label} API Connection Error after retries: {e!s}") from e
+            log_message(f"Connection error, retrying in {delay:.1f}s: {e!s}", verbose=debug)
         else:
             log_message(f"Processing {label} response", verbose=debug)
             try:
                 return parse(response.json())
             except (json.JSONDecodeError, KeyError, IndexError, TypeError) as e:
-                raise TranslationError(
-                    f"Error processing successful {label} API response: {e!s}"
-                ) from e
+                raise TranslationError(f"Error processing successful {label} API response: {e!s}") from e
         time.sleep(delay)
 
-    raise TranslationError(
-        f"Failed to get response from {label} API after {attempts} attempts."
-    )
+    raise TranslationError(f"Failed to get response from {label} API after {attempts} attempts.")

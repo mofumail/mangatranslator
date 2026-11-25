@@ -5,19 +5,33 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
+
 import cv2
 import numpy as np
 from PIL import Image
-from mangatl.common.coordinator import expanded_mask_bbox, partition_non_overlapping_waves, paste_image_region
+
 from mangatl.clean.glyph_mask import THRESHOLD as GLYPH_THRESHOLD
 from mangatl.clean.inpainting import make_inpainter
 from mangatl.clean.page_glyph_map import PageGlyphMap
-from mangatl.detect.tilt import compute_effective_tilt_angle
 from mangatl.common.cancellation import raise_if_cancelled
+from mangatl.common.coordinator import expanded_mask_bbox, partition_non_overlapping_waves, paste_image_region
 from mangatl.common.exceptions import CancellationError
 from mangatl.common.log import log_message
+from mangatl.detect.outside_text import (
+    OSB_EXPANSION_PX,
+    OSB_GLYPH_HUE_MIN_SHARE,
+    OSB_SOLID_RATIO_THRESHOLD,
+    Glyph,
+    OutsideTextWork,
+    apply_inpaint_render_metadata,
+    border_color,
+    outlined_glyph_components,
+    paint_mask,
+    prepare_outside_text_work,
+    results_bounds,
+)
+from mangatl.detect.tilt import compute_effective_tilt_angle
 from mangatl.settings import Settings
-from mangatl.detect.outside_text import OSB_EXPANSION_PX, OSB_GLYPH_HUE_MIN_SHARE, OSB_SOLID_RATIO_THRESHOLD, OutsideTextWork, Glyph, apply_inpaint_render_metadata, border_color, paint_mask, outlined_glyph_components, results_bounds, prepare_outside_text_work
 
 
 def _effective_osb_tilt(item: dict[str, Any], config: Settings) -> float:
@@ -31,9 +45,7 @@ def _effective_osb_tilt(item: dict[str, Any], config: Settings) -> float:
     )
 
 
-def _osb_fill_box_mask(
-    img_w: int, img_h: int, box: tuple[int, int, int, int], rot_deg: float
-) -> np.ndarray:
+def _osb_fill_box_mask(img_w: int, img_h: int, box: tuple[int, int, int, int], rot_deg: float) -> np.ndarray:
     """Boolean mask of `box`, or of a shrunken copy turned by `rot_deg` when tilted.
 
     The turned copy is clipped to `box`: its corners can reach past it, onto art the
@@ -91,9 +103,7 @@ def paint_pending_osb_fill(
     return paint_mask(image, mask, fill.color)
 
 
-def paint_pending_osb_fills(
-    image: Image.Image, items: list[dict[str, Any]]
-) -> Image.Image:
+def paint_pending_osb_fills(image: Image.Image, items: list[dict[str, Any]]) -> Image.Image:
     """Paint every pending solid fill in `items` at its detected tilt."""
     for item in items:
         image = paint_pending_osb_fill(image, item)
@@ -109,11 +119,7 @@ def _osb_fill_boxes(
         if idx >= len(outside_text_results):
             continue
         coords = outside_text_results[idx][0]
-        if (
-            isinstance(coords, (list, tuple))
-            and len(coords) == 1
-            and isinstance(coords[0], (list, tuple))
-        ):
+        if isinstance(coords, (list, tuple)) and len(coords) == 1 and isinstance(coords[0], (list, tuple)):
             coords = coords[0]
         bx0 = max(0, int(coords[0]))
         by0 = max(0, int(coords[1]))
@@ -131,8 +137,7 @@ def _build_osb_simple_fill_mask(
     outside_text_results: list,
     outside_text_data: list[dict[str, Any]],
     config: Settings,
-    fallback_bounds: tuple[int | None, int | None, int | None, int | None]
-    | None = None,
+    fallback_bounds: tuple[int | None, int | None, int | None, int | None] | None = None,
     total_bubble_mask: np.ndarray | None = None,
 ) -> np.ndarray | None:
     """Build a 2D boolean mask for solid-fill inpainting, respecting detected OSB text tilt."""
@@ -140,9 +145,7 @@ def _build_osb_simple_fill_mask(
     has_drawn = False
 
     if mask_indices and outside_text_results:
-        for idx, box in _osb_fill_boxes(
-            mask_indices, outside_text_results, img_w, img_h
-        ):
+        for idx, box in _osb_fill_boxes(mask_indices, outside_text_results, img_w, img_h):
             rot_deg = 0.0
             if idx < len(outside_text_data):
                 rot_deg = _effective_osb_tilt(outside_text_data[idx], config)
@@ -244,10 +247,7 @@ def _overlap(a: np.ndarray, ax: int, ay: int, b: np.ndarray, bx: int, by: int) -
     if x1 <= x0 or y1 <= y0:
         return 0
     return int(
-        np.count_nonzero(
-            a[y0 - ay : y1 - ay, x0 - ax : x1 - ax]
-            & b[y0 - by : y1 - by, x0 - bx : x1 - bx]
-        )
+        np.count_nonzero(a[y0 - ay : y1 - ay, x0 - ax : x1 - ax] & b[y0 - by : y1 - by, x0 - bx : x1 - bx])
     )
 
 
@@ -280,10 +280,7 @@ def _drop_containers(own: list[Glyph], other: list[Glyph]) -> list[Glyph]:
             if _overlap(o.mask, o.x, o.y, solid, glyph.x, glyph.y) >= 0.5 * o.area:
                 inside += o.area
                 n_inside += 1
-            elif (
-                _overlap(glyph.mask, glyph.x, glyph.y, _fill_holes(o.mask), o.x, o.y)
-                >= 0.5 * glyph.area
-            ):
+            elif _overlap(glyph.mask, glyph.x, glyph.y, _fill_holes(o.mask), o.x, o.y) >= 0.5 * glyph.area:
                 enclosing += o.area
         if n_inside < 3 or inside < 0.5 * (total - enclosing):
             kept.append(glyph)
@@ -300,9 +297,7 @@ def _hollow_fill_area(gray: np.ndarray) -> int:
     height, width = gray.shape
     ink = gray < 128
     ink_labels = None
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(
-        (gray > 200).astype(np.uint8), connectivity=4
-    )
+    n, labels, stats, _ = cv2.connectedComponentsWithStats((gray > 200).astype(np.uint8), connectivity=4)
     total = 0
     for label in range(1, n):
         x, y, w, h, area = (int(v) for v in stats[label])
@@ -333,9 +328,7 @@ def _hollow_fill_area(gray: np.ndarray) -> int:
             outside = cv2.dilate(m, np.ones((3, 3), np.uint8)).astype(bool) & ~solid
             border_ids = np.unique(ink_labels[y0:y1, x0:x1][outside & sub_ink])
             border_ids = border_ids[border_ids > 0]
-            border = (
-                int(np.isin(ink_labels, border_ids).sum()) if border_ids.size else 0
-            )
+            border = int(np.isin(ink_labels, border_ids).sum()) if border_ids.size else 0
             if enclosed >= 0.5 * max(1, int(ink.sum()) - border):
                 continue
         total += area
@@ -351,18 +344,12 @@ def _hole_test_text_color(rgb: np.ndarray) -> tuple[int, int, int]:
     min_area = max(8, gray.size // 2000)
 
     # Background-class regions not connected to the frame: counters or outlined fills
-    _, labels, stats, _ = cv2.connectedComponentsWithStats(
-        (light == bg_cls).astype(np.uint8), connectivity=4
-    )
+    _, labels, stats, _ = cv2.connectedComponentsWithStats((light == bg_cls).astype(np.uint8), connectivity=4)
     is_hole = stats[:, cv2.CC_STAT_AREA] >= min_area
     is_hole[0] = False
-    is_hole[
-        np.unique(np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]]))
-    ] = False
+    is_hole[np.unique(np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]]))] = False
     holes = is_hole[labels]
-    _, labels, stats, _ = cv2.connectedComponentsWithStats(
-        (light != bg_cls).astype(np.uint8), connectivity=8
-    )
+    _, labels, stats, _ = cv2.connectedComponentsWithStats((light != bg_cls).astype(np.uint8), connectivity=8)
     is_ink = stats[:, cv2.CC_STAT_AREA] >= min_area
     is_ink[0] = False
     ink = is_ink[labels]
@@ -450,9 +437,7 @@ def _color_page_text_color(
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     # Light saturated colors (a yellow banner) clear the gray cutoff but aren't white text
     neutral = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)[..., 1] <= 40
-    dark = outlined_glyph_components(
-        gray, (gray < 50).astype(np.uint8) * 255, lambda border: border > 150
-    )
+    dark = outlined_glyph_components(gray, (gray < 50).astype(np.uint8) * 255, lambda border: border > 150)
     white = outlined_glyph_components(
         gray,
         ((gray > 200) & neutral).astype(np.uint8) * 255,
@@ -512,16 +497,10 @@ def _detect_osb_text_color(
     if is_color_page:
         # The outline heuristics only tell dark from light, so colored letters with
         # dark outlines would come out black
-        hue = (
-            None
-            if glyph_prob is None
-            else _glyph_hue(pil_image, text_bounds, glyph_prob)
-        )
+        hue = None if glyph_prob is None else _glyph_hue(pil_image, text_bounds, glyph_prob)
         if hue is not None:
             return hue
-        return _color_page_text_color(
-            pil_image, text_bounds, ref_bg_rgb, fallback_fill_color
-        )
+        return _color_page_text_color(pil_image, text_bounds, ref_bg_rgb, fallback_fill_color)
     return _bw_page_text_color(pil_image, text_bounds)
 
 
@@ -560,15 +539,9 @@ def _general_text_color(
     elif has_dark_outlines and has_white_outlines:
         avg_dark_ratio = float(np.mean([g.ratio for g in dark_glyph_comps]))
         avg_white_ratio = float(np.mean([g.ratio for g in white_glyph_comps]))
-        if (
-            len(dark_glyph_comps) > len(white_glyph_comps)
-            and avg_dark_ratio >= avg_white_ratio * 0.8
-        ):
+        if len(dark_glyph_comps) > len(white_glyph_comps) and avg_dark_ratio >= avg_white_ratio * 0.8:
             detected_text_color = (0, 0, 0)
-        elif (
-            len(white_glyph_comps) > len(dark_glyph_comps)
-            and avg_white_ratio >= avg_dark_ratio * 0.8
-        ):
+        elif len(white_glyph_comps) > len(dark_glyph_comps) and avg_white_ratio >= avg_dark_ratio * 0.8:
             detected_text_color = (255, 255, 255)
         elif avg_dark_ratio > avg_white_ratio:
             detected_text_color = (0, 0, 0)
@@ -621,14 +594,8 @@ def _general_text_color(
 
     # Non-outlined monochrome text: contrast against the fill
     if detected_text_color is None:
-        fill_for_contrast = (
-            fallback_fill_color if fallback_fill_color is not None else (0, 0, 0)
-        )
-        fill_lum = (
-            0.299 * fill_for_contrast[0]
-            + 0.587 * fill_for_contrast[1]
-            + 0.114 * fill_for_contrast[2]
-        )
+        fill_for_contrast = fallback_fill_color if fallback_fill_color is not None else (0, 0, 0)
+        fill_lum = 0.299 * fill_for_contrast[0] + 0.587 * fill_for_contrast[1] + 0.114 * fill_for_contrast[2]
         detected_text_color = (0, 0, 0) if fill_lum >= 128 else (255, 255, 255)
     return detected_text_color
 
@@ -659,17 +626,13 @@ def _decide_osb_region_fill(
     bounds = (None, None, None, None)
     original_bbox_dict = group.get("original_bbox")
     if not original_bbox_dict:
-        return _RegionFill(
-            composite_clip_bbox, bounds, fill_color, fallback_fill_color, text_color
-        )
+        return _RegionFill(composite_clip_bbox, bounds, fill_color, fallback_fill_color, text_color)
     ox = int(original_bbox_dict.get("x", 0))
     oy = int(original_bbox_dict.get("y", 0))
     ow = int(original_bbox_dict.get("width", 0))
     oh = int(original_bbox_dict.get("height", 0))
     if ow <= 0 or oh <= 0:
-        return _RegionFill(
-            composite_clip_bbox, bounds, fill_color, fallback_fill_color, text_color
-        )
+        return _RegionFill(composite_clip_bbox, bounds, fill_color, fallback_fill_color, text_color)
     bounds = (
         max(0, min(img_w, ox)),
         max(0, min(img_h, oy)),
@@ -700,8 +663,7 @@ def _decide_osb_region_fill(
             t_type = "Dark" if group_bg_is_dark else "Light"
             f_col = "White" if fallback_fill_color == (255, 255, 255) else "Black"
             log_message(
-                f"OSB Region {region_number}: Detected {t_type} background. "
-                f"Fallback fill: {f_col}.",
+                f"OSB Region {region_number}: Detected {t_type} background. Fallback fill: {f_col}.",
                 verbose=verbose,
             )
 
@@ -713,9 +675,7 @@ def _decide_osb_region_fill(
         text_bounds = composite_clip_bbox
     border_pixels = _border_pixels(current_image, text_bounds, img_w, img_h)
     if border_pixels is None or len(border_pixels) < 20:
-        return _RegionFill(
-            composite_clip_bbox, bounds, fill_color, fallback_fill_color, text_color
-        )
+        return _RegionFill(composite_clip_bbox, bounds, fill_color, fallback_fill_color, text_color)
 
     detected_color, solid_ratio = border_color(border_pixels)
     is_border_solid = solid_ratio >= OSB_SOLID_RATIO_THRESHOLD
@@ -742,17 +702,13 @@ def _decide_osb_region_fill(
     # Get expanded bounds for this group to check solid color and for cv2 fill
     p_x0, p_y0, p_x1, p_y1 = composite_clip_bbox
     if mask_indices and work.outside_text_results:
-        p_x0, p_y0, p_x1, p_y1 = results_bounds(
-            work.outside_text_results, mask_indices
-        )
+        p_x0, p_y0, p_x1, p_y1 = results_bounds(work.outside_text_results, mask_indices)
         p_x0, p_y0 = max(0, p_x0), max(0, p_y0)
         p_x1, p_y1 = min(img_w, p_x1), min(img_h, p_y1)
 
     expanded_is_solid = is_border_solid
     if not force_fill:
-        eborder_pixels = _border_pixels(
-            current_image, (p_x0, p_y0, p_x1, p_y1), img_w, img_h
-        )
+        eborder_pixels = _border_pixels(current_image, (p_x0, p_y0, p_x1, p_y1), img_w, img_h)
         if eborder_pixels is not None and eborder_pixels.size > 0:
             edetected_color, esolid_ratio = border_color(eborder_pixels)
             if esolid_ratio >= OSB_SOLID_RATIO_THRESHOLD:
@@ -760,9 +716,7 @@ def _decide_osb_region_fill(
                 fallback_fill_color = edetected_color
 
     if expanded_is_solid or force_fill:
-        fill_color = (
-            fallback_fill_color if fallback_fill_color is not None else detected_color
-        )
+        fill_color = fallback_fill_color if fallback_fill_color is not None else detected_color
         if force_fill:
             log_message(
                 f"Using OpenCV simple fill for OSB region: {fill_color} background",
@@ -774,14 +728,10 @@ def _decide_osb_region_fill(
                 verbose=verbose,
             )
 
-    return _RegionFill(
-        composite_clip_bbox, bounds, fill_color, fallback_fill_color, text_color
-    )
+    return _RegionFill(composite_clip_bbox, bounds, fill_color, fallback_fill_color, text_color)
 
 
-def _clip_mask_to_bbox(
-    mask: np.ndarray, bbox: tuple[int, int, int, int] | None
-) -> np.ndarray:
+def _clip_mask_to_bbox(mask: np.ndarray, bbox: tuple[int, int, int, int] | None) -> np.ndarray:
     """Copy of `mask` with everything outside `bbox` cleared; a plain copy without one."""
     if bbox is None:
         return mask.copy()
@@ -802,9 +752,7 @@ def _glyph_inpaint_mask(
 ) -> np.ndarray:
     """The region's mask clipped to its text box, then shrunk to the dilated glyphs,
     including those found in the box at twice the text scale."""
-    return work.glyph_map.lama_mask(
-        _clip_mask_to_bbox(combined_mask, composite_clip_bbox)
-    )
+    return work.glyph_map.lama_mask(_clip_mask_to_bbox(combined_mask, composite_clip_bbox))
 
 
 def _try_model_inpaint(
@@ -895,9 +843,7 @@ def _run_inpaint_waves(
 
             return job
 
-        results = request_coordinator.map_ordered(
-            [make_job(candidate) for candidate in wave]
-        )
+        results = request_coordinator.map_ordered([make_job(candidate) for candidate in wave])
         for result in results:
             candidate = result["candidate"]
             if result["error"] is not None:
@@ -952,11 +898,7 @@ def finish_outside_text_work(
         current_image = pil_image
         none_skipped_clip_bboxes = set()
         if mask_groups:
-            base_seed = (
-                random.randint(1, 999999)
-                if config.cleaning.seed == -1
-                else config.cleaning.seed
-            )
+            base_seed = random.randint(1, 999999) if config.cleaning.seed == -1 else config.cleaning.seed
 
             extracted_text_colors = {}
             model_inpaints = 0
@@ -965,9 +907,7 @@ def finish_outside_text_work(
             request_coordinator = config.request_coordinator
             pending_inpaints = []
 
-            def simple_fill(
-                image, color, group, combined_mask, original_bbox_dict, bounds
-            ):
+            def simple_fill(image, color, group, combined_mask, original_bbox_dict, bounds):
                 """Fill the group's (tilt-aware) text boxes, else its whole mask.
 
                 Boxes whose text gets rendered are left to the renderer, which paints
@@ -984,14 +924,8 @@ def finish_outside_text_work(
                     fallback_bounds=bounds if original_bbox_dict else None,
                     total_bubble_mask=total_bubble_mask,
                 )
-                boxes = _osb_fill_boxes(
-                    mask_indices, outside_text_results, img_w, img_h
-                )
-                if (
-                    rect_mask is not None
-                    and boxes
-                    and all(idx < len(outside_text_data) for idx, _ in boxes)
-                ):
+                boxes = _osb_fill_boxes(mask_indices, outside_text_results, img_w, img_h)
+                if rect_mask is not None and boxes and all(idx < len(outside_text_data) for idx, _ in boxes):
                     for idx, box in boxes:
                         item = outside_text_data[idx]
                         item["pending_fill"] = _PendingOsbFill(
@@ -1001,9 +935,7 @@ def finish_outside_text_work(
                             total_bubble_mask,
                         )
                     return image
-                return paint_mask(
-                    image, combined_mask if rect_mask is None else rect_mask, color
-                )
+                return paint_mask(image, combined_mask if rect_mask is None else rect_mask, color)
 
             def apply_candidate_simple_fill(image, candidate, color_to_use):
                 return simple_fill(
@@ -1041,9 +973,7 @@ def finish_outside_text_work(
                     verbose=verbose,
                 )
                 combined_mask = group["combined_mask"]
-                combined_mask = np.logical_and(
-                    combined_mask, np.logical_not(total_bubble_mask)
-                )
+                combined_mask = np.logical_and(combined_mask, np.logical_not(total_bubble_mask))
                 if not np.any(combined_mask):
                     log_message(
                         "Skipping outside text region after bubble masking (no remaining area)",
@@ -1053,9 +983,7 @@ def finish_outside_text_work(
                 region_seed = base_seed + i if base_seed > 0 else base_seed
 
                 original_bbox_dict = group.get("original_bbox")
-                region = _decide_osb_region_fill(
-                    work, current_image, group, region_number=i + 1
-                )
+                region = _decide_osb_region_fill(work, current_image, group, region_number=i + 1)
                 composite_clip_bbox = region.composite_clip_bbox
                 fill_color = region.fill_color
                 fallback_fill_color = region.fallback_fill_color
@@ -1071,9 +999,7 @@ def finish_outside_text_work(
 
                 if fill_color is not None:
                     flush_pending_inpaints()
-                    current_image = simple_fill(
-                        current_image, fill_color, *region_fill_args
-                    )
+                    current_image = simple_fill(current_image, fill_color, *region_fill_args)
                     cv2_inpaints += 1
                     continue
 
@@ -1091,14 +1017,10 @@ def finish_outside_text_work(
                 inpaint_mask = combined_mask
                 box_mask = _clip_mask_to_bbox(combined_mask, composite_clip_bbox)
                 if inpainting_method == "lama_manga" and inpainter is not None:
-                    inpaint_mask = _glyph_inpaint_mask(
-                        work, combined_mask, composite_clip_bbox
-                    )
+                    inpaint_mask = _glyph_inpaint_mask(work, combined_mask, composite_clip_bbox)
 
                 if request_coordinator is not None and inpainter is not None:
-                    fallback_color_to_use = (
-                        fallback_fill_color if fallback_fill_color else (255, 255, 255)
-                    )
+                    fallback_color_to_use = fallback_fill_color if fallback_fill_color else (255, 255, 255)
                     pending_inpaints.append(
                         {
                             "index": i + 1,
@@ -1111,9 +1033,7 @@ def finish_outside_text_work(
                             "group": group,
                             "original_bbox_dict": original_bbox_dict,
                             "original_bounds": region.original_bounds,
-                            "context_bbox": expanded_mask_bbox(
-                                inpaint_mask, current_image.size
-                            ),
+                            "context_bbox": expanded_mask_bbox(inpaint_mask, current_image.size),
                         }
                     )
                     log_message(
@@ -1132,17 +1052,13 @@ def finish_outside_text_work(
                 )
 
                 if inpaint_fail_reason is not None:
-                    fallback_color_to_use = (
-                        fallback_fill_color if fallback_fill_color else (255, 255, 255)
-                    )
+                    fallback_color_to_use = fallback_fill_color if fallback_fill_color else (255, 255, 255)
                     log_message(
                         f"Inpainting failed for OSB region {i + 1} ({inpaint_fail_reason})"
                         f"; falling back to CV2 fill ({fallback_color_to_use})",
                         always_print=True,
                     )
-                    current_image = simple_fill(
-                        current_image, fallback_color_to_use, *region_fill_args
-                    )
+                    current_image = simple_fill(current_image, fallback_color_to_use, *region_fill_args)
                     cv2_inpaints += 1
                     continue
 

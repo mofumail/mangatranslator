@@ -7,10 +7,10 @@ from PIL import Image
 from scipy.ndimage import distance_transform_edt
 
 from mangatl.common.caching import get_cache
-from mangatl.common.device import get_best_device, get_best_dtype
-from mangatl.ml.model_manager import get_model_manager
 from mangatl.common.cancellation import raise_if_cancelled
+from mangatl.common.device import get_best_device, get_best_dtype
 from mangatl.common.log import log_message
+from mangatl.ml.model_manager import get_model_manager
 
 # Dynamic edge feathering scaled to bubble size; clamped to prevent sharp seams on small text or bleed on large text
 BLUR_SCALE_FACTOR = 0.1
@@ -43,9 +43,7 @@ def _prompt_value_to_device(value, device: torch.device):
     if isinstance(value, list):
         return [_prompt_value_to_device(item, device) for item in value]
     if isinstance(value, dict):
-        return {
-            key: _prompt_value_to_device(item, device) for key, item in value.items()
-        }
+        return {key: _prompt_value_to_device(item, device) for key, item in value.items()}
     return value
 
 
@@ -58,9 +56,7 @@ def make_inpainter(
 ):
     """The inpainting model for a method key: LaMa Manga ("lama_manga"), else None."""
     if method == "lama_manga":
-        return LamaInpainter(
-            device=device, luminance_correction=luminance_correction, verbose=verbose
-        )
+        return LamaInpainter(device=device, luminance_correction=luminance_correction, verbose=verbose)
     return None
 
 
@@ -83,9 +79,7 @@ def _lookup_inpaint_patch(
     if mask_crop_np.size > 0:
         sig_h = min(64, max(4, mask_crop_np.shape[0]))
         sig_w = min(64, max(4, mask_crop_np.shape[1]))
-        mask_sig = (
-            torch.from_numpy(mask_crop_np.astype(np.float32)).unsqueeze(0).unsqueeze(0)
-        )
+        mask_sig = torch.from_numpy(mask_crop_np.astype(np.float32)).unsqueeze(0).unsqueeze(0)
         mask_sig = torch.nn.functional.interpolate(
             mask_sig, size=(sig_h, sig_w), mode="bilinear", align_corners=False
         )
@@ -134,9 +128,7 @@ def _clip_composite_mask(
 
     clipped_mask = torch.zeros_like(mask_for_composite)
     if end_x > start_x and end_y > start_y:
-        clipped_mask[:, start_y:end_y, start_x:end_x] = mask_for_composite[
-            :, start_y:end_y, start_x:end_x
-        ]
+        clipped_mask[:, start_y:end_y, start_x:end_x] = mask_for_composite[:, start_y:end_y, start_x:end_x]
     return clipped_mask
 
 
@@ -161,12 +153,8 @@ def _paste_patch(
     y1: int,
 ) -> Image.Image:
     """Blend `patch_pil` into `image_pil` at (x1, y1) through the composite mask."""
-    dest_tensor = torch.from_numpy(
-        np.asarray(image_pil, dtype=np.float32) / 255.0
-    ).unsqueeze(0)
-    src_tensor = torch.from_numpy(
-        np.asarray(patch_pil, dtype=np.float32) / 255.0
-    ).unsqueeze(0)
+    dest_tensor = torch.from_numpy(np.asarray(image_pil, dtype=np.float32) / 255.0).unsqueeze(0)
+    src_tensor = torch.from_numpy(np.asarray(patch_pil, dtype=np.float32) / 255.0).unsqueeze(0)
 
     # Fix channel mismatch (e.g. RGBA destination vs RGB source)
     dest_channels = dest_tensor.shape[-1]
@@ -186,9 +174,7 @@ def _paste_patch(
     src_tensor = src_tensor.movedim(-1, 1)
 
     mask_interp = torch.nn.functional.interpolate(
-        mask_for_composite.reshape(
-            (-1, 1, mask_for_composite.shape[-2], mask_for_composite.shape[-1])
-        ),
+        mask_for_composite.reshape((-1, 1, mask_for_composite.shape[-2], mask_for_composite.shape[-1])),
         size=(src_tensor.shape[2], src_tensor.shape[3]),
         mode="bilinear",
     )
@@ -238,9 +224,7 @@ def _match_luminance(
         return generated_pil
 
     # Prefer immediate boundary ring to avoid distant gutters/borders skewing statistics
-    kernel = cv2.getStructuringElement(
-        cv2.MORPH_RECT, (boundary_width * 2 + 1, boundary_width * 2 + 1)
-    )
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (boundary_width * 2 + 1, boundary_width * 2 + 1))
     dilated_mask = cv2.dilate(mask_bool.astype(np.uint8), kernel) > 0
     boundary_band = dilated_mask & (~mask_bool)
 
@@ -268,9 +252,7 @@ def _match_luminance(
             f"  - Luminance correction: L shift {l_shift:+.1f} (mean {gen_l_mean:.1f}->{orig_l_mean:.1f})",
             verbose=verbose,
         )
-        gen_lab[:, :, 0][mask_bool] = np.clip(
-            gen_lab[:, :, 0][mask_bool] + l_shift, 0, 255
-        )
+        gen_lab[:, :, 0][mask_bool] = np.clip(gen_lab[:, :, 0][mask_bool] + l_shift, 0, 255)
 
     # In OpenCV LAB, neutral gray is a=128, b=128
     a_dev = float(np.mean(np.abs(orig_lab[:, :, 1][ref_mask] - 128.0)))
@@ -286,9 +268,7 @@ def _match_luminance(
             gen_ch_mean = float(np.mean(gen_lab[:, :, ch][ref_mask]))
             ch_shift = orig_ch_mean - gen_ch_mean
             if abs(ch_shift) > 1.0:
-                gen_lab[:, :, ch][mask_bool] = np.clip(
-                    gen_lab[:, :, ch][mask_bool] + ch_shift, 0, 255
-                )
+                gen_lab[:, :, ch][mask_bool] = np.clip(gen_lab[:, :, ch][mask_bool] + ch_shift, 0, 255)
 
     corrected_np = cv2.cvtColor(gen_lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
     return Image.fromarray(corrected_np)
@@ -313,9 +293,7 @@ class _CropInpainter:
     MAX_RESOLUTION = 2048
     RESOLUTION_MULTIPLE = 16
     MAX_INFERENCE_PIXELS = 4_000_000
-    PADDING_MULTIPLIER = (
-        2.0  # Wider context helps preserve surrounding line art and details
-    )
+    PADDING_MULTIPLIER = 2.0  # Wider context helps preserve surrounding line art and details
 
     def __init__(
         self,
@@ -402,9 +380,7 @@ class _CropInpainter:
 
         return x1, y1, x2, y2
 
-    def _compute_luminance_stats(
-        self, image_np: np.ndarray, mask_np: np.ndarray
-    ) -> tuple[float, float]:
+    def _compute_luminance_stats(self, image_np: np.ndarray, mask_np: np.ndarray) -> tuple[float, float]:
         """Compute mean and std of luminance (LAB L channel) for masked pixels.
 
         Args:
@@ -458,9 +434,7 @@ class _CropInpainter:
             reason = "model-compatible dimensions"
         if current_pixels > 0:
             # Fit the longest side here; clamping each side later would distort the shape
-            scale = min(
-                scale, self.MAX_RESOLUTION / orig_w, self.MAX_RESOLUTION / orig_h
-            )
+            scale = min(scale, self.MAX_RESOLUTION / orig_w, self.MAX_RESOLUTION / orig_h)
 
         new_w = int(orig_w * scale)
         new_h = int(orig_h * scale)
@@ -545,9 +519,7 @@ class _CropInpainter:
         bbox_height = y_max - y_min
 
         padding_pixels = int(max(bbox_width, bbox_height) * CONTEXT_PADDING_RATIO)
-        padding = int(
-            min(padding_pixels, MAX_CONTEXT_PADDING) * self.PADDING_MULTIPLIER
-        )
+        padding = int(min(padding_pixels, MAX_CONTEXT_PADDING) * self.PADDING_MULTIPLIER)
 
         blur_radius = int(max(bbox_width, bbox_height) * BLUR_SCALE_FACTOR)
         blur_radius = max(MIN_BLUR_RADIUS, min(blur_radius, MAX_BLUR_RADIUS))
@@ -597,9 +569,7 @@ class _CropInpainter:
             "max_pixels": self.MAX_INFERENCE_PIXELS,
             "min_size": (self.MIN_RESOLUTION, self.MIN_RESOLUTION),
             "backend": self.backend,
-            **self._cache_options(
-                strict_mask_clipping, composite_clip_bbox, ocr_params
-            ),
+            **self._cache_options(strict_mask_clipping, composite_clip_bbox, ocr_params),
         }
         cache_key, cached_patch = _lookup_inpaint_patch(
             self.cache,
@@ -665,9 +635,7 @@ class _CropInpainter:
 
             raise_if_cancelled()  # An interrupted run returns a half-denoised patch
             if (inference_w, inference_h) != (width, height):
-                patch_pil = generated_patch_pil.resize(
-                    (width, height), Image.Resampling.LANCZOS
-                )
+                patch_pil = generated_patch_pil.resize((width, height), Image.Resampling.LANCZOS)
             else:
                 patch_pil = generated_patch_pil
 
@@ -681,11 +649,7 @@ class _CropInpainter:
 
         composited_pil = _paste_patch(image_pil, patch_pil, mask_for_composite, x1, y1)
 
-        if (
-            self.cache.should_use_inpaint_cache(seed)
-            and cache_key is not None
-            and cached_patch is None
-        ):
+        if self.cache.should_use_inpaint_cache(seed) and cache_key is not None and cached_patch is None:
             self.cache.set_inpainted_image(cache_key, patch_pil)
 
         return composited_pil
@@ -757,9 +721,9 @@ class LamaInpainter(_CropInpainter):
         verbose: bool,
     ) -> Image.Image:
         if mask.shape != (height, width):
-            mask = cv2.resize(
-                mask.astype(np.uint8), (width, height), interpolation=cv2.INTER_NEAREST
-            ).astype(bool)
+            mask = cv2.resize(mask.astype(np.uint8), (width, height), interpolation=cv2.INTER_NEAREST).astype(
+                bool
+            )
         device = self.pipeline.device
         image_np = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
         image_t = torch.from_numpy(image_np).permute(2, 0, 1)[None].to(device)
@@ -768,5 +732,3 @@ class LamaInpainter(_CropInpainter):
             output = self.pipeline(image_t, mask_t)
         output_np = output[0].permute(1, 2, 0).clamp(0, 1).cpu().numpy()
         return Image.fromarray((output_np * 255).round().astype(np.uint8))
-
-

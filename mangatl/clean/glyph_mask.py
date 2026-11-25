@@ -54,9 +54,7 @@ def glyph_scale(size: tuple[int, int]) -> float:
 
 def glyph_dilation_radius(size: tuple[int, int]) -> int:
     """Glyph mask dilation in page pixels for a (width, height) page."""
-    return max(
-        MIN_DILATION, round(REFERENCE_DILATION * min(size) / REFERENCE_SHORT_SIDE)
-    )
+    return max(MIN_DILATION, round(REFERENCE_DILATION * min(size) / REFERENCE_SHORT_SIDE))
 
 
 def _area_scale(size: tuple[int, int]) -> float:
@@ -73,9 +71,7 @@ def _window_starts(length: int) -> list[int]:
     return starts
 
 
-def page_glyph_probability(
-    image: Image.Image, predict: Callable[[np.ndarray], np.ndarray]
-) -> np.ndarray:
+def page_glyph_probability(image: Image.Image, predict: Callable[[np.ndarray], np.ndarray]) -> np.ndarray:
     """Per-pixel text probability for the whole page, at the page's resolution."""
     width, height = image.size
     rgb = np.asarray(image.convert("RGB"))
@@ -114,17 +110,13 @@ class UpscaledGlyphMap:
         scale = UPSCALED_FACTOR * glyph_scale(image.size)
         scaled_size = (max(1, round(width * scale)), max(1, round(height * scale)))
         interpolation = cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA
-        self._rgb = cv2.resize(
-            np.asarray(image.convert("RGB")), scaled_size, interpolation=interpolation
-        )
+        self._rgb = cv2.resize(np.asarray(image.convert("RGB")), scaled_size, interpolation=interpolation)
         rows, cols = self._rgb.shape[:2]
         self._total = np.zeros((rows, cols), np.float32)
         self._counts = np.zeros((rows, cols), np.float32)
         self._done: set[tuple[int, int]] = set()
 
-    def box_probability(
-        self, box: Box, predict: Callable[[np.ndarray], np.ndarray]
-    ) -> np.ndarray:
+    def box_probability(self, box: Box, predict: Callable[[np.ndarray], np.ndarray]) -> np.ndarray:
         """Probability inside `box` (x0, y0, x1, y1), at the page's resolution."""
         x0, y0, x1, y1 = box
         width, height = self.size
@@ -169,9 +161,7 @@ def _glyph_pixels(prob: np.ndarray, low_threshold: float | None) -> np.ndarray:
     strong = prob > THRESHOLD
     if low_threshold is None or not strong.any():
         return strong
-    _, labels = cv2.connectedComponents(
-        (prob > low_threshold).astype(np.uint8), connectivity=8
-    )
+    _, labels = cv2.connectedComponents((prob > low_threshold).astype(np.uint8), connectivity=8)
     return np.isin(labels, np.unique(labels[strong]))
 
 
@@ -189,12 +179,8 @@ def refine_mask_to_glyphs(
     """
     box_mask = np.asarray(box_mask, dtype=bool)
     img_h, img_w = box_mask.shape
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(
-        box_mask.astype(np.uint8), connectivity=8
-    )
-    kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1)
-    )
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(box_mask.astype(np.uint8), connectivity=8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
     refined = np.zeros_like(box_mask)
     for label in range(1, count):
         x, y, w, h = stats[label, :4]
@@ -227,9 +213,7 @@ def refine_box_mask_to_glyphs(
     inside = prob[y0 - cy0 : y1 - cy0, x0 - cx0 : x1 - cx0]
     np.maximum(inside, box_prob, out=inside)
     refined = np.zeros_like(box_mask, dtype=bool)
-    refined[cy0:cy1, cx0:cx1] = refine_mask_to_glyphs(
-        box_mask[cy0:cy1, cx0:cx1], prob, radius
-    )
+    refined[cy0:cy1, cx0:cx1] = refine_mask_to_glyphs(box_mask[cy0:cy1, cx0:cx1], prob, radius)
     return refined
 
 
@@ -257,9 +241,7 @@ def glyphs_missed_by_fill(
     if not keep.any():
         return np.zeros_like(region, dtype=bool)
     radius = glyph_dilation_radius(size)
-    kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1)
-    )
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
     return cv2.dilate(keep[labels].astype(np.uint8), kernel).astype(bool) & region
 
 
@@ -285,15 +267,11 @@ def art_in_fill(
     ink = ink & filled
     groups = cv2.dilate(ink.astype(np.uint8), kernel).astype(bool) & filled
     count, labels = cv2.connectedComponents(groups.astype(np.uint8), connectivity=8)
-    text_distance = cv2.distanceTransform(
-        (~glyphs).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_5
-    )
+    text_distance = cv2.distanceTransform((~glyphs).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_5)
     nearest = np.full(count, np.inf, np.float32)
     np.minimum.at(nearest, labels[ink], text_distance[ink])
     area = np.bincount(labels[ink], minlength=count)
-    keep = (nearest >= ART_MIN_TEXT_DISTANCE * radius) & (
-        area >= MIN_LETTER_AREA * _area_scale(size)
-    )
+    keep = (nearest >= ART_MIN_TEXT_DISTANCE * radius) & (area >= MIN_LETTER_AREA * _area_scale(size))
     keep[0] = False
     return keep[labels]
 
@@ -318,9 +296,7 @@ def _gap(a: Box, b: Box) -> int:
 def group_glyphs(glyph: np.ndarray) -> list[GlyphGroup]:
     """Connected glyph pixels grouped into text regions by the gaps between them."""
     area_scale = _area_scale(glyph.shape)
-    count, _, stats, _ = cv2.connectedComponentsWithStats(
-        np.asarray(glyph, np.uint8), connectivity=8
-    )
+    count, _, stats, _ = cv2.connectedComponentsWithStats(np.asarray(glyph, np.uint8), connectivity=8)
     letters = [
         (int(x), int(y), int(x + w), int(y + h), int(area))
         for x, y, w, h, area in stats[1:count]
@@ -403,9 +379,7 @@ def texts_sharing_detections(boxes: list[Box], detections: list) -> list[list[in
 
     for detection in detections:
         inside = [
-            i
-            for i, box in enumerate(boxes)
-            if _overlap_share(box, detection) > VERIFIED_LETTER_OVERLAP
+            i for i, box in enumerate(boxes) if _overlap_share(box, detection) > VERIFIED_LETTER_OVERLAP
         ]
         for i in inside[1:]:
             parent[root(i)] = root(inside[0])

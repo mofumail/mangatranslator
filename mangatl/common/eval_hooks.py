@@ -82,8 +82,13 @@ def post(url: str, headers: dict | None = None, json: Any = None, timeout: Any =
     if replay:
         if _debug.llm_misses:
             with open(_debug.llm_misses, "a", encoding="utf-8") as fh:
-                fh.write(_json.dumps({"key": key, "page": _page["label"], "request": _strip_images(json)},
-                                     ensure_ascii=False) + "\n")
+                fh.write(
+                    _json.dumps(
+                        {"key": key, "page": _page["label"], "request": _strip_images(json)},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
         miss = types.SimpleNamespace(status_code=418, text=f"replay miss {key[:12]}")
         raise requests.exceptions.HTTPError(f"replay miss {key[:12]}", response=miss)
     response = requests.post(url, headers=headers, json=json, timeout=timeout)
@@ -103,9 +108,13 @@ def dump_text(bubble_metadata: list[dict], ocr_texts: list[str], texts: list[str
     if not out_dir or not _page["name"]:
         return
     Path(out_dir).mkdir(parents=True, exist_ok=True)
-    items = [{"bbox": [int(v) for v in (m.get("original_bbox") or m.get("bbox") or [])],
-              "osb": bool(m.get("is_outside_text")),
-              "ocr": ocr_texts[i] if i < len(ocr_texts) else None,
-              "tl": texts[i] if i < len(texts) else None}
-             for i, m in enumerate(bubble_metadata)]
+    items = [
+        {
+            "bbox": [int(v) for v in (m.get("original_bbox") or m.get("bbox") or [])],
+            "osb": bool(m.get("is_outside_text")),
+            "ocr": ocr_texts[i] if i < len(ocr_texts) else None,
+            "tl": texts[i] if i < len(texts) else None,
+        }
+        for i, m in enumerate(bubble_metadata)
+    ]
     (Path(out_dir) / f"{_page['name']}.json").write_text(_json.dumps(items, ensure_ascii=False, indent=1))

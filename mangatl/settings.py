@@ -121,7 +121,9 @@ class TranslationSettings(_Section):
     top_p: float = Field(0.95, ge=0.0, le=1.0)
     top_k: int = Field(40, ge=0, le=64)
     custom_sampling: bool = True
-    max_tokens: int | None = Field(None, ge=4096, le=63488)  # None: 32768 for reasoning models, 4096 otherwise
+    max_tokens: int | None = Field(
+        None, ge=4096, le=63488
+    )  # None: 32768 for reasoning models, 4096 otherwise
     reasoning_effort: str | None = None
     effort: str | None = "medium"  # Claude models served through --llm-url
     verbosity: str | None = "low"  # GPT-5 / GPT-6 models served through --llm-url
@@ -150,31 +152,44 @@ class TranslationSettings(_Section):
         notes.append(
             "Localize like a professional manga translator: natural, idiomatic English with contractions "
             "and each character's own voice; keep the meaning exact but never translate word for word. "
-            "Narration reads like a light novel: past tense, flowing sentences.")
+            "Narration reads like a light novel: past tense, flowing sentences."
+        )
         # Outside-bubble fonts often lack italics, so emphasis markup must not replace quote marks
-        notes.append("Render quoted speech in 「」 and 『』 with quotation marks (\"...\" and '...'); "
-                     "never use * or ** markdown in place of quotation marks.")
-        notes.append("An item with \" / \" separators is a list (chat comments, credits): translate each entry "
-                     "and keep every \" / \" in place.")
+        notes.append(
+            "Render quoted speech in 「」 and 『』 with quotation marks (\"...\" and '...'); "
+            "never use * or ** markdown in place of quotation marks."
+        )
+        notes.append(
+            'An item with " / " separators is a list (chat comments, credits): translate each entry '
+            'and keep every " / " in place.'
+        )
         if self.honorifics == "drop":
-            notes.append("Drop Japanese honorifics (-san, -kun, -chan, -sama, -dono, -senpai). Where one carries "
-                         "meaning, say it the English way instead (Lady Priscilla, Master, big sis).")
+            notes.append(
+                "Drop Japanese honorifics (-san, -kun, -chan, -sama, -dono, -senpai). Where one carries "
+                "meaning, say it the English way instead (Lady Priscilla, Master, big sis)."
+            )
         else:
             notes.append("Keep Japanese honorifics on names as written (Leaf-san, Priscilla-sama).")
-        notes.append("A personal name in katakana that is a Western or fantasy name gets its natural Western "
-                     "spelling (プリシラ → Priscilla), not a syllable-by-syllable romanization.")
+        notes.append(
+            "A personal name in katakana that is a Western or fantasy name gets its natural Western "
+            "spelling (プリシラ → Priscilla), not a syllable-by-syllable romanization."
+        )
         # A bubble that is only エ / エエエ!! after 死ねェ is the same shout drawn out, not a new sound.
         # Guarded on the previous item so standalone あ/ん bubbles (moans, gasps) stay vocalizations.
-        notes.append("When an item is only a drawn-out vowel (エ, ェェ, エエエ!!, ーー) and the previous item ends "
-                     "on that same vowel, it is the previous word stretched across bubbles: repeat that English "
-                     "word drawn out (死ねェ / エ / エエエ!! → Die! / Die... / DIEEEE!!). Otherwise a lone vowel "
-                     "is a vocalization as usual.")
+        notes.append(
+            "When an item is only a drawn-out vowel (エ, ェェ, エエエ!!, ーー) and the previous item ends "
+            "on that same vowel, it is the previous word stretched across bubbles: repeat that English "
+            "word drawn out (死ねェ / エ / エエエ!! → Die! / Die... / DIEEEE!!). Otherwise a lone vowel "
+            "is a vocalization as usual."
+        )
         if self.glossary:
             # Local models tend to write the English name on both sides of the new-terms block,
             # which is then rejected ("source not on page"), leaving the glossary empty.
-            notes.append(f"In the new-terms block, the left side of each line must be the term copied "
-                         f"verbatim from the {self.source_language} transcription (original script), never its "
-                         f"translation. Sound effects and interjections are never terms.")
+            notes.append(
+                f"In the new-terms block, the left side of each line must be the term copied "
+                f"verbatim from the {self.source_language} transcription (original script), never its "
+                f"translation. Sound effects and interjections are never terms."
+            )
         return "\n".join(notes)
 
 
@@ -306,7 +321,11 @@ class Settings(_Section):
     def yolo_model_path(self) -> str:
         """Bubble detector weights (downloaded by the model manager when missing)."""
         yolo_dir = self.runtime.models_dir / "detection" / "yolo"
-        name = "manga109-segmentation-bubble.pt" if self.detection.bubble_model == "yolo_2" else "yolov8m_seg-speech-bubble.pt"
+        name = (
+            "manga109-segmentation-bubble.pt"
+            if self.detection.bubble_model == "yolo_2"
+            else "yolov8m_seg-speech-bubble.pt"
+        )
         return str(yolo_dir / name)
 
     # --- persistence --------------------------------------------------------------------

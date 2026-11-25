@@ -169,9 +169,7 @@ def supports_long_word_breaking(language_name: str) -> bool:
     Hyphenating languages may insert hyphens; Korean and Thai use no-hyphen
     emergency splits under the same user setting.
     """
-    return uses_true_hyphenation(language_name) or _normalize_language(
-        language_name
-    ) in ("korean", "thai")
+    return uses_true_hyphenation(language_name) or _normalize_language(language_name) in ("korean", "thai")
 
 
 def uses_true_hyphenation(language_name: str) -> bool:
@@ -383,8 +381,7 @@ def _parse_style_markers(text: str) -> list[tuple[str, str]]:
 
 # Kinsoku Shori (禁則処理) - CJK line-breaking rules
 KINSOKU_NOT_AT_START = set(  # Cannot start a line
-    "、。，．！？）】」』〕〉》，．！？）］｝,.)!?;:…‥ー"
-    "ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ"
+    "、。，．！？）】」』〕〉》，．！？）］｝,.)!?;:…‥ーぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ"
 )
 KINSOKU_NOT_AT_END = set("（【「『〔〈《（［｛([")  # Cannot end a line
 
@@ -393,9 +390,7 @@ DETACHABLE_TRAILING_PUNCT_CORE = r"[.!?]{2,}"
 DETACHABLE_TRAILING_PUNCT_RE = re.compile(
     rf"^(.*?)({DETACHABLE_TRAILING_PUNCT_CORE}[{TRAILING_PUNCT_CLOSERS}]*)$"
 )
-DETACHED_TRAILING_PUNCT_RE = re.compile(
-    rf"^{DETACHABLE_TRAILING_PUNCT_CORE}[{TRAILING_PUNCT_CLOSERS}]*$"
-)
+DETACHED_TRAILING_PUNCT_RE = re.compile(rf"^{DETACHABLE_TRAILING_PUNCT_CORE}[{TRAILING_PUNCT_CLOSERS}]*$")
 
 
 def is_detached_trailing_punctuation(token: str) -> bool:
@@ -416,9 +411,7 @@ def _append_breakable_token(token: str, tokens: list[str]) -> None:
         tokens.append(token)
 
 
-def _split_with_cjk_awareness(
-    text: str, detach_trailing_punctuation: bool = True
-) -> list[str]:
+def _split_with_cjk_awareness(text: str, detach_trailing_punctuation: bool = True) -> list[str]:
     """Split text into tokens. Each CJK char is a token; kinsoku rules apply.
 
     Hangul (Korean) is excluded from per-character splitting because Korean
@@ -480,9 +473,7 @@ def _split_with_cjk_awareness(
     return tokens
 
 
-def tokenize_styled_text(
-    text: str, detach_trailing_punctuation: bool = True
-) -> list[tuple[str, bool]]:
+def tokenize_styled_text(text: str, detach_trailing_punctuation: bool = True) -> list[tuple[str, bool]]:
     """
     Tokenizes text into atomic units for wrapping where styled blocks are
     preserved as single, unbreakable tokens.
@@ -595,8 +586,7 @@ def _break_pairs(core_word: str, language: str) -> list[tuple[str, str]]:
         pairs = [
             (core_word[:i], core_word[i:])
             for i in range(2, len(core_word) - 2)
-            if core_word[i - 1] not in _BREAK_SEPARATORS
-            and core_word[i] not in _BREAK_SEPARATORS
+            if core_word[i - 1] not in _BREAK_SEPARATORS and core_word[i] not in _BREAK_SEPARATORS
         ]
 
     # Ties favor the left split.
@@ -608,9 +598,7 @@ def _repeats_hyphen(language: str, core_word: str, right_part: str) -> bool:
     if language not in REPEAT_HYPHEN_LANGUAGES:
         return False
     # The RAE skips the repeat before a capitalized proper name (Calvo-/Sotelo).
-    return not (
-        language == "spanish" and right_part[:1].isupper() and not core_word.isupper()
-    )
+    return not (language == "spanish" and right_part[:1].isupper() and not core_word.isupper())
 
 
 def try_hyphenate_word(
@@ -656,11 +644,7 @@ def try_hyphenate_word(
     # Try splitting at existing hyphens first
     mid = len(core_word) // 2
     hyphen_positions = sorted(
-        (
-            i
-            for i, ch in enumerate(core_word)
-            if ch == "-" and 0 < i < len(core_word) - 1
-        ),
+        (i for i, ch in enumerate(core_word) if ch == "-" and 0 < i < len(core_word) - 1),
         key=lambda i: abs(i - mid),
     )
     for pos in hyphen_positions:
@@ -686,9 +670,7 @@ def _is_cjk_token(token: str) -> bool:
     token = strip_no_space_before_marker(token)
     match = STYLE_PATTERN.match(token)
     content = match.group(2) if match else token
-    return len(content) > 0 and all(
-        is_cjk_character(c) and not _is_hangul_character(c) for c in content
-    )
+    return len(content) > 0 and all(is_cjk_character(c) and not _is_hangul_character(c) for c in content)
 
 
 def _is_thai_token(token: str) -> bool:
@@ -698,9 +680,7 @@ def _is_thai_token(token: str) -> bool:
     content = match.group(2) if match else token
     if not content:
         return False
-    return _contains_thai(content) and not any(
-        ch.isascii() and ch.isalpha() for ch in content
-    )
+    return _contains_thai(content) and not any(ch.isascii() and ch.isalpha() for ch in content)
 
 
 def _token_plain_content(token: str) -> str:
@@ -755,9 +735,7 @@ def _thai_short_line_start_cost(
     return penalty * float(n)
 
 
-def _needs_space_between(
-    left_token: str, right_token: str, detach_trailing_punctuation: bool = True
-) -> bool:
+def _needs_space_between(left_token: str, right_token: str, detach_trailing_punctuation: bool = True) -> bool:
     """No space needed between adjacent CJK/Thai tokens or before separated punctuation."""
     if right_token.startswith(NO_SPACE_BEFORE_MARKER):
         return False
@@ -780,9 +758,7 @@ def _needs_space_between(
     return True
 
 
-def _join_tokens_smart(
-    tokens: list[str], detach_trailing_punctuation: bool = True
-) -> str:
+def _join_tokens_smart(tokens: list[str], detach_trailing_punctuation: bool = True) -> str:
     """Join tokens with smart spacing (no space between adjacent CJK tokens)."""
     if not tokens:
         return ""
@@ -798,9 +774,7 @@ def _join_tokens_smart(
         clean_token = strip_no_space_before_marker(tokens[i])
         if starts_with_detached_punctuation:
             result += clean_token
-        elif _needs_space_between(
-            tokens[i - 1], tokens[i], detach_trailing_punctuation
-        ):
+        elif _needs_space_between(tokens[i - 1], tokens[i], detach_trailing_punctuation):
             result += " " + clean_token
         else:
             result += clean_token
@@ -853,9 +827,7 @@ def find_optimal_breaks_dp(
             line_width = 0.0
             for j in range(i - 1, -1, -1):
                 # Add space only if needed between this token and the previous one on the line
-                if j < i - 1 and _needs_space_between(
-                    tokens[j], tokens[j + 1], detach_trailing_punctuation
-                ):
+                if j < i - 1 and _needs_space_between(tokens[j], tokens[j + 1], detach_trailing_punctuation):
                     line_width += space_width
                 line_width += token_w[j]
 
@@ -886,9 +858,7 @@ def find_optimal_breaks_dp(
         current_break = N
         while current_break > 0:
             prev_break = path[current_break]
-            line = _join_tokens_smart(
-                tokens[prev_break:current_break], detach_trailing_punctuation
-            )
+            line = _join_tokens_smart(tokens[prev_break:current_break], detach_trailing_punctuation)
             lines.insert(0, line)
             current_break = prev_break
 

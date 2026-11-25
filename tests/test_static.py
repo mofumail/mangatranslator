@@ -10,8 +10,13 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCES = [*sorted((ROOT / "mangatl").rglob("*.py")), ROOT / "translate.py", ROOT / "webui.py",
-           *sorted((ROOT / "eval").glob("*.py")), *sorted((ROOT / "tests").glob("*.py"))]
+SOURCES = [
+    *sorted((ROOT / "mangatl").rglob("*.py")),
+    ROOT / "translate.py",
+    ROOT / "webui.py",
+    *sorted((ROOT / "eval").glob("*.py")),
+    *sorted((ROOT / "tests").glob("*.py")),
+]
 
 
 def _module_file(dotted: str) -> Path | None:
@@ -100,13 +105,19 @@ def test_settings_attribute_chains_exist():
             roots: dict[str, list[str]] = {}
             for a in fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs:
                 ann = ast.unparse(a.annotation) if a.annotation is not None else ""
-                if ann in ("Settings", "Settings | None", '"Settings"') or (not ann and a.arg in ("config", "settings")):
+                if ann in ("Settings", "Settings | None", '"Settings"') or (
+                    not ann and a.arg in ("config", "settings")
+                ):
                     roots[a.arg] = []
             if not roots:
                 continue
             for node in ast.walk(fn):  # simple aliases: name = config.x.y
-                if (isinstance(node, ast.Assign) and len(node.targets) == 1
-                        and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Attribute)):
+                if (
+                    isinstance(node, ast.Assign)
+                    and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and isinstance(node.value, ast.Attribute)
+                ):
                     c = _chain(node.value)
                     if c and c[0] in roots:
                         roots.setdefault(node.targets[0].id, roots[c[0]] + c[1:])
@@ -119,7 +130,9 @@ def test_settings_attribute_chains_exist():
                 obj = root_obj
                 for attr in roots[c[0]] + c[1:]:
                     if not hasattr(obj, attr):
-                        problems.append(f"{src.relative_to(ROOT)}:{node.lineno}: {'.'.join(c)} ({attr!r} missing)")
+                        problems.append(
+                            f"{src.relative_to(ROOT)}:{node.lineno}: {'.'.join(c)} ({attr!r} missing)"
+                        )
                         break
                     value = getattr(obj, attr)
                     if not hasattr(type(obj), "model_fields") or attr not in type(obj).model_fields:

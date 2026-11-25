@@ -10,15 +10,39 @@ import cv2
 import numpy as np
 
 from mangatl.common.caching import get_cache
-from mangatl.common.image_utils import cv2_to_pil, pil_to_cv2, process_bubble_image_cached, resize_lanczos_antiring
-from mangatl.translate.glossary import NEW_TERMS_MARKER, format_glossary_section, load_terms, record_new_terms, split_new_terms
 from mangatl.common.cancellation import active_manager, pin_thread, raise_if_cancelled
-from mangatl.translate.openai_compatible import call_openai_compatible_endpoint
 from mangatl.common.exceptions import TranslationError
+from mangatl.common.image_utils import (
+    cv2_to_pil,
+    pil_to_cv2,
+    process_bubble_image_cached,
+    resize_lanczos_antiring,
+)
 from mangatl.common.log import log_message
-from mangatl.translate.model_metadata import anthropic_model_flags, clamp_gpt6_reasoning_effort, get_max_tokens_cap, is_anthropic_model_family, is_gemini_no_sampling_model, is_gpt5_series, is_gpt6_series, is_openai_compatible_reasoning_model, is_openai_model_family, is_openai_reasoning_model, supports_openai_original_image_detail, supports_openai_verbosity
-from mangatl.settings import PROVIDER, Settings
 from mangatl.ocr.page import run_ocr
+from mangatl.settings import PROVIDER, Settings
+from mangatl.translate.glossary import (
+    NEW_TERMS_MARKER,
+    format_glossary_section,
+    load_terms,
+    record_new_terms,
+    split_new_terms,
+)
+from mangatl.translate.model_metadata import (
+    anthropic_model_flags,
+    clamp_gpt6_reasoning_effort,
+    get_max_tokens_cap,
+    is_anthropic_model_family,
+    is_gemini_no_sampling_model,
+    is_gpt5_series,
+    is_gpt6_series,
+    is_openai_compatible_reasoning_model,
+    is_openai_model_family,
+    is_openai_reasoning_model,
+    supports_openai_original_image_detail,
+    supports_openai_verbosity,
+)
+from mangatl.translate.openai_compatible import call_openai_compatible_endpoint
 
 T = TypeVar("T")
 
@@ -27,11 +51,7 @@ _FULL_PAGE_NOTE = " The image labeled `Full page` shows the whole page for conte
 
 
 def _lang_label(input_language: str | None) -> str:
-    return (
-        f"{input_language.strip()} "
-        if input_language and input_language.strip()
-        else ""
-    )
+    return f"{input_language.strip()} " if input_language and input_language.strip() else ""
 
 
 def _format_previous_context_prompt_note(previous_context_text_count: int) -> str:
@@ -137,9 +157,7 @@ Write each source as the bare term, without furigana, honorifics, or an attached
         if terminology_memory
         else "Output nothing else:"
     )
-    example_note = (
-        "" if english else f" (shown in English; write yours in {output_language})"
-    )
+    example_note = "" if english else f" (shown in English; write yours in {output_language})"
     sections.append(
         f"""## OUTPUT FORMAT
 One line per item, numbered to match the input, containing only the translation. {nothing_else} no code fences, notes, or blank lines.
@@ -163,16 +181,12 @@ def _normalized_image_detail(model_name: str, config: Settings) -> str:
     image_detail = (config.translation.image_detail or "auto").lower()
     if image_detail not in ("auto", "original", "high", "low"):
         image_detail = "auto"
-    if image_detail == "original" and not supports_openai_original_image_detail(
-        model_name
-    ):
+    if image_detail == "original" and not supports_openai_original_image_detail(model_name):
         image_detail = "high"
     return image_detail
 
 
-def _routed_model_config(
-    model_name: str, config: Settings, max_tokens: int
-) -> dict[str, Any]:
+def _routed_model_config(model_name: str, config: Settings, max_tokens: int) -> dict[str, Any]:
     """Start the config for OpenRouter or OpenAI-Compatible, which route other vendors' models.
 
     `_metadata` holds the model-family flags their endpoints adapt the request to.
@@ -255,9 +269,7 @@ def _call_llm_endpoint(
     api_parts = [*parts, {"text": prompt_text}]
     coordinator = config.request_coordinator
     if coordinator is not None and not coordinator.in_slot():
-        return coordinator.run(
-            _call_llm_endpoint, config, parts, prompt_text, debug, system_prompt
-        )
+        return coordinator.run(_call_llm_endpoint, config, parts, prompt_text, debug, system_prompt)
     if not config.translation.url:
         raise TranslationError("OpenAI-Compatible URL is missing.")
     return _run_abandoning_on_cancel(
@@ -309,8 +321,9 @@ def _strip_code_fences(text: str) -> str:
     return cleaned
 
 
-_NUMBERED_ITEM = re.compile(r'^\s*(\d+)\s*[:.]\s*(.*?)\s*(?=\s*\n\s*\d+\s*[:.]|\n\s*\n|\s*\Z)',
-                            re.MULTILINE | re.DOTALL)
+_NUMBERED_ITEM = re.compile(
+    r"^\s*(\d+)\s*[:.]\s*(.*?)\s*(?=\s*\n\s*\d+\s*[:.]|\n\s*\n|\s*\Z)", re.MULTILINE | re.DOTALL
+)
 
 
 def _parse_llm_response_unified(
@@ -406,9 +419,7 @@ def pair_context_lines(ocr_texts: list[str], translations: list[str]) -> list[st
         return ocr_texts
     return [
         # A leading "[" marks a failure placeholder, not a translation
-        ocr
-        if ocr == "[OCR FAILED]" or not tr or tr.startswith("[")
-        else f"{ocr} → {tr}"
+        ocr if ocr == "[OCR FAILED]" or not tr or tr.startswith("[") else f"{ocr} → {tr}"
         for ocr, tr in zip(ocr_texts, translations, strict=False)
     ]
 
@@ -469,8 +480,7 @@ def _record_glossary_terms(
         return
     if added:
         log_message(
-            "Terminology memory added: "
-            + ", ".join(f"{src} -> {tr}" for src, tr in added),
+            "Terminology memory added: " + ", ".join(f"{src} -> {tr}" for src, tr in added),
             always_print=True,
         )
     if rejected:
@@ -525,15 +535,9 @@ def _clean_previous_context_texts(
 def _layout_hints(bubble_metadata: list[dict[str, Any]]) -> str:
     """Prompt line saying which items are bubble dialogue and which are outside text."""
     dialogue_indices = [
-        i + 1
-        for i, meta in enumerate(bubble_metadata)
-        if not meta.get("is_outside_text", False)
+        i + 1 for i, meta in enumerate(bubble_metadata) if not meta.get("is_outside_text", False)
     ]
-    osb_indices = [
-        i + 1
-        for i, meta in enumerate(bubble_metadata)
-        if meta.get("is_outside_text", False)
-    ]
+    osb_indices = [i + 1 for i, meta in enumerate(bubble_metadata) if meta.get("is_outside_text", False)]
 
     hints = []
     if dialogue_indices:
@@ -551,9 +555,7 @@ def _layout_hints(bubble_metadata: list[dict[str, Any]]) -> str:
     return "\nLayout: " + " ".join(hints) if hints else ""
 
 
-def _mark_ocr_failures(
-    extracted_texts: list[str], provider: str
-) -> tuple[list[str], set[int]]:
+def _mark_ocr_failures(extracted_texts: list[str], provider: str) -> tuple[list[str], set[int]]:
     """Normalize OCR errors to "[OCR FAILED]"; returns the texts and failed indices."""
     formatted_texts = []
     ocr_failed_indices = set()
@@ -635,9 +637,7 @@ def call_translation_api_batch(
     )
     previous_context_text_count = len(cleaned_previous_texts)
     previous_text_section = _format_previous_context_texts(cleaned_previous_texts)
-    glossary_path = (
-        config.translation.glossary_path if config.translation.glossary else None
-    )
+    glossary_path = config.translation.glossary_path if config.translation.glossary else None
     glossary_terms = load_terms(glossary_path) if glossary_path else {}
     previous_text_section += format_glossary_section(glossary_terms)
 
@@ -674,9 +674,7 @@ def call_translation_api_batch(
 
         log_message("Starting translation step", verbose=debug)
 
-        formatted_texts, ocr_failed_indices = _mark_ocr_failures(
-            extracted_texts, provider
-        )
+        formatted_texts, ocr_failed_indices = _mark_ocr_failures(extracted_texts, provider)
 
         ocr_input_section = """
 ## INPUT DATA
@@ -689,9 +687,7 @@ def call_translation_api_batch(
         # so it can tell who speaks and catch OCR misreads)
         page_attached = has_full_page and config.translation.vision == "full"
         full_page_context = _FULL_PAGE_NOTE if page_attached else ""
-        previous_page_context = _format_previous_context_prompt_note(
-            previous_context_text_count
-        )
+        previous_page_context = _format_previous_context_prompt_note(previous_context_text_count)
 
         special_instructions_section = _format_special_instructions(config)
 
@@ -729,9 +725,7 @@ Translate each item under `## INPUT DATA` into {output_language}.{special_instru
         )
         new_terms = []
         if glossary_path:
-            translation_response_text, new_terms = split_new_terms(
-                translation_response_text
-            )
+            translation_response_text, new_terms = split_new_terms(translation_response_text)
             _record_glossary_terms(glossary_path, new_terms, extracted_texts, debug)
         final_translations = _parse_llm_response_unified(
             translation_response_text,
@@ -752,9 +746,7 @@ Translate each item under `## INPUT DATA` into {output_language}.{special_instru
                 ocr_texts_output.extend(extracted_texts)
             return combined_results
 
-        combined_results = _keep_ocr_failures(
-            final_translations, ocr_failed_indices, total_elements, debug
-        )
+        combined_results = _keep_ocr_failures(final_translations, ocr_failed_indices, total_elements, debug)
 
         if not _has_failed_items(combined_results, provider):
             cache.set_translation(
@@ -844,9 +836,7 @@ def prepare_bubble_images_for_translation(
         bx2 = max(0, min(original_cv_image.shape[1], bx2))
         by2 = max(0, min(original_cv_image.shape[0], by2))
         if bx2 > bx1 and by2 > by1:
-            prepared_bubble["original_crop_pil"] = cv2_to_pil(
-                original_cv_image[by1:by2, bx1:bx2].copy()
-            )
+            prepared_bubble["original_crop_pil"] = cv2_to_pil(original_cv_image[by1:by2, bx1:bx2].copy())
 
         x1, y1, x2, y2 = (max(0, round(v)) for v in bubble["bbox"])
 
@@ -870,9 +860,7 @@ def prepare_bubble_images_for_translation(
         # White-out conjoined neighbor text regions visible in this crop
         neighbor_bboxes = bubble.get("conjoined_neighbor_bboxes")
         if whiteout_conjoined_bubbles and neighbor_bboxes:
-            own_mask_crop = (
-                _ma[y1:y2, x1:x2] > 0 if (_ma is not None and _ma.ndim == 2) else None
-            )
+            own_mask_crop = _ma[y1:y2, x1:x2] > 0 if (_ma is not None and _ma.ndim == 2) else None
 
             for nb in neighbor_bboxes:
                 nb_tuple = tuple(round(v) for v in nb)
@@ -912,9 +900,7 @@ def prepare_bubble_images_for_translation(
                 scale_factor = bubble_min_side_pixels / min_side
                 new_w = int(w * scale_factor)
                 new_h = int(h * scale_factor)
-                resized_bubble = resize_lanczos_antiring(
-                    bubble_image_pil, (new_w, new_h)
-                )
+                resized_bubble = resize_lanczos_antiring(bubble_image_pil, (new_w, new_h))
             else:
                 resized_bubble = bubble_image_pil
             final_bubble_pil = resized_bubble
@@ -934,9 +920,7 @@ def prepare_bubble_images_for_translation(
                     verbose=verbose,
                 )
             else:
-                log_message(
-                    f"Failed to encode bubble {bubble['bbox']}", verbose=verbose
-                )
+                log_message(f"Failed to encode bubble {bubble['bbox']}", verbose=verbose)
                 prepared_bubble["image_b64"] = None
         except Exception as e:
             log_message(f"Error encoding bubble {bubble['bbox']}: {e}", verbose=verbose)
