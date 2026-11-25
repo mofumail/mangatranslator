@@ -101,7 +101,7 @@ class ModelManager:
             self.use_hf_cache = False
             self.hf_token = None
             # Serializes inpainting-model inference across threads
-            self.flux_inference_lock = threading.Lock()
+            self.inference_lock = threading.Lock()
             # SAM-TS-L sits in RAM after park_text_sam until load_text_sam returns it
             self._text_sam_parked = False
 

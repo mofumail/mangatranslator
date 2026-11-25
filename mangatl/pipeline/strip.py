@@ -78,7 +78,7 @@ def find_cut_rows(
 
 
 
-def _detect_strip_text_rows(
+def detect_strip_text_rows(
     crop: Image.Image, image_path: Path, config: Settings
 ) -> list[tuple[int, int]]:
     """Row ranges occupied by bubbles and text in a strip crop, for choosing cut rows."""
@@ -97,7 +97,7 @@ def _detect_strip_text_rows(
     return [(int(box[1]), int(box[3])) for box in boxes]
 
 
-def _translate_strip(
+def translate_strip(
     image_path: Path,
     strip: Image.Image,
     cut_rows: list[int],
@@ -112,7 +112,7 @@ def _translate_strip(
 ) -> Image.Image:
     """Translate a long strip section by section and stitch the results back together."""
     # the page flow translates each section; imported here because it calls back into this module
-    from mangatl.pipeline.page import _as_mode, _resolve_pre_upscale_factor, translate_and_render
+    from mangatl.pipeline.page import as_mode, resolve_pre_upscale_factor, translate_and_render
 
     start_time = time.time()
     width, height = strip.size
@@ -127,7 +127,7 @@ def _translate_strip(
     if config.preprocessing.auto_scale:
         # Section heights vary, so scaling each by its own area would change font sizes
         # and kernels from one section to the next. All share a nominal section's scale.
-        pre_upscale = _resolve_pre_upscale_factor(config.preprocessing)
+        pre_upscale = resolve_pre_upscale_factor(config.preprocessing)
         section_config = section_config.updated(**{
             "preprocessing.processing_scale": math.sqrt(TARGET_RATIO) * width * pre_upscale / 1000,
             "preprocessing.auto_scale": False,
@@ -167,7 +167,7 @@ def _translate_strip(
                 strip_glyph_size=strip_glyph_size,
                 empty_bubbles_out=empty_bubbles_out,
             )
-            sections.append(_as_mode(section, target_mode))
+            sections.append(as_mode(section, target_mode))
             if texts:
                 section_texts.append(texts)
                 if ocr_texts_out is not None:

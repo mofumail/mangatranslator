@@ -236,7 +236,7 @@ def _build_outside_text_data(
     return outside_text_data
 
 
-def _apply_inpaint_render_metadata(
+def apply_inpaint_render_metadata(
     outside_text_data: list[dict[str, Any]],
     extracted_text_colors: dict,
     none_skipped_clip_bboxes: set,
@@ -275,7 +275,7 @@ def _apply_inpaint_render_metadata(
         item["needs_text_background"] = needs_text_bg
 
 
-def _fill_mask(image: Image.Image, mask: np.ndarray, color) -> Image.Image:
+def paint_mask(image: Image.Image, mask: np.ndarray, color) -> Image.Image:
     """Copy of `image` with `color` painted wherever `mask` is set."""
     filled = image.copy()
     ys, xs = np.where(mask)
@@ -288,7 +288,7 @@ def _fill_mask(image: Image.Image, mask: np.ndarray, color) -> Image.Image:
     return filled
 
 
-def _results_bounds(results: list, indices: list[int]) -> tuple[int, int, int, int]:
+def results_bounds(results: list, indices: list[int]) -> tuple[int, int, int, int]:
     """Union (x0, y0, x1, y1) of the boxes of `results[i]` for each index."""
     boxes = [results[i][0] for i in indices]
     return (
@@ -302,7 +302,7 @@ def _results_bounds(results: list, indices: list[int]) -> tuple[int, int, int, i
 FLAT_P90_MAX = 6  # paper measured 2-6; blurred dark art 9-10
 
 
-def _border_color(pixels: np.ndarray) -> tuple[tuple[int, int, int], float]:
+def border_color(pixels: np.ndarray) -> tuple[tuple[int, int, int], float]:
     """Median RGB of border pixels (snapped to pure white/black) and the share near it.
 
     A border only counts as solid when it is truly flat (90% of pixels within FLAT_P90_MAX of
@@ -323,7 +323,7 @@ def _border_color(pixels: np.ndarray) -> tuple[tuple[int, int, int], float]:
     return color, solid_ratio
 
 
-class _Glyph(NamedTuple):
+class Glyph(NamedTuple):
     """A solid component whose border mostly contrasts."""
 
     area: int
@@ -334,12 +334,12 @@ class _Glyph(NamedTuple):
     mask: np.ndarray  # component pixels within its bounding box at (x, y)
 
 
-def _outlined_glyph_components(
+def outlined_glyph_components(
     crop_gray: np.ndarray,
     glyph_mask: np.ndarray,
     is_contrasting,
     min_core_ratio: float = 0.0,
-) -> list[_Glyph]:
+) -> list[Glyph]:
     """Each solid glyph in `glyph_mask` whose border mostly contrasts."""
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(glyph_mask)
     height, width = crop_gray.shape
@@ -366,7 +366,7 @@ def _outlined_glyph_components(
         if ratio >= 0.40:
             on_frame = x == 0 or y == 0 or x + w >= width or y + h >= height
             mask = labels[y : y + h, x : x + w] == label
-            found.append(_Glyph(area, ratio, on_frame, x, y, mask))
+            found.append(Glyph(area, ratio, on_frame, x, y, mask))
     return found
 
 
@@ -632,7 +632,7 @@ def _build_total_bubble_mask(
     if bubble_data:
         for bubble in bubble_data:
             try:
-                mask = bubble.get("sam_mask") if isinstance(bubble, dict) else None
+                mask = bubble.get("seg_mask") if isinstance(bubble, dict) else None
                 if mask is not None:
                     mask_np = np.asarray(mask)
                     if mask_np.ndim == 3:
@@ -759,7 +759,7 @@ def _recover_missed_osb_text(
     radius = glyph_dilation_radius((img_w, img_h))
     covered = np.zeros((img_h, img_w), bool)
     for bubble in bubble_data or []:
-        mask = bubble.get("sam_mask")
+        mask = bubble.get("seg_mask")
         if mask is not None:
             mask = np.asarray(mask)
             if mask.ndim == 3:

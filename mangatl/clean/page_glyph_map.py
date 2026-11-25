@@ -48,7 +48,7 @@ class PageGlyphMap:
         """The probability map, or None when the text model can't be loaded or run."""
         if self.prob is None and self.enabled and not self.failed:
             manager = get_model_manager()
-            with manager.flux_inference_lock:
+            with manager.inference_lock:
                 # Another caller may have built it while this one waited
                 if self.prob is None and not self.failed:
                     self._compute(manager)
@@ -80,7 +80,7 @@ class PageGlyphMap:
         if not self.upscale_boxes or self.get() is None:
             return None
         manager = get_model_manager()
-        with manager.flux_inference_lock:
+        with manager.inference_lock:
             try:
                 if self._upscaled is None:
                     self._upscaled = UpscaledGlyphMap(self.image)

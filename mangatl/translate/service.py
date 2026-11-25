@@ -18,7 +18,7 @@ from mangatl.common.exceptions import TranslationError
 from mangatl.common.log import log_message
 from mangatl.translate.model_metadata import anthropic_model_flags, clamp_gpt6_reasoning_effort, get_max_tokens_cap, is_anthropic_model_family, is_gemini_no_sampling_model, is_gpt5_series, is_gpt6_series, is_openai_compatible_reasoning_model, is_openai_model_family, is_openai_reasoning_model, supports_openai_original_image_detail, supports_openai_verbosity
 from mangatl.settings import PROVIDER, Settings
-from mangatl.ocr.page import _run_ocr_step
+from mangatl.ocr.page import run_ocr
 
 T = TypeVar("T")
 
@@ -400,7 +400,7 @@ def _has_failed_items(texts: list[str], provider: str) -> bool:
     return any(t == "[OCR FAILED]" or t.startswith(f"[{provider}") for t in texts)
 
 
-def _pair_context_lines(ocr_texts: list[str], translations: list[str]) -> list[str]:
+def pair_context_lines(ocr_texts: list[str], translations: list[str]) -> list[str]:
     """Join each source line to its translation so later pages reuse names and terms."""
     if len(ocr_texts) != len(translations):
         return ocr_texts
@@ -670,7 +670,7 @@ def call_translation_api_batch(
     has_previous_context = bool(previous_context_text_count)
 
     try:
-        extracted_texts = _run_ocr_step(config, images_b64, bubble_metadata, debug)
+        extracted_texts = run_ocr(config, images_b64, bubble_metadata, debug)
 
         log_message("Starting translation step", verbose=debug)
 
@@ -813,7 +813,7 @@ def prepare_bubble_images_for_translation(
     mask_lookup = {}
     for b in bubble_data:
         b_bbox = tuple(round(v) for v in b["bbox"])
-        mask_lookup[b_bbox] = b.get("sam_mask")
+        mask_lookup[b_bbox] = b.get("seg_mask")
 
     if upscale_method == "model":
         log_message(
@@ -851,7 +851,7 @@ def prepare_bubble_images_for_translation(
         x1, y1, x2, y2 = (max(0, round(v)) for v in bubble["bbox"])
 
         # Use the tight bbox of the mask
-        _mask = bubble.get("sam_mask")
+        _mask = bubble.get("seg_mask")
         _ma = None
         if _mask is not None:
             _ma = np.asarray(_mask)

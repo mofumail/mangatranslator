@@ -300,7 +300,7 @@ def _perform_paddle_ocr_vl(
     return extracted_texts
 
 
-def _run_ocr_step(
+def run_ocr(
     config: Settings,
     images_b64: list[str],
     bubble_metadata: list[dict[str, Any]],

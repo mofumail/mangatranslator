@@ -30,13 +30,13 @@ from mangatl.settings import PreprocessingSettings, Settings
 
 from mangatl.clean.bubbles import inpaints_colored_bubbles
 from mangatl.common.cancellation import CancellationManager, raise_if_manager_cancelled
-from mangatl.translate.page import _attach_ocr_texts, _call_translation_api, _translate_or_error_texts
+from mangatl.translate.page import attach_ocr_texts, translate_page, translate_or_error_texts
 from mangatl.typeset.page import (
-    _render_translations,
-    _resolve_main_max_font,
-    _scaled_render_sizes,
+    render_translations,
+    resolve_main_max_font,
+    scaled_render_sizes,
 )
-from mangatl.pipeline.strip import _detect_strip_text_rows, _translate_strip
+from mangatl.pipeline.strip import detect_strip_text_rows, translate_strip
 
 
 def _should_overlap_llm_with_inpaint(config: Settings) -> bool:
@@ -56,12 +56,12 @@ def _clean_speech_bubbles_for_page(
     fallback_cv_image: np.ndarray,
     glyph_map: PageGlyphMap | None = None,
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
-    """Clean bubbles (including optional colored-bubble Flux). Returns (cv_image, info)."""
+    """Clean bubbles (colored bubbles are inpainted). Returns (cv_image, info)."""
     try:
         use_otsu = config.cleaning.otsu
         if inpaints_colored_bubbles(config):
             log_message(
-                "Flux inpainting enabled for colored bubbles",
+                "Inpainting enabled for colored bubbles",
                 verbose=verbose,
             )
 
@@ -79,11 +79,11 @@ def _clean_speech_bubbles_for_page(
             processing_scale=processing_scale,
             conjoined_confidence=config.detection.conjoined_confidence,
             inpaint_colored_bubbles=inpaints_colored_bubbles(config),
-            flux_seed=config.cleaning.seed,
+            seed=config.cleaning.seed,
             osb_text_verification=config.detection.outside_text.cover_with_bubbles,
             osb_text_hf_token=config.runtime.hf_token,
             inpaint_method=config.cleaning.inpainter,
-            flux_luminance_correction=config.cleaning.luminance_correction,
+            luminance_correction=config.cleaning.luminance_correction,
             bubble_detector_model=config.detection.bubble_model,
             request_coordinator=config.request_coordinator,
             glyph_map=glyph_map,
@@ -146,7 +146,7 @@ def _encode_context_image(
     return base64.b64encode(buffer).decode("utf-8")
 
 
-def _resolve_pre_upscale_factor(pre: PreprocessingSettings, verbose: bool = False) -> float:
+def resolve_pre_upscale_factor(pre: PreprocessingSettings, verbose: bool = False) -> float:
     if not pre.upscale:
         return 1.0
 
@@ -163,7 +163,7 @@ def _apply_pre_upscale_if_needed(
     config: Settings,
     verbose: bool = False,
 ) -> tuple[Image.Image, float]:
-    factor = _resolve_pre_upscale_factor(config.preprocessing, verbose)
+    factor = resolve_pre_upscale_factor(config.preprocessing, verbose)
     if factor == 1.0:
         return image, 1.0
 
@@ -172,7 +172,7 @@ def _apply_pre_upscale_if_needed(
     return upscaled, factor
 
 
-def _as_mode(image: Image.Image, mode: str) -> Image.Image:
+def as_mode(image: Image.Image, mode: str) -> Image.Image:
     return image if image.mode == mode else image.convert(mode)
 
 
@@ -329,7 +329,7 @@ def _clean_page(
     still holds inside the bubbles.
     """
     if not bubble_data:
-        return _as_mode(image, target_mode), []
+        return as_mode(image, target_mode), []
     log_message("Cleaning speech bubbles...", verbose=config.verbose)
     cleaned_cv, processed_bubbles_info = _clean_speech_bubbles_for_page(
         image,
@@ -341,7 +341,7 @@ def _clean_page(
         pil_to_cv2(image),
         glyph_map,
     )
-    return _as_mode(cv2_to_pil(cleaned_cv), target_mode), processed_bubbles_info
+    return as_mode(cv2_to_pil(cleaned_cv), target_mode), processed_bubbles_info
 
 
 def _finish_deferred_cleaning(
@@ -385,7 +385,7 @@ def _prepare_bubble_crops(
     for bubble in bubble_data:
         bbox_key = tuple(round(v) for v in bubble.get("bbox", ()))
         if bbox_key in mask_by_bbox:
-            bubble["sam_mask"] = mask_by_bbox[bbox_key]
+            bubble["seg_mask"] = mask_by_bbox[bbox_key]
 
     upscale_method = config.ocr.upscale
 
@@ -503,10 +503,10 @@ def translate_and_render(
 
     if config.preprocessing.split_long_strips:
         cut_rows = find_cut_rows(
-            page, lambda crop: _detect_strip_text_rows(crop, image_path, config)
+            page, lambda crop: detect_strip_text_rows(crop, image_path, config)
         )
         if cut_rows:
-            return _translate_strip(
+            return translate_strip(
                 image_path,
                 page,
                 cut_rows,
@@ -586,7 +586,7 @@ def translate_and_render(
         )
 
     if overlap:
-        cleaned, processed_bubbles_info = _as_mode(page, target_mode), []
+        cleaned, processed_bubbles_info = as_mode(page, target_mode), []
     else:
         cleaned, processed_bubbles_info = _clean_page(
             page, bubble_data, config, processing_scale, target_mode, glyph_map
@@ -597,7 +597,7 @@ def translate_and_render(
         cleaned = paint_pending_osb_fills(cleaned, outside_text_data)
         return _finish_page(cleaned, config, output_path, target_mode, start_time)
 
-    sizes = _scaled_render_sizes(config, processing_scale)
+    sizes = scaled_render_sizes(config, processing_scale)
     page_glyphs: dict = {}  # this page's lettering sizes, for bigger text in shouted bubbles
     bubble_data = _prepare_bubble_crops(
         bubble_data, processed_bubbles_info, page_cv, config, mime_type
@@ -642,7 +642,7 @@ def translate_and_render(
             cleaned, processed_bubbles_info = finish_deferred_cleaning()
     else:
         call_api = partial(
-            _call_translation_api,
+            translate_page,
             config,
             sorted_bubble_data,
             bubble_images_b64,
@@ -653,7 +653,7 @@ def translate_and_render(
             previous_context_texts_provider,
         )
         translate = partial(
-            _translate_or_error_texts,
+            translate_or_error_texts,
             sorted_bubble_data=sorted_bubble_data,
             image_count=len(bubble_images_b64),
             config=config,
@@ -677,10 +677,10 @@ def translate_and_render(
             translated_texts, current_ocr_texts = translate(call_api)
 
     if current_ocr_texts:
-        _attach_ocr_texts(sorted_bubble_data, current_ocr_texts, verbose)
+        attach_ocr_texts(sorted_bubble_data, current_ocr_texts, verbose)
 
     sizes = sizes._replace(
-        main_max_font=_resolve_main_max_font(
+        main_max_font=resolve_main_max_font(
             config,
             page_cv,
             processed_bubbles_info,
@@ -692,7 +692,7 @@ def translate_and_render(
             page_glyphs,
         )
     )
-    cleaned = _render_translations(
+    cleaned = render_translations(
         cleaned,
         sorted_bubble_data,
         translated_texts,

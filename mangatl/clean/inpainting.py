@@ -641,7 +641,7 @@ class _CropInpainter:
 
             log_message("  - Running inference...", verbose=verbose)
 
-            with self.manager.flux_inference_lock:
+            with self.manager.inference_lock:
                 raise_if_cancelled()  # Jobs queued on the lock skip their inference
                 if self.PARKS_TEXT_SAM:
                     self.manager.park_text_sam(verbose=verbose)

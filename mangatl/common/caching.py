@@ -409,7 +409,7 @@ class UnifiedCache:
         prompt: str,
         ocr_params: dict | None = None,
     ) -> str:
-        """Compute cache key for Flux inpainting.
+        """Compute cache key for an inpainting result.
 
         Args:
             image: Input image

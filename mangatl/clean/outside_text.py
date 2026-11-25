@@ -17,7 +17,7 @@ from mangatl.common.cancellation import raise_if_cancelled
 from mangatl.common.exceptions import CancellationError
 from mangatl.common.log import log_message
 from mangatl.settings import Settings
-from mangatl.detect.outside_text import OSB_EXPANSION_PX, OSB_GLYPH_HUE_MIN_SHARE, OSB_SOLID_RATIO_THRESHOLD, OutsideTextWork, _Glyph, _apply_inpaint_render_metadata, _border_color, _fill_mask, _outlined_glyph_components, _results_bounds, prepare_outside_text_work
+from mangatl.detect.outside_text import OSB_EXPANSION_PX, OSB_GLYPH_HUE_MIN_SHARE, OSB_SOLID_RATIO_THRESHOLD, OutsideTextWork, Glyph, apply_inpaint_render_metadata, border_color, paint_mask, outlined_glyph_components, results_bounds, prepare_outside_text_work
 
 
 def _effective_osb_tilt(item: dict[str, Any], config: Settings) -> float:
@@ -88,7 +88,7 @@ def paint_pending_osb_fill(
     mask = _osb_fill_box_mask(image.width, image.height, fill.box, rot)
     if fill.bubble_mask is not None:
         mask &= ~fill.bubble_mask
-    return _fill_mask(image, mask, fill.color)
+    return paint_mask(image, mask, fill.color)
 
 
 def paint_pending_osb_fills(
@@ -223,7 +223,7 @@ def _border_pixels(
     return crop_np[ring]
 
 
-def _has_glyph_evidence(glyphs: list[_Glyph]) -> bool:
+def _has_glyph_evidence(glyphs: list[Glyph]) -> bool:
     total = sum(g.area for g in glyphs)
     return len(glyphs) >= 2 or (len(glyphs) == 1 and total >= 30) or total >= 50
 
@@ -251,7 +251,7 @@ def _overlap(a: np.ndarray, ax: int, ay: int, b: np.ndarray, bx: int, by: int) -
     )
 
 
-def _drop_containers(own: list[_Glyph], other: list[_Glyph]) -> list[_Glyph]:
+def _drop_containers(own: list[Glyph], other: list[Glyph]) -> list[Glyph]:
     """Drop glyphs whose interior holds several glyphs and most of the other polarity's area.
 
     A caption frame or bubble interior is not a glyph. Glyphs that enclose the candidate
@@ -402,14 +402,14 @@ def _bw_page_text_color(
     # Glyphs touching the padded crop edge are background, not text
     dark = [
         g
-        for g in _outlined_glyph_components(
+        for g in outlined_glyph_components(
             gray, (gray < 50).astype(np.uint8) * 255, lambda border: border > 150
         )
         if not g.on_frame
     ]
     white = [
         g
-        for g in _outlined_glyph_components(
+        for g in outlined_glyph_components(
             gray,
             (gray > 200).astype(np.uint8) * 255,
             lambda border: border < 90,
@@ -450,10 +450,10 @@ def _color_page_text_color(
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     # Light saturated colors (a yellow banner) clear the gray cutoff but aren't white text
     neutral = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)[..., 1] <= 40
-    dark = _outlined_glyph_components(
+    dark = outlined_glyph_components(
         gray, (gray < 50).astype(np.uint8) * 255, lambda border: border > 150
     )
-    white = _outlined_glyph_components(
+    white = outlined_glyph_components(
         gray,
         ((gray > 200) & neutral).astype(np.uint8) * 255,
         lambda border: border < 90,
@@ -539,12 +539,12 @@ def _general_text_color(
     detected_text_color = None
 
     # Glyph cores whose border contrasts: dark text with a light outline, and the reverse
-    dark_glyph_comps = _outlined_glyph_components(
+    dark_glyph_comps = outlined_glyph_components(
         crop_gray,
         (crop_gray < 50).astype(np.uint8) * 255,
         lambda border: border > 150,
     )
-    white_glyph_comps = _outlined_glyph_components(
+    white_glyph_comps = outlined_glyph_components(
         crop_gray,
         (crop_gray > 200).astype(np.uint8) * 255,
         lambda border: border < 90,
@@ -708,7 +708,7 @@ def _decide_osb_region_fill(
     # Expanded sampling around the original bbox to find background color
     mask_indices = group.get("mask_indices", [])
     if mask_indices and work.raw_outside_text_results:
-        text_bounds = _results_bounds(work.raw_outside_text_results, mask_indices)
+        text_bounds = results_bounds(work.raw_outside_text_results, mask_indices)
     else:
         text_bounds = composite_clip_bbox
     border_pixels = _border_pixels(current_image, text_bounds, img_w, img_h)
@@ -717,7 +717,7 @@ def _decide_osb_region_fill(
             composite_clip_bbox, bounds, fill_color, fallback_fill_color, text_color
         )
 
-    detected_color, solid_ratio = _border_color(border_pixels)
+    detected_color, solid_ratio = border_color(border_pixels)
     is_border_solid = solid_ratio >= OSB_SOLID_RATIO_THRESHOLD
     if is_border_solid or fallback_fill_color is None:
         fallback_fill_color = detected_color
@@ -742,7 +742,7 @@ def _decide_osb_region_fill(
     # Get expanded bounds for this group to check solid color and for cv2 fill
     p_x0, p_y0, p_x1, p_y1 = composite_clip_bbox
     if mask_indices and work.outside_text_results:
-        p_x0, p_y0, p_x1, p_y1 = _results_bounds(
+        p_x0, p_y0, p_x1, p_y1 = results_bounds(
             work.outside_text_results, mask_indices
         )
         p_x0, p_y0 = max(0, p_x0), max(0, p_y0)
@@ -754,7 +754,7 @@ def _decide_osb_region_fill(
             current_image, (p_x0, p_y0, p_x1, p_y1), img_w, img_h
         )
         if eborder_pixels is not None and eborder_pixels.size > 0:
-            edetected_color, esolid_ratio = _border_color(eborder_pixels)
+            edetected_color, esolid_ratio = border_color(eborder_pixels)
             if esolid_ratio >= OSB_SOLID_RATIO_THRESHOLD:
                 expanded_is_solid = True
                 fallback_fill_color = edetected_color
@@ -770,7 +770,7 @@ def _decide_osb_region_fill(
             )
         else:
             log_message(
-                f"Skipping Flux for OSB region: detected solid {fill_color} background",
+                f"Skipping inpainting for OSB region: detected solid {fill_color} background",
                 verbose=verbose,
             )
 
@@ -807,7 +807,7 @@ def _glyph_inpaint_mask(
     )
 
 
-def _try_flux_inpaint(
+def _try_model_inpaint(
     inpainter,
     image: Image.Image,
     mask: np.ndarray,
@@ -815,9 +815,9 @@ def _try_flux_inpaint(
     composite_clip_bbox,
     verbose: bool,
 ) -> tuple[Image.Image | None, str | None]:
-    """Inpaint one OSB region with Flux; returns (image, None) or (None, failure reason)."""
+    """Inpaint one OSB region with the inpainting model; returns (image, None) or (None, failure reason)."""
     if inpainter is None:
-        return None, "Flux inpainter unavailable"
+        return None, "inpainter unavailable"
     try:
         inpainted_image = inpainter.inpaint_mask(
             image,
@@ -830,13 +830,13 @@ def _try_flux_inpaint(
     except CancellationError:
         raise
     except Exception as e:
-        return None, f"Flux inpainting error: {e}"
+        return None, f"inpainting error: {e}"
     if inpainted_image is image:
-        return None, "Flux returned original image (no inpaint)"
+        return None, "inpainter returned the original image (no inpaint)"
     return inpainted_image, None
 
 
-def _run_flux_waves(
+def _run_inpaint_waves(
     image: Image.Image,
     candidates: list[dict[str, Any]],
     inpainter,
@@ -845,20 +845,20 @@ def _run_flux_waves(
     composite_candidate,
     verbose: bool,
 ) -> tuple[Image.Image, int, int]:
-    """Run queued per-region Flux jobs in non-overlapping waves via the coordinator.
+    """Run queued per-region inpainting jobs in non-overlapping waves via the coordinator.
 
     Each result goes through `composite_candidate(before, after, candidate)`; regions
     whose job fails get `fill_candidate(image, candidate, color)` instead.
-    Returns the image and the number of regions done by Flux and by CV2.
+    Returns the image and the number of regions done by the model and by CV2.
     """
-    flux_count = 0
+    model_count = 0
     cv2_count = 0
     waves = partition_non_overlapping_waves(
         candidates,
         lambda candidate: candidate["context_bbox"],
     )
     log_message(
-        f"Scheduling OSB Flux in {len(waves)} wave(s)",
+        f"Scheduling OSB inpainting in {len(waves)} wave(s)",
         verbose=verbose,
     )
 
@@ -878,7 +878,7 @@ def _run_flux_waves(
                         composite_clip_bbox=candidate["composite_clip_bbox"],
                     )
                     if result_image is image_for_job:
-                        raise RuntimeError("Flux returned original image (no inpaint)")
+                        raise RuntimeError("inpainter returned the original image (no inpaint)")
                     return {
                         "candidate": candidate,
                         "image": result_image,
@@ -903,8 +903,8 @@ def _run_flux_waves(
             if result["error"] is not None:
                 fallback_color_to_use = candidate["fallback_color"]
                 log_message(
-                    f"Flux failed for OSB region {candidate['index']}"
-                    f" (Flux inpainting error: {result['error']}); "
+                    f"Inpainting failed for OSB region {candidate['index']}"
+                    f" (inpainting error: {result['error']}); "
                     f"falling back to CV2 fill ({fallback_color_to_use})",
                     always_print=True,
                 )
@@ -922,8 +922,8 @@ def _run_flux_waves(
                     result_image,
                     context_bbox,
                 )
-            flux_count += 1
-    return image, flux_count, cv2_count
+            model_count += 1
+    return image, model_count, cv2_count
 
 
 def finish_outside_text_work(
@@ -959,11 +959,11 @@ def finish_outside_text_work(
             )
 
             extracted_text_colors = {}
-            flux_inpaints = 0
+            model_inpaints = 0
             cv2_inpaints = 0
             none_skips = 0
             request_coordinator = config.request_coordinator
-            pending_flux_candidates = []
+            pending_inpaints = []
 
             def simple_fill(
                 image, color, group, combined_mask, original_bbox_dict, bounds
@@ -1001,7 +1001,7 @@ def finish_outside_text_work(
                             total_bubble_mask,
                         )
                     return image
-                return _fill_mask(
+                return paint_mask(
                     image, combined_mask if rect_mask is None else rect_mask, color
                 )
 
@@ -1015,14 +1015,14 @@ def finish_outside_text_work(
                     candidate["original_bounds"],
                 )
 
-            def flush_pending_flux_candidates():
-                nonlocal current_image, flux_inpaints, cv2_inpaints
-                if not pending_flux_candidates:
+            def flush_pending_inpaints():
+                nonlocal current_image, model_inpaints, cv2_inpaints
+                if not pending_inpaints:
                     return
 
-                candidates = list(pending_flux_candidates)
-                pending_flux_candidates.clear()
-                current_image, flux_done, cv2_done = _run_flux_waves(
+                candidates = list(pending_inpaints)
+                pending_inpaints.clear()
+                current_image, model_done, cv2_done = _run_inpaint_waves(
                     current_image,
                     candidates,
                     inpainter,
@@ -1031,7 +1031,7 @@ def finish_outside_text_work(
                     lambda before, after, candidate: after,
                     verbose,
                 )
-                flux_inpaints += flux_done
+                model_inpaints += model_done
                 cv2_inpaints += cv2_done
 
             for i, group in enumerate(mask_groups):
@@ -1070,7 +1070,7 @@ def finish_outside_text_work(
                 )
 
                 if fill_color is not None:
-                    flush_pending_flux_candidates()
+                    flush_pending_inpaints()
                     current_image = simple_fill(
                         current_image, fill_color, *region_fill_args
                     )
@@ -1099,7 +1099,7 @@ def finish_outside_text_work(
                     fallback_color_to_use = (
                         fallback_fill_color if fallback_fill_color else (255, 255, 255)
                     )
-                    pending_flux_candidates.append(
+                    pending_inpaints.append(
                         {
                             "index": i + 1,
                             "mask": inpaint_mask.copy(),
@@ -1117,12 +1117,12 @@ def finish_outside_text_work(
                         }
                     )
                     log_message(
-                        f"Queued OSB region {i + 1} for intra-page Flux scheduling",
+                        f"Queued OSB region {i + 1} for intra-page inpaint scheduling",
                         verbose=verbose,
                     )
                     continue
 
-                inpainted_image, flux_fail_reason = _try_flux_inpaint(
+                inpainted_image, inpaint_fail_reason = _try_model_inpaint(
                     inpainter,
                     current_image,
                     inpaint_mask,
@@ -1131,12 +1131,12 @@ def finish_outside_text_work(
                     verbose,
                 )
 
-                if flux_fail_reason is not None:
+                if inpaint_fail_reason is not None:
                     fallback_color_to_use = (
                         fallback_fill_color if fallback_fill_color else (255, 255, 255)
                     )
                     log_message(
-                        f"Flux failed for OSB region {i + 1} ({flux_fail_reason})"
+                        f"Inpainting failed for OSB region {i + 1} ({inpaint_fail_reason})"
                         f"; falling back to CV2 fill ({fallback_color_to_use})",
                         always_print=True,
                     )
@@ -1146,14 +1146,14 @@ def finish_outside_text_work(
                     cv2_inpaints += 1
                     continue
 
-                flux_inpaints += 1
+                model_inpaints += 1
                 current_image = inpainted_image
 
-            flush_pending_flux_candidates()
+            flush_pending_inpaints()
 
             log_message("Outside text inpainting completed", verbose=verbose)
             parts = [
-                f"Model: {flux_inpaints}",
+                f"Model: {model_inpaints}",
                 f"CV2: {cv2_inpaints}",
             ]
             if none_skips:
@@ -1163,7 +1163,7 @@ def finish_outside_text_work(
                 always_print=True,
             )
 
-        _apply_inpaint_render_metadata(
+        apply_inpaint_render_metadata(
             outside_text_data,
             extracted_text_colors,
             none_skipped_clip_bboxes,
@@ -1196,7 +1196,7 @@ def process_outside_text(
 
     This function handles the complete outside text processing pipeline:
     1. Detects text outside speech bubbles using OCR
-    2. Inpaints the detected text regions using FluxKontext
+    2. Inpaints the detected text regions
     3. Prepares the outside text data for translation API calls
 
     Args:

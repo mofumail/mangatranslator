@@ -717,7 +717,8 @@ class OutsideTextDetector:
             max_x = max(box[2] for box in group_boxes)
             max_y = max(box[3] for box in group_boxes)
 
-            # Ensure combined region doesn't exceed Flux Kontext preferred resolutions
+            # Split groups larger than this (a limit from the removed FLUX inpainter; it still shapes
+            # the regions, so changing it changes output)
             max_dimension = 1568
             if max_x - min_x > max_dimension or max_y - min_y > max_dimension:
                 log_message(

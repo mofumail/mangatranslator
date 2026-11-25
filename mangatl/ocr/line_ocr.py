@@ -20,7 +20,7 @@ from pathlib import Path
 MIN_LINES = 2  # regions with at least this many detected lines are read line by line
 
 
-def _script_ratios(text: str) -> tuple[int, float, float]:
+def script_ratios(text: str) -> tuple[int, float, float]:
     chars = [c for c in text if c.isalnum()]
     if not chars:
         return 0, 0.0, 0.0
@@ -30,7 +30,7 @@ def _script_ratios(text: str) -> tuple[int, float, float]:
 
 
 def is_japanese(text: str) -> bool:
-    n, kana, _ = _script_ratios(text)
+    n, kana, _ = script_ratios(text)
     return n >= 4 and kana >= 0.2
 
 
@@ -45,7 +45,7 @@ ZH_SIMPLIFIED = set("们这说话时过对开关门见让还发气车东经书�
 def is_other_cjk(text: str) -> bool:
     """A block in Chinese, e.g. a translation printed next to the Japanese: little kana
     (OCR may misread a few glyphs as kana) plus Chinese-only particles, or no kana at all."""
-    n, kana, han = _script_ratios(text)
+    n, kana, han = script_ratios(text)
     if n < 6 or han < 0.4:
         return False
     markers = sum(1 for c in text if c in ZH_MARKERS)
@@ -165,7 +165,7 @@ def read_region(meta: dict, models_dir: Path, rtl: bool = True) -> str | None:
         return None
     if is_list(lines, texts):
         return LIST_SEP.join(texts)
-    cjk = sum(_script_ratios(t)[1] + _script_ratios(t)[2] for t in texts) / len(texts) > 0.5
+    cjk = sum(script_ratios(t)[1] + script_ratios(t)[2] for t in texts) / len(texts) > 0.5
     return ("" if cjk else " ").join(texts)
 
 

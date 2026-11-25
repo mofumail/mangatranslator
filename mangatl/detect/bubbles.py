@@ -1061,12 +1061,12 @@ def _build_segmentation_detections(
             conjoined_confidence,
         )
 
-        sam_mask = None
+        seg_mask = None
         if source == "primary":
-            sam_mask = _fallback_to_yolo_mask(primary_results, orig_idx, "binary")
+            seg_mask = _fallback_to_yolo_mask(primary_results, orig_idx, "binary")
 
-        if sam_mask is None:
-            sam_mask = _build_rect_mask_from_box(box, img_h, img_w)
+        if seg_mask is None:
+            seg_mask = _build_rect_mask_from_box(box, img_h, img_w)
 
         x0_f, y0_f, x1_f, y1_f = box.tolist()
         detections.append(
@@ -1079,7 +1079,7 @@ def _build_segmentation_detections(
                 ),
                 "confidence": conf,
                 "class": cls_name,
-                "sam_mask": sam_mask,
+                "seg_mask": seg_mask,
             }
         )
 
@@ -1145,7 +1145,7 @@ def _build_segmentation_detections(
                 "bbox": group_bboxes[local_idx],
                 "confidence": conf,
                 "class": cls_name,
-                "sam_mask": split_masks[local_idx],
+                "seg_mask": split_masks[local_idx],
             }
             detection["conjoined_neighbor_bboxes"] = [
                 bbox for idx, bbox in enumerate(group_bboxes) if idx != local_idx
@@ -1194,7 +1194,7 @@ def _build_segmentation_detections(
                 "bbox": group_bboxes[local_idx],
                 "confidence": conf,
                 "class": cls_name,
-                "sam_mask": split_masks[local_idx],
+                "seg_mask": split_masks[local_idx],
                 "conjoined_neighbor_bboxes": [
                     bbox for idx, bbox in enumerate(group_bboxes) if idx != local_idx
                 ],

@@ -17,7 +17,7 @@ BBox = tuple[int, int, int, int]
 
 
 class BatchRequestCoordinator:
-    """Shared request budget for batch LLM and Flux work."""
+    """Shared request budget for batch LLM and inpainting work."""
 
     def __init__(self, max_requests: int, cancellation_manager=None):
         self.max_requests = max(1, int(max_requests or 1))
@@ -93,7 +93,7 @@ def expanded_mask_bbox(
     min_padding: int = 64,
     extra_padding: int = 16,
 ) -> BBox | None:
-    """Return a conservative bbox for Flux context and compositing."""
+    """Return a conservative bbox for inpainting context."""
     mask_np = np.asarray(mask)
     if mask_np.ndim == 3:
         mask_np = mask_np[..., 0]

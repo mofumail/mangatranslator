@@ -99,7 +99,7 @@ def _inpaint_colored_bubbles_with_coordinator(
         lambda candidate: candidate["context_bbox"],
     )
     log_message(
-        f"Scheduling colored-bubble Flux in {len(waves)} wave(s)",
+        f"Scheduling colored-bubble inpainting in {len(waves)} wave(s)",
         verbose=verbose,
     )
 
@@ -142,7 +142,7 @@ def _inpaint_colored_bubbles_with_coordinator(
             bubble_info = candidate["bubble_info"]
             if result["error"] is not None:
                 log_message(
-                    f"Flux inpainting failed for bubble {candidate['bbox_tuple']}: "
+                    f"Inpainting failed for bubble {candidate['bbox_tuple']}: "
                     f"{result['error']}; falling back to standard fill",
                     always_print=True,
                 )
@@ -265,7 +265,7 @@ def process_single_bubble(
     roi_shrink_px,
     verbose,
     detection_bbox=None,
-    is_sam=False,
+    is_seg=False,
     dilation_kernel=None,
     constraint_erosion_kernel=None,
     min_contour_area: float = MIN_CONTOUR_AREA,
@@ -289,7 +289,7 @@ def process_single_bubble(
         roi_shrink_px (int): Pixels to shrink ROI inwards
         verbose (bool): Whether to print verbose messages
         detection_bbox: Bounding box for logging (optional)
-        is_sam (bool): Whether this is a SAM mask (for logging)
+        is_seg (bool): Whether this is a SAM mask (for logging)
         dilation_kernel: Kernel for dilation
         constraint_erosion_kernel: Kernel for erosion
         min_contour_area: Min area for contours
@@ -345,7 +345,7 @@ def process_single_bubble(
         masked_pixels = img_gray[base_mask == 255]
         if masked_pixels.size == 0:
             log_message(
-                f"{'[SAM]' if is_sam else ''}Skipping detection {detection_bbox}: empty mask",
+                f"{'[SAM]' if is_seg else ''}Skipping detection {detection_bbox}: empty mask",
                 verbose=verbose,
             )
             raise CleaningError(f"Empty mask for detection {detection_bbox}")
@@ -357,7 +357,7 @@ def process_single_bubble(
         sample_color_bgr: tuple[int, int, int] = fill_color_bgr
 
         log_message(
-            f"{'[SAM]' if is_sam else ''}Detection {detection_bbox}: "
+            f"{'[SAM]' if is_seg else ''}Detection {detection_bbox}: "
             f"{'Black' if is_black_bubble else 'White'} bubble (mean={mean_pixel_value:.1f})",
             verbose=verbose,
         )
@@ -379,7 +379,7 @@ def process_single_bubble(
                 roi_pixels_for_otsu, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
             )
             log_message(
-                f"{'[SAM]' if is_sam else ''}  Otsu threshold: {thresh_val}",
+                f"{'[SAM]' if is_seg else ''}  Otsu threshold: {thresh_val}",
                 verbose=verbose,
             )
             _, thresholded_roi = cv2.threshold(
@@ -397,7 +397,7 @@ def process_single_bubble(
                 bg_level = float(np.percentile(bg_pixels, 75))
                 threshold = round(thresholding_value * bg_level / 255)
                 log_message(
-                    f"{'[SAM]' if is_sam else ''}  Auto threshold: {threshold} "
+                    f"{'[SAM]' if is_seg else ''}  Auto threshold: {threshold} "
                     f"(background={bg_level:.0f})",
                     verbose=verbose,
                 )
@@ -450,7 +450,7 @@ def process_single_bubble(
                 valid_contours.append(cnt)
 
         log_message(
-            f"{'[SAM]' if is_sam else ''}Detection {detection_bbox}: {len(valid_contours)} text fragments found",
+            f"{'[SAM]' if is_seg else ''}Detection {detection_bbox}: {len(valid_contours)} text fragments found",
             verbose=verbose,
         )
 
@@ -559,7 +559,7 @@ def process_single_bubble(
                         else:
                             fill_color_bgr = (med_val, med_val, med_val)
 
-                    log_prefix = "[SAM] " if is_sam else ""
+                    log_prefix = "[SAM] " if is_seg else ""
                     if solid_ratio >= SOLID_RATIO_THRESHOLD:
                         is_colored_bubble = False
                         sample_color_bgr = fill_color_bgr
@@ -638,7 +638,7 @@ def process_single_bubble(
 
     except Exception as e:
         log_message(
-            f"Failed to process {'SAM' if is_sam else 'YOLO'} mask for {detection_bbox}",
+            f"Failed to process {'SAM' if is_seg else 'YOLO'} mask for {detection_bbox}",
             always_print=True,
         )
         raise CleaningError("Failed to process bubble mask") from e
@@ -658,11 +658,11 @@ def clean_speech_bubbles(
     conjoined_confidence=0.35,
     auto_threshold: bool = False,
     inpaint_colored_bubbles: bool = False,
-    flux_seed: int = 1,
+    seed: int = 1,
     osb_text_verification: bool = False,
     osb_text_hf_token: str = "",
     inpaint_method: str = "lama_manga",
-    flux_luminance_correction: bool = True,
+    luminance_correction: bool = True,
     bubble_detector_model: str = "yolo_2",
     request_coordinator: Any | None = None,
     glyph_map: PageGlyphMap | None = None,
@@ -683,7 +683,7 @@ def clean_speech_bubbles(
                                (ignored when use_otsu_threshold is set).
         roi_shrink_px (int): Number of pixels to shrink the ROI inwards before identification/fill.
         inpaint_colored_bubbles (bool): If True, detect non-solid background bubbles and inpaint their text.
-        flux_seed (int): Inpainting seed; -1 enables random per run.
+        seed (int): Inpainting seed; -1 enables random per run.
         osb_text_verification (bool): When True, expand bubble boxes to fully cover OSB text detections.
         osb_text_hf_token (str): Optional token for OSB text model downloads.
         glyph_map: Text map of the original page. Letters the fill leaves uncovered are
@@ -699,7 +699,7 @@ def clean_speech_bubbles(
                     - 'bbox' (tuple): detection bounding box
                     - 'is_colored' (bool): whether bubble interior was classified colored
                     - 'text_bbox' (tuple|None): bounding box of detected text mask
-                    - 'is_sam' (bool): whether detection originated from SAM
+                    - 'is_seg' (bool): whether detection originated from SAM
     Raises:
         ValueError: If the image cannot be loaded or if an image object is passed without pre-computed detections.
         RuntimeError: If model loading or bubble detection fails.
@@ -768,10 +768,10 @@ def clean_speech_bubbles(
         for detection in detections:
             raise_if_cancelled()
             bbox = detection.get("bbox")
-            sam_mask = detection.get("sam_mask")
-            is_sam_mask = sam_mask is not None
-            if is_sam_mask:
-                base_mask = _normalize_mask(sam_mask)
+            seg_mask = detection.get("seg_mask")
+            is_seg_mask = seg_mask is not None
+            if is_seg_mask:
+                base_mask = _normalize_mask(seg_mask)
             else:
                 base_mask = _polygon_mask(detection, img_height, img_width, verbose)
                 if base_mask is None:
@@ -796,7 +796,7 @@ def clean_speech_bubbles(
                     effective_roi_shrink_px,
                     verbose,
                     bbox,
-                    is_sam=is_sam_mask,
+                    is_seg=is_seg_mask,
                     dilation_kernel=dilation_kernel,
                     constraint_erosion_kernel=constraint_erosion_kernel,
                     min_contour_area=min_contour_area,
@@ -819,7 +819,7 @@ def clean_speech_bubbles(
                         {
                             "base_mask": base_mask,
                             "bbox": bbox,
-                            "is_sam": is_sam_mask,
+                            "is_seg": is_seg_mask,
                             "neighbor_bboxes": detection.get(
                                 "conjoined_neighbor_bboxes"
                             ),
@@ -837,7 +837,7 @@ def clean_speech_bubbles(
                     )
                 if not retry_res:
                     log_message(
-                        f"Error processing {'SAM' if is_sam_mask else 'YOLO'} mask "
+                        f"Error processing {'SAM' if is_seg_mask else 'YOLO'} mask "
                         f"for detection {bbox}: {e}",
                         always_print=True,
                     )
@@ -859,7 +859,7 @@ def clean_speech_bubbles(
                     "text_bbox": text_bbox,
                     "text_color_bgr": text_color_bgr,
                     "art_mask": art_mask,
-                    "is_sam": is_sam_mask,
+                    "is_seg": is_seg_mask,
                     "inpainted": False,
                 }
             )
@@ -871,7 +871,7 @@ def clean_speech_bubbles(
             ]
             if colored_bubbles:
                 log_message(
-                    f"Inpainting {len(colored_bubbles)} colored bubbles with Flux",
+                    f"Inpainting {len(colored_bubbles)} colored bubbles",
                     always_print=True,
                 )
                 pil_working = Image.fromarray(
@@ -879,14 +879,14 @@ def clean_speech_bubbles(
                 )
                 base_seed = (
                     random.randint(1, 999999)
-                    if flux_seed == -1
-                    else max(0, int(flux_seed))
+                    if seed == -1
+                    else max(0, int(seed))
                 )
                 try:
                     inpainter = make_inpainter(
                         inpaint_method,
                         device=device,
-                        luminance_correction=flux_luminance_correction,
+                        luminance_correction=luminance_correction,
                         verbose=verbose,
                     )
                     if inpainter is None:
@@ -945,7 +945,7 @@ def clean_speech_bubbles(
                                 raise
                             except Exception as e:
                                 log_message(
-                                    f"Flux inpainting failed for bubble {bbox_tuple}: {e}; falling back to standard fill",
+                                    f"Inpainting failed for bubble {bbox_tuple}: {e}; falling back to standard fill",
                                     always_print=True,
                                 )
                                 continue
@@ -957,7 +957,7 @@ def clean_speech_bubbles(
                     raise
                 except Exception as e:
                     log_message(
-                        f"Flux inpainting aborted; falling back to standard fill: {e}",
+                        f"Inpainting aborted; falling back to standard fill: {e}",
                         always_print=True,
                     )
 
@@ -1067,7 +1067,7 @@ def retry_cleaning_with_otsu(
             effective_roi_shrink_px,
             verbose,
             bubble_info.get("bbox"),
-            bubble_info.get("is_sam", False),
+            bubble_info.get("is_seg", False),
             dilation_kernel=dilation_kernel,
             constraint_erosion_kernel=constraint_erosion_kernel,
             min_contour_area=min_contour_area,
@@ -1119,7 +1119,7 @@ def retry_cleaning_with_otsu(
         "text_bbox": text_bbox,
         "text_color_bgr": text_color_bgr,
         "art_mask": art_mask,
-        "is_sam": bubble_info.get("is_sam", False),
+        "is_seg": bubble_info.get("is_seg", False),
     }
 
 

@@ -9,7 +9,7 @@ from mangatl.translate.vision_pass import revise_short_items
 from mangatl.common import eval_hooks
 from mangatl.common.exceptions import CancellationError, TranslationError
 from mangatl.common.log import log_message
-from mangatl.translate.service import _pair_context_lines, call_translation_api_batch
+from mangatl.translate.service import pair_context_lines, call_translation_api_batch
 from mangatl.settings import PROVIDER, Settings
 from mangatl.typeset.page import INVALID_TRANSLATION_VALUES
 
@@ -30,7 +30,7 @@ CRITICAL_TRANSLATION_ERRORS = (
 )
 
 
-def _call_translation_api(
+def translate_page(
     config: Settings,
     sorted_bubble_data: list[dict[str, Any]],
     images_b64: list[str],
@@ -137,7 +137,7 @@ def _mark_failed_and_skipped(texts: list[str], sorted_bubble_data: list[dict[str
             texts[i] = ""  # other-language block: rendered as "erase only"
 
 
-def _translate_or_error_texts(
+def translate_or_error_texts(
     get_result: Callable[[], tuple[list[str], list[str]]],
     sorted_bubble_data: list[dict[str, Any]],
     image_count: int,
@@ -164,7 +164,7 @@ def _translate_or_error_texts(
         ocr_texts = []
 
     if ocr_texts and ocr_texts_out is not None:
-        ocr_texts_out.extend(_pair_context_lines(ocr_texts, texts))
+        ocr_texts_out.extend(pair_context_lines(ocr_texts, texts))
 
     provider_tag = f"[{PROVIDER}:"
     valid_translations = [
@@ -181,7 +181,7 @@ def _translate_or_error_texts(
     return texts, ocr_texts
 
 
-def _attach_ocr_texts(
+def attach_ocr_texts(
     sorted_bubble_data: list[dict[str, Any]], ocr_texts: list[str], verbose: bool
 ) -> None:
     if len(ocr_texts) == len(sorted_bubble_data):

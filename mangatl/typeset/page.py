@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 from PIL import Image
 from mangatl.common.scaling import scale_font_size, scale_scalar
-from mangatl.ocr.line_ocr import _script_ratios
+from mangatl.ocr.line_ocr import script_ratios
 from mangatl.typeset import sfx_labels
 from mangatl.common.exceptions import FontError, ImageProcessingError, RenderingError
 from mangatl.common.log import log_message
@@ -95,7 +95,7 @@ def _bubble_glyph_sizes(
     return own
 
 
-def _resolve_main_max_font(
+def resolve_main_max_font(
     config: Settings,
     page_image: np.ndarray,
     bubbles_info: list[dict[str, Any]],
@@ -153,7 +153,7 @@ class _RenderSizes(NamedTuple):
     osb_outline_ratio: float
 
 
-def _scaled_render_sizes(
+def scaled_render_sizes(
     config: Settings, processing_scale: float
 ) -> _RenderSizes:
     main_min_font = scale_font_size(
@@ -411,7 +411,7 @@ def _emphasis_sizes(
     """Every bubble is capped at one page-wide size taken from the typical source glyph, so a
     shout lettered three times bigger would get the same small English as a whisper, lost in
     its big bubble. Professional letterers follow the source: bubbles with clearly bigger
-    lettering (page_glyphs, measured by _resolve_main_max_font) grow by the same ratio."""
+    lettering (page_glyphs, measured by resolve_main_max_font) grow by the same ratio."""
     page = (page_glyphs or {}).get("page")
     est = _lookup_bubble_glyph(page_glyphs["own"], bubble.get("bbox", ())) if page else None
     # A lone "..." or "!!" is a few strokes; trust only measurements from enough ink
@@ -501,13 +501,13 @@ def _render_bubble_once(
     bubble_color_bgr = (255, 255, 255)
     cleaned_mask = None
     base_mask = None
-    is_sam_mask = False
+    is_seg_mask = False
     text_color_rgb = None
     if render_info:
         bubble_color_bgr = render_info["color"]
         cleaned_mask = render_info.get("mask")
         base_mask = render_info.get("base_mask")
-        is_sam_mask = render_info.get("is_sam", False)
+        is_seg_mask = render_info.get("is_seg", False)
         text_color_bgr = render_info.get("text_color_bgr")
         if text_color_bgr:
             text_color_rgb = (text_color_bgr[2], text_color_bgr[1], text_color_bgr[0])
@@ -549,7 +549,7 @@ def _render_bubble_once(
                 {
                     "base_mask": base_mask,
                     "bbox": bbox,
-                    "is_sam": is_sam_mask,
+                    "is_seg": is_seg_mask,
                     "is_colored": (
                         render_info.get("is_colored", False) if render_info else False
                     ),
@@ -625,7 +625,7 @@ def _junk_read(ocr: str) -> bool:
     t = re.sub(r"^\[(OSB|Bubble)\]\s*", "", ocr or "").strip()
     if not t or t.startswith("["):
         return False
-    _, kana, han = _script_ratios(t)
+    _, kana, han = script_ratios(t)
     return kana + han == 0 and sum(c.isalnum() for c in t) <= 3 and not set(t) <= set("!?.…")
 
 
@@ -695,7 +695,7 @@ def _paint_osb_fills(
     return image, attempts_by_index
 
 
-def _render_translations(
+def render_translations(
     image: Image.Image,
     sorted_bubble_data: list[dict[str, Any]],
     translated_texts: list[str],
@@ -738,7 +738,7 @@ def _render_page_texts(
             "color": info["color"],
             "mask": info.get("mask"),
             "base_mask": info.get("base_mask"),
-            "is_sam": info.get("is_sam", False),
+            "is_seg": info.get("is_seg", False),
             "is_colored": info.get("is_colored", False),
             "text_bbox": info.get("text_bbox"),
             "text_color_bgr": info.get("text_color_bgr"),
