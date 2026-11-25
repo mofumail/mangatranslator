@@ -292,6 +292,8 @@ def draw_layout(
                 hb_face = loaded_hb_faces.get("italic")
                 if typeface and hb_face:
                     return typeface, hb_face
+            if loaded_typefaces.get(style_name) is not None and loaded_hb_faces.get(style_name) is not None:
+                return loaded_typefaces[style_name], loaded_hb_faces[style_name]  # e.g. "symbol"
             return regular_typeface, regular_hb_face
 
         with surface as canvas:

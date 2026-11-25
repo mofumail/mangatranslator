@@ -1,6 +1,9 @@
 import io
+import itertools
 import os
+import re
 import threading
+import unicodedata
 from collections import OrderedDict
 from pathlib import Path
 
@@ -180,7 +183,52 @@ def get_cap_height_ratio(font_path: str) -> float:
     return ratio
 
 
+# Closest stand-ins for characters lettering fonts often lack, tried in order
+GLYPH_SUBSTITUTES = {
+    "—": ["–", "--"], "–": ["-"], "―": ["—", "–", "--"], "~": ["〜", "-"], "〜": ["~", "-"],
+    "‘": ["'"], "’": ["'"], "“": ['"'], "”": ['"'], "…": ["..."],
+    "♥": ["♡"], "♡": ["♥"], "★": ["☆"], "☆": ["★"],
+}
+
+
 def sanitize_text_for_font(text: str, font_path: str, verbose: bool = False) -> str:
+    """Make text drawable with the font. Characters the font has no glyph for are swapped for a
+    supported stand-in first (GLYPH_SUBSTITUTES; accented letters fall back to their plain
+    form), so "I—I" doesn't become "II" in fonts without an em dash. Symbol characters are left
+    for the symbol font (core.text.symbols). Anything still unsupported is dropped
+    (_drop_unsupported_glyphs)."""
+    from mangatl.core.text import symbols
+
+    symbols_on = symbols.active()
+    supported = get_font_cmap(font_path)
+    if text and supported:
+        # A wave dash ("PLEASE~!", "Ahh~♡") has no good stand-in in the font: as "-" it
+        # reads as a cut-off word and the line breaker splits there ("LIFE---" / "!!").
+        # Draw it from the symbol font (as the tilde operator, which lettering fonts lack,
+        # so it always takes that route), or drop it if there is no symbol font.
+        if ord("~") not in supported:
+            text = re.sub(r"[~〜]+", lambda m: "∼" * min(len(m.group()), 2) if symbols_on else "",
+                          text)
+        out = []
+        for ch in text:
+            if ord(ch) in supported or ch.isspace():
+                out.append(ch)
+                continue
+            options = GLYPH_SUBSTITUTES.get(ch, [])
+            plain = "".join(c for c in unicodedata.normalize("NFKD", ch) if not unicodedata.combining(c))
+            if plain and plain != ch:
+                options = options + [plain]
+            out.append(next((o for o in options if all(ord(c) in supported for c in o)), ch))
+        text = "".join(out)
+    if symbols_on and symbols.SYMBOL_CHARS & set(text):
+        text = text.replace("♡", "♥")  # the outline heart is too thin next to lettering
+        return "".join(seg if is_sym else _drop_unsupported_glyphs(seg, font_path, verbose)
+                       for is_sym, seg in ((k, "".join(g)) for k, g in
+                                           itertools.groupby(text, key=lambda c: c in symbols.SYMBOL_CHARS)))
+    return _drop_unsupported_glyphs(text, font_path, verbose)
+
+
+def _drop_unsupported_glyphs(text: str, font_path: str, verbose: bool = False) -> str:
     """
     Removes characters from text that are not supported by the font's cmap.
 

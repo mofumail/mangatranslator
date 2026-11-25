@@ -121,7 +121,7 @@ Sound effects are read twice (tight crop and with a margin, which fixes most mis
 kana) and the fuller read kept. Speech bubbles are read by Hayai too: on the OpenMantra bubbles it and
 manga-ocr are about equal (0.9% / 0.7% character errors), but manga-ocr turns hand-drawn moans in doujin
 bubbles into unrelated words (ぅ -> そして、). When one read contains the other the longer is kept.
-This lives in `osb_ocr.py`, installed into the pipeline at runtime by `mt_upstream.py`.
+This lives in `mangatl/core/image/line_ocr.py` (with `mangatl/core/ml/text_lines.py` and `hayai_ocr.py`).
 
 Pages that print a Chinese translation next to the Japanese (common in `[中国翻訳]` releases): the
 Chinese block is erased and not translated, so the English appears once (`--keep-other-language`
@@ -142,14 +142,15 @@ once the model is accessible/downloaded.
 
 ```
 translate.py          wrapper / entry point (CLI)
-mt_upstream.py        runs the pipeline CLI (mangatl/cli.py) with the patches below installed
-osb_ocr.py            runtime patches: OCR (Hayai, line by line), other-language erase, narration
-                      typesetting, symbol fallback, no empty bubbles, list line breaks, --vision,
-                      sound-effect labels
-text_lines.py         comic-text-detector (ONNX, CPU) line detection
-hayai_ocr.py          Hayai OCR v2.5 Nova loader (code vendored in vendor/hayai, audited, pinned)
 webui.py, webui/      browser UI + reader (state in webui_data/, default output in translated/)
 mangatl/              the pipeline (derived from MangaTranslator at e347a09; see mangatl/NOTICE)
+  cli.py              pipeline CLI (translate.py runs `python -m mangatl.cli`)
+  core/pipeline.py    page flow: detect, OCR, translate, render
+  core/image/         detection, cleaning, inpainting; line_ocr.py: Hayai line-by-line OCR
+  core/ml/            model loading; hayai_ocr.py, text_lines.py (comic-text-detector, ONNX/CPU)
+  core/services/      translation prompts and calls; vision_pass.py (--vision short)
+  core/text/          typesetting: layout, fonts, symbols, narration, sound-effect labels
+  utils/eval_hooks.py LLM cache/replay and text dumps for the harness (MT_LLM_*, MT_DUMP_TEXT)
 bin/llama.cpp/        prebuilt llama.cpp b11972, CUDA 13.4
 models/llm/           translator GGUFs
 models/…              detection / OCR / inpainting weights (auto-downloaded)

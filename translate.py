@@ -8,7 +8,7 @@ Pipeline (all on this machine):
   translate   Gemma 4 26B-A4B (QAT) served by a local llama.cpp server
   typeset     auto font size, hyphenation, emphasis, sound-effect labels
 
-The pipeline lives in ./mangatl (derived from MangaTranslator, see NOTICE); osb_ocr.py patches it.
+The pipeline lives in ./mangatl (derived from MangaTranslator, see mangatl/NOTICE).
 This wrapper starts/stops llama-server, picks sane local defaults and runs a batch.
 
 Usage:
@@ -307,7 +307,7 @@ def main() -> None:
         env["MT_KEEP_OTHER_LANGUAGE"] = "1"
     env["MT_SFX"] = args.sfx
 
-    upstream_main = [sys.executable, str(ROOT / "mt_upstream.py")]  # upstream CLI + local OCR patch
+    upstream_main = [sys.executable, "-m", "mangatl.cli"]  # run from ROOT (cwd)
     if args.upstream_help:
         sys.exit(subprocess.call([sys.executable, "-m", "mangatl.cli", "--help"], cwd=ROOT, env=env))
     if not args.input or not args.output:
@@ -400,7 +400,7 @@ def main() -> None:
     cjk_target = any(k in args.target.lower() for k in ("chinese", "japanese", "korean"))
     if not (args.vertical_text or cjk_target):
         # letter-stacked Latin text ("H/u/h/?") reads badly in bubbles; outside them it's
-        # allowed when it makes text much bigger (osb_ocr.install_vertical_only_if_much_bigger)
+        # allowed when it makes text much bigger (text_renderer._auto_vertical_layout_is_better)
         cmd += ["--no-auto-vertical-text"]
     notes = [args.instructions] if args.instructions else []
     notes.append("Localize like a professional manga translator: natural, idiomatic English with contractions "

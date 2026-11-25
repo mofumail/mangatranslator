@@ -329,6 +329,21 @@ def is_cjk_character(char: str) -> bool:
 
 
 def parse_styled_segments(text: str) -> list[tuple[str, str]]:
+    """Style segments of `text` (see _parse_style_markers), with symbol characters (hearts,
+    notes, stars; see core.text.symbols) split off into their own "symbol" segments when the
+    bundled symbol font is present."""
+    from mangatl.core.text import symbols
+
+    segments = _parse_style_markers(text)
+    if not symbols.active():
+        return segments
+    out = []
+    for seg, style in segments:
+        out += symbols.split_symbols(seg, style) if symbols.SYMBOL_CHARS & set(seg) else [(seg, style)]
+    return out
+
+
+def _parse_style_markers(text: str) -> list[tuple[str, str]]:
     """
     Parses text with markdown-like style markers into segments.
 

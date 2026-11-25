@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import re
 import threading
 from collections.abc import Callable
@@ -976,7 +977,32 @@ def _strip_code_fences(text: str) -> str:
     return cleaned
 
 
+_NUMBERED_ITEM = re.compile(r'^\s*(\d+)\s*[:.]\s*(.*?)\s*(?=\s*\n\s*\d+\s*[:.]|\n\s*\n|\s*\Z)',
+                            re.MULTILINE | re.DOTALL)
+
+
 def _parse_llm_response_unified(
+    response_text: str | None,
+    total_elements: int,
+    provider: str,
+    debug: bool = False,
+) -> list[str]:
+    """Parse LLM response with a single numbered list.
+
+    The item parser drops a leading and a trailing '"' from every item. That is right for an
+    item the model wrapped in quotes, but narration items like '"Ah..." she said. "Hey."' lose
+    their first and last quote: put them back when the item contains further quotes.
+    """
+    texts = _parse_llm_numbered_items(response_text, total_elements, provider, debug)
+    raw = {int(n): t for n, t in _NUMBERED_ITEM.findall(_strip_code_fences(response_text or ""))}
+    for i, t in enumerate(texts):
+        r = raw.get(i + 1, "")
+        if r.startswith('"') and r.endswith('"') and r.count('"') > 2 and t == r[1:-1].strip():
+            texts[i] = r
+    return texts
+
+
+def _parse_llm_numbered_items(
     response_text: str | None,
     total_elements: int,
     provider: str,
@@ -1946,8 +1972,10 @@ def call_translation_api_batch(
                 ocr_input_section += f"{i + 1}: {text}\n"
 
             llm_ocr = config.ocr_method not in ("manga-ocr", "paddleocr-vl-1.6")
-            # Local OCR implies a text-only translation request
-            page_attached = has_full_page and llm_ocr
+            # Local OCR implies a text-only translation request, unless MT_PAGE_IMAGE=1
+            # (--vision full: the model runs with its vision projector and sees the whole page,
+            # so it can tell who speaks and catch OCR misreads)
+            page_attached = has_full_page and (llm_ocr or os.environ.get("MT_PAGE_IMAGE") == "1")
             full_page_context = _FULL_PAGE_NOTE if page_attached else ""
             previous_page_context = _format_previous_context_prompt_note(
                 previous_context_image_count,

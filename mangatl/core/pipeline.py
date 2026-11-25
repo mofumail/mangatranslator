@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import dataclasses
 import math
 import os
 import re
@@ -24,8 +25,12 @@ from mangatl.core.batch_coordinator import BatchRequestCoordinator
 from mangatl.core.caching import get_cache
 from mangatl.core.config import MangaTranslatorConfig, PreprocessingConfig, RenderingConfig
 from mangatl.core.scaling import scale_font_size, scale_length, scale_scalar
+from mangatl.core.image.line_ocr import _script_ratios
 from mangatl.core.terminology import default_glossary_path, load_terms
+from mangatl.core.text import sfx_labels
+from mangatl.core.text.narration import mark_narration
 from mangatl.core.validation import validate_config
+from mangatl.core.services.vision_pass import revise_short_items
 from mangatl.utils import eval_hooks
 from mangatl.utils.archive import copy_comic_info
 from mangatl.utils.exceptions import (
@@ -145,6 +150,21 @@ def _page_glyph_size(
             return (size + measured[i + 1][0]) / 2
 
 
+def _bubble_glyph_sizes(
+    page_image: np.ndarray, bubbles_info: list[dict[str, Any]], full_width: bool
+) -> dict[tuple, tuple]:
+    """Each speech bubble's own lettering size (estimate_glyph_size) by its bbox."""
+    gray = page_image if page_image.ndim == 2 else cv2.cvtColor(page_image, cv2.COLOR_BGR2GRAY)
+    own = {}
+    for info in bubbles_info:
+        if info.get("mask") is None or not info.get("bbox"):
+            continue
+        est = estimate_glyph_size(gray, info["bbox"], info["mask"], full_width)
+        if est:
+            own[tuple(int(v) for v in info["bbox"])] = est
+    return own
+
+
 def _resolve_main_max_font(
     config: MangaTranslatorConfig,
     page_image: np.ndarray,
@@ -154,8 +174,14 @@ def _resolve_main_max_font(
     processing_scale: float,
     strip_glyph_size: list[float] | None,
     verbose: bool,
+    page_glyphs: dict | None = None,
 ) -> int:
-    """Speech bubble max font size, lowered to the auto size when that is enabled."""
+    """Speech bubble max font size, lowered to the auto size when that is enabled.
+
+    When the page's lettering is measured here, `page_glyphs` receives the page's typical size
+    ("page") and each bubble's own (glyph size, ink parts) by bbox ("own"), for _emphasis_sizes.
+    Sections of a long strip that reuse the first section's size get no emphasis data.
+    """
     if not config.rendering.auto_font_size:
         return max_font
 
@@ -168,6 +194,9 @@ def _resolve_main_max_font(
         glyph_size = _page_glyph_size(page_image, bubbles_info, cjk_source)
         if glyph_size is not None and strip_glyph_size is not None:
             strip_glyph_size.append(glyph_size)
+        if page_glyphs is not None:
+            page_glyphs["page"] = glyph_size
+            page_glyphs["own"] = _bubble_glyph_sizes(page_image, bubbles_info, cjk_source)
 
     if glyph_size is None:
         cap_height = AUTO_FONT_TYPICAL_CAP_HEIGHT * processing_scale
@@ -1032,20 +1061,77 @@ def _call_translation_api(
         f"{context_suffix}",
         always_print=True,
     )
-    texts = call_translation_api_batch(
-        config=config.translation,
-        images_b64=images_b64,
-        full_image_b64=full_image_b64 or "",
-        mime_types=mime_types,
-        full_image_mime_type=full_image_mime_type if full_image_b64 else "image/jpeg",
-        bubble_metadata=sorted_bubble_data,
-        previous_context_images=previous_context_images,
-        previous_context_texts=previous_context_texts,
-        ocr_texts_output=ocr_texts,
-        debug=config.verbose,
-    )
+    page_b64 = full_image_b64 or ""
+    page_mime = full_image_mime_type if full_image_b64 else "image/jpeg"
+
+    def translate(ocr_out: list[str]) -> list[str]:
+        return call_translation_api_batch(
+            config=config.translation,
+            images_b64=images_b64,
+            full_image_b64=page_b64,
+            mime_types=mime_types,
+            full_image_mime_type=page_mime,
+            bubble_metadata=sorted_bubble_data,
+            previous_context_images=previous_context_images,
+            previous_context_texts=previous_context_texts,
+            ocr_texts_output=ocr_out,
+            debug=config.verbose,
+        )
+
+    texts = translate(ocr_texts)
+    texts = _retry_truncated(texts, sorted_bubble_data, ocr_texts, translate)
+    _mark_failed_and_skipped(texts, sorted_bubble_data)
+    mark_narration(texts, sorted_bubble_data)
+    texts = revise_short_items(config.translation, sorted_bubble_data, ocr_texts, texts,
+                               page_b64, page_mime)
     eval_hooks.dump_text(sorted_bubble_data, ocr_texts, texts)
     return texts, ocr_texts
+
+
+def _content_len(text: str) -> int:
+    return sum(1 for c in text if c.isalnum())
+
+
+def _retry_truncated(
+    texts: list[str],
+    sorted_bubble_data: list[dict[str, Any]],
+    ocr_texts: list[str],
+    translate: Callable[[list[str]], list[str]],
+) -> list[str]:
+    """The LLM occasionally returns only the first sentence of a long block (seen: a 120-char
+    narration block came back as "-A little while later."), silently dropping the dialogue.
+    If a long source line gets an implausibly short translation, translate the page once more
+    (bypassing the translation cache) and keep, per line, the fuller of the two answers."""
+
+    def looks_truncated(src: str, tr: str) -> bool:
+        n = _content_len(src)
+        return n >= 30 and isinstance(tr, str) and _content_len(tr) < 0.5 * n
+
+    sources = [m.get("ocr_text") or (ocr_texts[i] if i < len(ocr_texts) else "")
+               for i, m in enumerate(sorted_bubble_data)]
+    bad = [i for i, (s, t) in enumerate(zip(sources, texts)) if looks_truncated(s, t)]
+    if not bad:
+        return texts
+    log_message(f"Translation looks truncated for item(s) {[i + 1 for i in bad]}; retrying once",
+                always_print=True)
+    get_cache().clear_translation_cache()
+    again = translate([])
+    for i in bad:
+        if i < len(again) and _content_len(again[i]) > _content_len(texts[i]):
+            texts[i] = again[i]
+    return texts
+
+
+def _mark_failed_and_skipped(texts: list[str], sorted_bubble_data: list[dict[str, Any]]) -> None:
+    for i, t in enumerate(texts):
+        # Items the LLM skipped come back as "[<provider>-Translate: missing item N]", which the
+        # renderer doesn't recognize as an error and would draw onto the page. Mark them as
+        # failed instead, so the original lettering is restored.
+        if isinstance(t, str) and re.fullmatch(r"\s*\[[^\]]*missing item \d+\]\s*", t, re.I):
+            texts[i] = "[OCR FAILED]"
+    for i, m in enumerate(sorted_bubble_data):
+        if m.get("mt_skip") and i < len(texts):
+            texts[i] = ""  # other-language block: rendered as "erase only"
 
 
 def _translate_or_error_texts(
@@ -1167,6 +1253,8 @@ def _osb_render_attempts(
     bubble: dict[str, Any], config: MangaTranslatorConfig, sizes: _RenderSizes
 ) -> list[_OsbAttempt]:
     """(rotation, vertical stack, layout dimensions) to try for an outside text, in order."""
+    if bubble.get("mt_narration"):  # narration / dialogue on the art: upright (core.text.narration)
+        return [(0.0, False, None), (0.0, True, None)]
     verbose = config.verbose
     osb = config.outside_text
     bbox = bubble["bbox"]
@@ -1214,6 +1302,12 @@ def _render_osb_attempt(
     layout_only: bool = False,
 ) -> Image.Image:
     """Render outside text with one attempt's settings; raises if it doesn't fit."""
+    if bubble.get("mt_narration"):
+        # narration / dialogue on the art: normal case, one utterance per line, dialogue font
+        # (core.text.narration); the caller passes text.upper()
+        text = bubble.get("mt_text", text)
+        config = dataclasses.replace(
+            config, outside_text=dataclasses.replace(config.outside_text, osb_font_dir=None))
     rotation_deg, vertical_stack, layout_dims = attempt
     is_dark_text = bubble.get("is_dark_text", True)
     text_color_rgb = bubble.get("text_color_rgb", None)
@@ -1313,6 +1407,46 @@ def _render_outside_text(
     return None
 
 
+EMPHASIS_MIN_RATIO = 1.4  # source lettering this much above the page's typical size is emphasis
+EMPHASIS_MAX_SCALE = 3.0  # at most this much bigger than the page's dialogue size
+
+
+def _emphasis_sizes(
+    bubble: dict[str, Any],
+    bubble_id: str,
+    sizes: _RenderSizes,
+    page_glyphs: dict | None,
+    config: MangaTranslatorConfig,
+) -> _RenderSizes:
+    """Every bubble is capped at one page-wide size taken from the typical source glyph, so a
+    shout lettered three times bigger would get the same small English as a whisper, lost in
+    its big bubble. Professional letterers follow the source: bubbles with clearly bigger
+    lettering (page_glyphs, measured by _resolve_main_max_font) grow by the same ratio."""
+    page = (page_glyphs or {}).get("page")
+    est = _lookup_bubble_glyph(page_glyphs["own"], bubble.get("bbox", ())) if page else None
+    # A lone "..." or "!!" is a few strokes; trust only measurements from enough ink
+    if est and est[1] >= 3 and est[0] >= EMPHASIS_MIN_RATIO * page:
+        # a letterer exaggerates a little: shouts read bigger than their glyph ratio
+        scale = min((est[0] / page) ** 1.5, EMPHASIS_MAX_SCALE)
+        bigger = round(sizes.main_max_font * scale)
+        log_message(f"Bubble {bubble_id}: source lettering {est[0] / page:.1f}x the page's, "
+                    f"max font {sizes.main_max_font} -> {bigger}", verbose=config.verbose)
+        sizes = sizes._replace(main_max_font=bigger)
+    return sizes
+
+
+def _lookup_bubble_glyph(own: dict, bbox) -> tuple | None:
+    key = tuple(int(v) for v in bbox)
+    if key in own:
+        return own[key]
+    best, best_d = None, 1e9
+    for k, v in own.items():
+        d = sum(abs(a - b) for a, b in zip(k, key))
+        if d < best_d:
+            best, best_d = v, d
+    return best if best_d <= 8 else None
+
+
 def _render_bubble(
     image: Image.Image,
     bubble: dict[str, Any],
@@ -1323,6 +1457,47 @@ def _render_bubble(
     config: MangaTranslatorConfig,
     sizes: _RenderSizes,
     processing_scale: float,
+    page_glyphs: dict | None = None,
+) -> Image.Image | None:
+    """Render one speech bubble translation, sized to its own lettering (_emphasis_sizes).
+
+    A translation that does not fit at the minimum font size (tall, narrow bubbles, often after
+    an OCR misread) is retried at half the minimum size; if it still does not fit, the original
+    lettering goes back instead of leaving the bubble blank. Colored / see-through bubbles
+    (outline-only bubbles over the art, common in doujin CG) are inpainted, not filled, so
+    their text gets an outline like text on the art.
+    """
+    sizes = _emphasis_sizes(bubble, bubble_id, sizes, page_glyphs, config)
+    outlined = bool(render_info and render_info.get("is_colored"))
+    rendered = _render_bubble_once(image, bubble, text, bubble_id, render_info, page_cv, config,
+                                   sizes, processing_scale, outlined)
+    if rendered is not None:
+        return rendered
+    smaller = sizes._replace(main_min_font=max(4, sizes.main_min_font // 2))
+    rendered = _render_bubble_once(image, bubble, text, bubble_id, render_info, page_cv, config,
+                                   smaller, processing_scale, outlined)
+    if rendered is not None:
+        log_message(f"Bubble {bubble_id}: fitted below the minimum font size",
+                    always_print=True)
+        return rendered
+    if "original_crop_pil" in bubble:
+        log_message(f"Bubble {bubble_id}: translation does not fit, kept the original "
+                    f"lettering ('{text[:30]}')", always_print=True)
+        return _paste_original_crop(image, bubble)
+    return None
+
+
+def _render_bubble_once(
+    image: Image.Image,
+    bubble: dict[str, Any],
+    text: str,
+    bubble_id: str,
+    render_info: dict[str, Any] | None,
+    page_cv: np.ndarray,
+    config: MangaTranslatorConfig,
+    sizes: _RenderSizes,
+    processing_scale: float,
+    outlined: bool = False,
 ) -> Image.Image | None:
     """Render one speech bubble translation, or None if it could not be placed.
 
@@ -1348,6 +1523,8 @@ def _render_bubble(
             text_color_rgb = (text_color_bgr[2], text_color_bgr[1], text_color_bgr[0])
 
     render_config = _text_render_config(config, sizes, is_outside_text=False)
+    if outlined:
+        render_config = dataclasses.replace(render_config, outline_ratio=sizes.osb_outline_ratio)
 
     def render(mask, color, raise_on_safe_error: bool) -> Image.Image:
         return render_text_skia(
@@ -1440,6 +1617,30 @@ def _render_bubble(
 
 
 def _render_action(bubble: dict[str, Any], text: str, provider_tag: str) -> str:
+    """_basic_render_action, plus "keep_original" for outside text whose OCR read is junk
+    (speed lines or artwork the detector mistook for lettering) and for sound effects that get
+    a label beside the artist's lettering (core.text.sfx_labels)."""
+    action = _basic_render_action(bubble, text, provider_tag)
+    if (action == "render" and bubble.get("is_outside_text") and "original_crop_pil" in bubble
+            and _junk_read(bubble.get("ocr_text", ""))):
+        action = "keep_original"
+    if (sfx_labels.enabled() and bubble.get("_sfx_label")
+            and action not in ("ocr_failed", "invalid")):
+        action = "keep_original"
+    return action
+
+
+def _junk_read(ocr: str) -> bool:
+    """An outside-text "read" with no Japanese and at most 3 letters is speed lines or
+    artwork the detector mistook for lettering ("H")."""
+    t = re.sub(r"^\[(OSB|Bubble)\]\s*", "", ocr or "").strip()
+    if not t or t.startswith("["):
+        return False
+    _, kana, han = _script_ratios(t)
+    return kana + han == 0 and sum(c.isalnum() for c in t) <= 3 and not set(t) <= set("!?.…")
+
+
+def _basic_render_action(bubble: dict[str, Any], text: str, provider_tag: str) -> str:
     """How to handle one translation: "ocr_failed", "invalid", "keep_original"
     (outside text the translation left unchanged) or "render"."""
     ocr_text = (bubble.get("ocr_text") or "").strip()
@@ -1516,6 +1717,30 @@ def _render_translations(
     processing_scale: float,
     empty_bubbles: list,
     cancellation_manager: Optional["CancellationManager"],
+    page_glyphs: dict | None = None,
+) -> Image.Image:
+    """Render the page's translations (_render_page_texts); with --sfx label, sound effects keep
+    their lettering and get an English label beside it (core.text.sfx_labels)."""
+    labels = (sfx_labels.mark_labels(sorted_bubble_data, translated_texts)
+              if sfx_labels.enabled() else [])
+    image = _render_page_texts(image, sorted_bubble_data, translated_texts, processed_bubbles_info,
+                               page_cv, config, sizes, processing_scale, empty_bubbles,
+                               cancellation_manager, page_glyphs)
+    return sfx_labels.draw_labels(image, labels, sorted_bubble_data, config, sizes)
+
+
+def _render_page_texts(
+    image: Image.Image,
+    sorted_bubble_data: list[dict[str, Any]],
+    translated_texts: list[str],
+    processed_bubbles_info: list[dict[str, Any]],
+    page_cv: np.ndarray,
+    config: MangaTranslatorConfig,
+    sizes: _RenderSizes,
+    processing_scale: float,
+    empty_bubbles: list,
+    cancellation_manager: Optional["CancellationManager"],
+    page_glyphs: dict | None = None,
 ) -> Image.Image:
     """Render each translation onto the cleaned page, recording bubbles left empty."""
     verbose = config.verbose
@@ -1608,6 +1833,7 @@ def _render_translations(
                 config,
                 sizes,
                 processing_scale,
+                page_glyphs,
             )
 
         if rendered is None:
@@ -1789,6 +2015,7 @@ def translate_and_render(
         return _finish_page(cleaned, config, output_path, target_mode, start_time)
 
     sizes = _scaled_render_sizes(config, processing_scale)
+    page_glyphs: dict = {}  # this page's lettering sizes, for bigger text in shouted bubbles
     bubble_data = _prepare_bubble_crops(
         bubble_data, processed_bubbles_info, page_cv, config, mime_type
     )
@@ -1853,6 +2080,7 @@ def translate_and_render(
                 processing_scale,
                 strip_glyph_size,
                 verbose,
+                page_glyphs,
             )
         )
         translated_texts = generate_test_placeholders(
@@ -1914,6 +2142,7 @@ def translate_and_render(
                 processing_scale,
                 strip_glyph_size,
                 verbose,
+                page_glyphs,
             )
         )
     cleaned = _render_translations(
@@ -1927,6 +2156,7 @@ def translate_and_render(
         processing_scale,
         empty_bubbles,
         cancellation_manager,
+        page_glyphs,
     )
     cleaned = paint_pending_osb_fills(cleaned, outside_text_data)
     return _finish_page(cleaned, config, output_path, target_mode, start_time)

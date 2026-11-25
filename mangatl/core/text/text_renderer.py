@@ -21,6 +21,7 @@ from mangatl.core.text.font_manager import (
     get_font_features,
     sanitize_text_for_font,
 )
+from mangatl.core.text import symbols
 from mangatl.core.text.layout_engine import find_optimal_layout
 from mangatl.core.text.text_processing import is_rtl_script, parse_styled_segments
 from mangatl.utils.exceptions import FontError, ImageProcessingError, RenderingError
@@ -62,6 +63,9 @@ def _should_try_auto_vertical_text(
     )
 
 
+VERTICAL_MIN_GAIN = 1.8  # stack letters vertically only if that allows text this much bigger
+
+
 def _auto_vertical_layout_is_better(
     horizontal_layout: dict,
     vertical_layout: dict,
@@ -77,11 +81,16 @@ def _auto_vertical_layout_is_better(
 
     horizontal_fill = horizontal_block_height / max_render_height
     vertical_fill = vertical_block_height / max_render_height
-    return (
+    if not (
         vertical_layout["font_size"] >= horizontal_layout["font_size"]
         and horizontal_fill <= AUTO_VERTICAL_MAX_HORIZONTAL_FILL
         and vertical_fill >= horizontal_fill + AUTO_VERTICAL_MIN_FILL_GAIN
-    )
+    ):
+        return False
+    # Letterers set English horizontally and only stack letters ("W/H/A/T") when a horizontal
+    # line would be tiny (a long moan along a narrow strip)
+    h, v = horizontal_layout.get("font_size", 0), vertical_layout.get("font_size", 0)
+    return v >= VERTICAL_MIN_GAIN * h
 
 
 class _ScaledMetrics:
@@ -168,6 +177,8 @@ def _load_style_variants(
                     f"Style '{style}' not found, using regular",
                     verbose=verbose,
                 )
+    if symbols.active():  # hearts, notes, stars (core.text.symbols)
+        loaded_typefaces["symbol"], loaded_hb_faces["symbol"] = symbols.symbol_resources()
     return loaded_typefaces, loaded_hb_faces
 
 
@@ -452,7 +463,9 @@ def render_text_skia(
     # em dash can break wrapping
     normalized_text = text.replace("—", "-")
 
-    clean_text = " ".join(normalized_text.split())
+    # collapse whitespace within lines but keep explicit line breaks (the layout honours them:
+    # narration and lists are set one utterance / entry per line)
+    clean_text = "\n".join(" ".join(l.split()) for l in normalized_text.split("\n")).strip()
     if not clean_text:
         return pil_image
 
@@ -514,6 +527,8 @@ def render_text_skia(
 
     # Pre-load all required font variants for layout engine
     preload_hb_faces = {"regular": regular_hb_face}
+    if symbols.active():
+        preload_hb_faces["symbol"] = symbols.symbol_resources()[1]
     for style_key in ["italic", "bold", "bold_italic"]:
         style_path = font_variants.get(style_key)
         if style_path:

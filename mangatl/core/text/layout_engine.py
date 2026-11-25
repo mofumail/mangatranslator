@@ -98,7 +98,7 @@ def calculate_styled_line_width(
     for segment_text, style_name in segments:
         hb_face_to_use = (
             loaded_hb_faces.get(style_name)
-            if style_name in ("regular", "italic", "bold", "bold_italic")
+            if style_name in ("regular", "italic", "bold", "bold_italic", "symbol")
             else None
         ) or regular_face
 
@@ -185,7 +185,7 @@ def _styled_line_ink_path(
     for segment_text, style_name in parse_styled_segments(line_with_markers):
         hb_face_to_use = (
             loaded_hb_faces.get(style_name)
-            if style_name in ("regular", "italic", "bold", "bold_italic")
+            if style_name in ("regular", "italic", "bold", "bold_italic", "symbol")
             else None
         ) or regular_face
         hb_font = hb.Font(hb_face_to_use)
@@ -433,6 +433,51 @@ def _build_vertical_layout(
 
 
 def check_fit(
+    font_size: int,
+    text: str,
+    max_render_width: float,
+    max_render_height: float,
+    regular_hb_face: hb.Face,
+    regular_typeface: skia.Typeface,
+    loaded_hb_faces: dict[str, hb.Face | None],
+    features_to_enable: dict[str, bool],
+    line_spacing_mult: float,
+    hyphenate_before_scaling: bool,
+    hyphenation_min_word_length: int,
+    badness_exponent: float,
+    word_width_cache: dict[tuple[str, int], float] | None = None,
+    verbose: bool = False,
+    detach_trailing_punctuation: bool = True,
+    vertical_stack: bool = False,
+    hyphenation_language: str = "",
+) -> dict | None:
+    """check_fit for text with explicit line breaks: the line breaker keeps the breaks but never
+    wraps inside those lines, so long utterances would shrink the whole block. Wrap each
+    paragraph at this font size (_check_fit_lines) and stack them. (Vertical text with explicit
+    breaks takes this path too.)"""
+    rest = (regular_hb_face, regular_typeface, loaded_hb_faces, features_to_enable, line_spacing_mult,
+            hyphenate_before_scaling, hyphenation_min_word_length, badness_exponent, word_width_cache,
+            verbose, detach_trailing_punctuation, vertical_stack, hyphenation_language)
+    if "\n" not in text:
+        return _check_fit_lines(font_size, text, max_render_width, max_render_height, *rest)
+    lines, metrics, line_height, widest = [], None, None, 0.0
+    for para in (p for p in text.split("\n") if p.strip()):
+        fit = _check_fit_lines(font_size, para, max_render_width, float("inf"), *rest)
+        if fit is None:
+            return None  # a word doesn't fit the width at this size
+        lines += fit["lines"]
+        metrics, line_height = fit["metrics"], fit["line_height"]
+        widest = max(widest, fit["max_line_width"])
+    if not lines:
+        return None
+    block_height = (-metrics.fAscent + metrics.fDescent) + (len(lines) - 1) * line_height
+    if block_height > max_render_height:
+        return None
+    return {"lines": lines, "metrics": metrics, "max_line_width": widest,
+            "line_height": line_height, "block_height": block_height}
+
+
+def _check_fit_lines(
     font_size: int,
     text: str,
     max_render_width: float,
@@ -767,6 +812,90 @@ def _check_collision(
 
 
 def find_optimal_layout(
+    text: str,
+    max_render_width: float,
+    max_render_height: float,
+    regular_hb_face: hb.Face,
+    regular_typeface: skia.Typeface,
+    loaded_hb_faces: dict[str, hb.Face | None],
+    features_to_enable: dict[str, bool],
+    min_font_size: int = 8,
+    max_font_size: int = 16,
+    line_spacing_mult: float = 1.0,
+    hyphenate_before_scaling: bool = True,
+    hyphenation_min_word_length: int = 8,
+    badness_exponent: float = 3.0,
+    verbose: bool = False,
+    bubble_id: str | None = None,
+    safe_area_mask: np.ndarray | None = None,
+    box_top_left: tuple[int, int] | None = None,
+    detach_trailing_punctuation: bool = True,
+    vertical_stack: bool = False,
+    hyphenation_language: str = "",
+) -> dict:
+    """Find the optimal font size and layout, the way a letterer would.
+
+    - Line spacing: lettering fonts disagree on built-in line spacing (CC Wild Words is 0.86 em,
+      so lines of capitals nearly touch; Comic Neue and Anime Ace are 1.15-1.25). Tight fonts
+      are opened up to LINE_HEIGHT_EM, for the airy leading of hand lettering.
+    - The size search (_search_layout) takes any trick that lets text grow: it hyphenates long
+      words ("NEUROTOX-/IN") and moves trailing punctuation to its own line ("MOTHER" / "!!").
+      Lay out without the tricks first and only accept them when they allow clearly bigger
+      text (by 1 / LAYOUT_KEEP_SHARE), as in a short "Fu..." in a narrow bubble.
+    """
+    if not vertical_stack and regular_typeface is not None:
+        line_spacing_mult *= max(1.0, LINE_HEIGHT_EM / _line_em(regular_typeface))
+
+    def run(hyph: bool, detach: bool) -> dict | None:
+        try:
+            return _search_layout(
+                text, max_render_width, max_render_height, regular_hb_face, regular_typeface,
+                loaded_hb_faces, features_to_enable, min_font_size, max_font_size, line_spacing_mult,
+                hyph, hyphenation_min_word_length, badness_exponent, verbose, bubble_id,
+                safe_area_mask, box_top_left, detach, vertical_stack, hyphenation_language)
+        except Exception:
+            return None
+
+    clean = run(False, False)
+    if clean is not None and clean.get("font_size", 0) >= max_font_size:
+        return clean
+    options = [clean]
+    if hyphenate_before_scaling:
+        options.append(run(True, False))
+    if detach_trailing_punctuation:
+        options.append(run(False, True))
+    if hyphenate_before_scaling and detach_trailing_punctuation:
+        options.append(run(True, True))
+    valid = [o for o in options if o is not None]
+    if not valid:  # raises the search's own error
+        return _search_layout(
+            text, max_render_width, max_render_height, regular_hb_face, regular_typeface,
+            loaded_hb_faces, features_to_enable, min_font_size, max_font_size, line_spacing_mult,
+            hyphenate_before_scaling, hyphenation_min_word_length, badness_exponent, verbose,
+            bubble_id, safe_area_mask, box_top_left, detach_trailing_punctuation, vertical_stack,
+            hyphenation_language)
+    best = max(o.get("font_size", 0) for o in valid)
+    for o in valid:  # in order of preference
+        if o.get("font_size", 0) >= LAYOUT_KEEP_SHARE * best:
+            return o
+    return valid[0]
+
+
+LINE_HEIGHT_EM = 1.0  # minimum baseline-to-baseline distance, in font sizes
+LAYOUT_KEEP_SHARE = 0.6  # a less clean layout must allow 1/0.6 = 1.67x bigger text to win
+_LINE_EM_CACHE: dict = {}
+
+
+def _line_em(typeface) -> float:
+    """The font's built-in line height, in em."""
+    key = id(typeface)
+    if key not in _LINE_EM_CACHE:
+        m = skia.Font(typeface, 100).getMetrics()
+        _LINE_EM_CACHE[key] = (-m.fAscent + m.fDescent + m.fLeading) / 100 or 1.0
+    return _LINE_EM_CACHE[key]
+
+
+def _search_layout(
     text: str,
     max_render_width: float,
     max_render_height: float,
