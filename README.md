@@ -48,7 +48,6 @@ The pipeline lives in `./mangatl`, derived from [MangaTranslator](https://github
 |---|---|---|---|
 | `--model 26b` (default) | 8.8 GB (6.1 with `--vision off`) | ~12 s/page | fewest meaning errors, most natural English |
 | `--model 12b` | 11.1 GB | ~6 s/page | ~3-4 % lines with meaning errors (subject mix-ups, idioms) |
-| `--model 12b --ocr llm` (vision) | 11.9 GB | ~8 s/page | **not recommended**: Gemma misreads Japanese more than manga-ocr (wrong names, failed crops) |
 
 Cleaning (no leftover Japanese in bubbles) and typesetting (fits bubbles, real italics/bold for emphasis) were
 clean on every page checked, including colour pages. First page of a run is slower (model warm-up), and
@@ -74,14 +73,14 @@ the llama-server start adds ~5-10 s per run.
   names read from furigana: 和音 Kanon → Kazune, 宏也 Futoshi → Hiroya on a held-out OpenMantra book)
   without touching long lines; ~2-3 s/page more. Restyle-only answers (*Huff* → **HUFF**) are ignored.
   Off by default for `--model 12b` (out of VRAM on 12 GB), `--gguf` and `--llm-url`.
-- `--character-notes` (running notes on characters, sent with every page) was measured and is off by
-  default: built from text alone, the notes attribute lines to the wrong speakers (a polite character noted
-  as "rough") and changed as much for the worse as for the better.
+- Tried and removed: running character notes sent with every page (built from text alone, they attributed
+  lines to the wrong speakers and changed as much for the worse as for the better), and letting Gemma read
+  the bubbles itself (more misreads than local OCR: wrong names, failed crops, "corrected" Japanese such as
+  キャンセル -> マンセル).
 - Prompt rules on top of the base prompt: honorifics dropped like a professional localization
   (`--honorifics keep` to keep them), Western spelling for katakana Western names (プリシラ → Priscilla),
   a vowel-only bubble that continues the previous word is that word drawn out (死ねェ / エ / エエエ!! →
-  Die! / Die... / DIEEEE!!), and sound effects never enter the name glossary. (`--ocr llm`, where Gemma
-  also reads the text, is worse: it "corrects" the Japanese into nonsense, e.g. キャンセル -> マンセル.)
+  Die! / Die... / DIEEEE!!), and sound effects never enter the name glossary.
 - Doujin CG test set (17 pages from 8 works, `eval/djn/run.sh <label>`, pages not in git): no pages with
   empty bubbles or dropped hearts; ~17 s/page.
 
@@ -93,7 +92,6 @@ the llama-server start adds ~5-10 s per run.
 --instructions "Keep honorifics"     # extra instructions for the translator
 --font "Comic Neue"                  # any font pack folder in ./fonts (drop in e.g. CC Wild Words)
 --inpaint flux_klein_4b              # diffusion inpainting for text over artwork (needs more VRAM)
---ocr llm                            # let Gemma read the bubbles itself (vision) — see notes
 --osb on|off|auto                    # text outside bubbles (narration/SFX) — see below
 --offline                            # hard-forbid network access (all models must be downloaded)
 --skip-existing                      # resume: only translate pages without an output yet
@@ -101,7 +99,6 @@ the llama-server start adds ~5-10 s per run.
 --keep-other-language                # don't erase other-script blocks (e.g. Chinese next to Japanese)
 --vision short|full|off              # page image for the translator (default short; see notes)
 --sfx label|redraw                   # sound effects: keep the art + small label (default), or redraw
---character-notes [FILE]             # running character notes (measured: no net gain; see notes)
 --honorifics keep                    # keep -san/-sama/... (default: drop them, as pro localizations do)
 --no-ocr-correction                  # don't let the LLM repair lines the OCR obviously misread
 --llm-url http://host:port/v1 --llm-model-name X   # use another OpenAI-compatible server
@@ -148,7 +145,7 @@ translate.py          wrapper / entry point (CLI)
 mt_upstream.py        runs the pipeline CLI (mangatl/cli.py) with the patches below installed
 osb_ocr.py            runtime patches: OCR (Hayai, line by line), other-language erase, narration
                       typesetting, symbol fallback, no empty bubbles, list line breaks, --vision,
-                      sound-effect labels, character notes
+                      sound-effect labels
 text_lines.py         comic-text-detector (ONNX, CPU) line detection
 hayai_ocr.py          Hayai OCR v2.5 Nova loader (code vendored in vendor/hayai, audited, pinned)
 webui.py, webui/      browser UI + reader (state in webui_data/, default output in translated/)

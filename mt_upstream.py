@@ -30,12 +30,8 @@ osb_ocr.install_vertical_only_if_much_bigger()
 osb_ocr.install_keep_junk_osb()
 osb_ocr.install_sfx_labels()
 osb_ocr.install_vision_short()
-osb_ocr.install_character_notes()
 osb_ocr.install_text_dump()
 osb_ocr.install_llm_cache()
-argv = sys.argv[1:]
-vision_ocr = "--ocr-method" in argv and argv[argv.index("--ocr-method") + 1] == "LLM"
-if not vision_ocr:  # keep LLM vision crops small; local OCR needs full resolution
-    osb_ocr.install_no_downscale()
+osb_ocr.install_no_downscale()
 sys.argv[0] = str(ROOT / "mangatl" / "cli.py")
 runpy.run_module("mangatl.cli", run_name="__main__", alter_sys=True)

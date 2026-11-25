@@ -208,10 +208,9 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     p.add_argument("--target", default="English", help="Target language (default: English)")
     p.add_argument(
         "--ocr",
-        choices=["auto", "manga-ocr", "paddleocr-vl-1.6", "llm"],
+        choices=["auto", "manga-ocr", "paddleocr-vl-1.6"],
         default="auto",
-        help="auto = manga-ocr for Japanese, PaddleOCR-VL 1.6 otherwise. "
-        "'llm' lets Gemma read the bubbles itself (vision, one-step; slower)",
+        help="auto = manga-ocr for Japanese, PaddleOCR-VL 1.6 otherwise",
     )
     p.add_argument(
         "--inpaint",
@@ -236,10 +235,6 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
                    help="Glossary file to reuse/update for consistent names (default: <output>/glossary.txt; "
                    "pass the previous chapter's to carry names over)")
     p.add_argument("--instructions", default=None, help="Extra instructions for the translator LLM")
-    p.add_argument("--character-notes", nargs="?", const="auto", default=None, metavar="FILE",
-                   help="Keep running notes on the characters (stated gender, pronoun, way of speaking) and "
-                   "send them with every page, for consistent pronouns and voices. Default file: "
-                   "<output>/characters.txt; pass the previous chapter's to carry them over")
     p.add_argument("--honorifics", choices=["drop", "keep"], default="drop",
                    help="Japanese honorifics (-san, -sama, ...): drop them like a professional localization "
                    "(default) or keep them")
@@ -269,7 +264,7 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     g.add_argument("--model", choices=list(MODEL_PRESETS), default="26b",
                    help="Translator: 26b (default, best, ~2.4 GB VRAM) or 12b (faster, all on GPU)")
     g.add_argument("--gguf", default=None, help="Custom GGUF weights for llama-server (overrides --model)")
-    g.add_argument("--mmproj", default=None, help="Vision projector (for --vision / --ocr llm)")
+    g.add_argument("--mmproj", default=None, help="Vision projector (for --vision)")
     g.add_argument("--port", type=int, default=8080)
     g.add_argument("--ctx", type=int, default=16384, help="LLM context size")
     g.add_argument("--llm-server-args", default="", metavar="ARGS",
@@ -328,15 +323,14 @@ def main() -> None:
     ocr = args.ocr
     if ocr == "auto":
         ocr = "manga-ocr" if args.source.lower() == "japanese" else "paddleocr-vl-1.6"
-    vision = ocr == "llm"  # one-step: Gemma reads the text itself
     if args.vision is None:
         args.vision = "short" if vision_fits else "off"
         if args.vision != "off" and not Path(args.mmproj).exists():
             log(f"Vision projector not found ({args.mmproj}); translating without the page image")
             args.vision = "off"
-    if args.vision == "full" and not vision:
+    if args.vision == "full":
         env["MT_PAGE_IMAGE"] = "1"  # local OCR, plus the page image for the translator
-    elif args.vision == "short" and not vision:
+    elif args.vision == "short":
         env["MT_VISION_SHORT"] = "1"  # text first, then the page image for short items only
     reading_dir = args.reading_direction or ("rtl" if args.source.lower() == "japanese" else "ltr")
 
@@ -391,22 +385,15 @@ def main() -> None:
         # narrow/tall regions (vertical Japanese asides) may grow so English fits
         "--osb-render-expansion-narrow", "2.0",
     ]
-    if vision:
-        cmd += ["--translation-mode", "one-step", "--ocr-method", "LLM"]
-    else:
-        cmd += ["--translation-mode", "two-step", "--ocr-method", ocr]
+    cmd += ["--translation-mode", "two-step", "--ocr-method", ocr]
     if args.adult:
         cmd += ["--ero-doujinshi-mode"]
-    if args.ocr_correction and not vision:
+    if args.ocr_correction:
         cmd += ["--ocr-correction"]
     if osb:
         cmd += ["--osb-enable", "--osb-font-dir", font_pack(args.osb_font)]
     else:
         cmd += ["--no-osb-text-verification"]
-    if args.character_notes:
-        notes = (out / "characters.txt" if args.character_notes == "auto"
-                 else Path(args.character_notes).expanduser().resolve())
-        env["MT_CHAR_NOTES"] = str(notes)
     if batch:  # names/terms memory, shared by all chapters; reuse it later with --glossary
         glossary = Path(args.glossary).expanduser().resolve() if args.glossary else out / "glossary.txt"
         cmd += ["--batch-glossary-file", str(glossary)]
@@ -454,7 +441,7 @@ def main() -> None:
         return
 
     if not args.llm_url and not replay:
-        start_llama_server(args, vision or args.vision != "off")
+        start_llama_server(args, args.vision != "off")
 
     log(f"{inp} -> {out}  ({args.source} -> {args.target}, LLM: {Path(args.gguf).stem if not args.llm_url else model_name}, "
         f"OCR: {ocr}, inpaint: {args.inpaint}, "

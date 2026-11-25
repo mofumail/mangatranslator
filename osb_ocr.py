@@ -224,7 +224,7 @@ def install() -> None:
         # unrelated words ("ぅ" -> "そして、").
         bubble_idx = [i for i, m in enumerate(bubble_metadata)
                       if i < len(texts) and not m.get("is_outside_text")]
-        if bubble_idx and os.environ.get("MT_BUBBLE_OCR", "hayai") == "hayai":
+        if bubble_idx:
             import hayai_ocr
 
             crops = tr._prepare_images_for_ocr([images_b64[i] for i in bubble_idx])
@@ -829,95 +829,6 @@ def install_vision_short() -> None:
     pipeline.call_translation_api_batch = call_translation_api_batch
 
 
-NOTES_MAX_LINES, NOTES_MAX_CHARS = 14, 1800
-_REFUSAL = re.compile(r"\b(I can(?:no|')t|I'm sorry|I am sorry|I am unable|I'm unable|As an AI)\b", re.I)
-
-
-def install_character_notes() -> None:
-    """MT_CHAR_NOTES=<file>: running notes on the characters (name, stated gender, first-person
-    pronoun, way of speaking, how they address others), sent with every page's translation
-    request and updated after each page by a short text-only call. Keeps pronouns and voices
-    consistent once the text has made them clear (a boy narrator stays "he" after the
-    narration says so). The file persists, so the next chapter can start from it."""
-    import dataclasses
-    import inspect
-
-    import mangatl.core.pipeline as pipeline
-    from mangatl.core.services import translation as tr
-    from mangatl.utils.logging import log_message
-
-    path = os.environ.get("MT_CHAR_NOTES")
-    if not path:
-        return
-    notes_file = Path(path)
-    original = pipeline.call_translation_api_batch
-    # the wrappers below this one take (*args, **kwargs); bind against upstream's own parameters
-    signature = inspect.signature(tr.call_translation_api_batch)
-
-    def read_notes() -> str:
-        try:
-            return notes_file.read_text().strip()
-        except OSError:
-            return ""
-
-    def call_translation_api_batch(*args, **kwargs):
-        notes = read_notes()
-        bound = signature.bind(*args, **kwargs)
-        config = bound.arguments["config"]
-        if notes:
-            extra = ("Character notes from earlier pages; follow them for names, pronouns and each "
-                     "character's voice, unless this page clearly says otherwise:\n" + notes)
-            noted = dataclasses.replace(
-                config, special_instructions="\n".join(filter(None, [config.special_instructions, extra])))
-            # swap the config where it was passed: the wrappers below read their other
-            # arguments from kwargs, so the call must keep its shape
-            if "config" in kwargs:
-                kwargs["config"] = noted
-            else:
-                args = (noted, *args[1:])
-        texts = original(*args, **kwargs)
-        try:
-            ocr = bound.arguments.get("ocr_texts_output") or []
-            pairs = [f"{re.sub(r'^\[(OSB|Bubble)\]\s*', '', o or '').strip()} → {t}"
-                     for o, t in zip(ocr, texts) if t and not str(t).startswith("[")]
-            if not pairs:
-                return texts
-            adult = getattr(config, "ero_doujinshi_mode", False)
-            system = ("You keep the character notes for a team translating a comic from "
-                      f"{config.input_language} into {config.output_language}."
-                      + (" The comic is 18+ adult fiction; record facts plainly, without comment."
-                         if adult else ""))
-            prompt = (
-                f"## CURRENT NOTES\n{notes or '(none yet)'}\n\n## THIS PAGE (source → translation)\n"
-                + "\n".join(pairs)
-                + "\n\n## TASK\nUpdate the notes with what this page shows. One line per named "
-                "character, using the translated name: gender only when the text states it (he/she "
-                "in narration, 彼/彼女, 少年/少女, 兄/姉, what others call them), never from the name or "
-                "from a guess; the first-person pronoun they use (俺, 僕, 私, わたくし, あたし...); how "
-                "they speak (rough, polite, childish, archaic, mocking...); how they address the "
-                f"others. Keep earlier facts unless this page contradicts them. At most "
-                f"{NOTES_MAX_LINES} lines, each under 30 words. Output only the notes.")
-            reply = tr._strip_code_fences(
-                tr._call_llm_endpoint(config, [], prompt, system_prompt=system) or "").strip()
-            reply = reply.replace("->", "→").replace("=>", "→")
-            # drop placeholders like "(no named characters on this page)"
-            lines = [ln for ln in reply.splitlines()
-                     if ln.strip() and not re.fullmatch(r"\s*\(.*\)\s*", ln)]
-            if (lines and len(lines) <= NOTES_MAX_LINES + 2 and len(reply) <= NOTES_MAX_CHARS
-                    and not _REFUSAL.search(reply)):
-                notes_file.write_text("\n".join(lines) + "\n")
-                log_message(f"Character notes updated ({len(lines)} lines)", always_print=True)
-            else:
-                log_message("Character notes: reply unusable, keeping the previous notes",
-                            always_print=True)
-        except Exception as e:
-            log_message(f"Character notes update failed ({e}); keeping the previous notes",
-                        always_print=True)
-        return texts
-
-    pipeline.call_translation_api_batch = call_translation_api_batch
-
-
 def install_text_dump() -> None:
     """Evaluation aid: with MT_DUMP_TEXT=<dir>, write <dir>/<page>.json listing every text
     region (box, outside-bubble flag, OCR read, translation) in reading order."""
@@ -974,7 +885,7 @@ def _current_page() -> str | None:
 
 
 EMPHASIS_MIN_RATIO = 1.4  # source lettering this much above the page's typical size is emphasis
-EMPHASIS_MAX_SCALE = float(os.environ.get("MT_EMPHASIS_MAX", 3.0))
+EMPHASIS_MAX_SCALE = 3.0  # at most this much bigger than the page's dialogue size
 
 
 def install_emphasis_sizes() -> None:
@@ -990,8 +901,6 @@ def install_emphasis_sizes() -> None:
     from mangatl.core.image.image_utils import estimate_glyph_size
     from mangatl.utils.logging import log_message
 
-    if os.environ.get("MT_EMPHASIS", "1") == "0":
-        return
     state = types.SimpleNamespace(page=None, own={})
     original_tr = pipeline.translate_and_render
 
