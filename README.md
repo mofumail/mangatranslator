@@ -140,6 +140,19 @@ Accept its terms at <https://huggingface.co/deepghs/AnimeText_yolo> with the acc
 `~/.cache/huggingface/token` (or set `HF_TOKEN`). With `--osb auto` (default) it switches on by itself
 once the model is accessible/downloaded.
 
+## Development
+
+```bash
+uv run --group dev pytest                 # unit + static tests (no GPU, no models)
+uv run --group dev ruff check . && uv run --group dev ruff format --check .
+uv run --group dev pyright                # type check (our own modules; see [tool.pyright])
+uv run python eval/harness.py check       # regression check against the saved baseline (GPU)
+```
+
+CI (`.github/workflows/ci.yml`) runs ruff, pyright and the tests on CPU with a light set of
+packages; tests only import modules whose import chain stays free of torch / cv2. Every change to
+the pipeline is checked with the harness (see `eval/README.md`): zero differences unless intended.
+
 ## Layout
 
 ```
@@ -166,6 +179,7 @@ assets/symbols/       DejaVu Sans Bold for ♥ ♪ ★ (free license, see LICENS
 fonts/                Comic Neue (dialogue), Bangers (OSB/SFX) — both SIL OFL
                       Add your own as fonts/<Name>/ with -Regular/-Bold/-Italic in the file names
                       (e.g. CC Wild Words, Anime Ace; git-ignored, as their licenses forbid redistribution)
+tests/                unit tests and static checks (imports resolve, Settings reads exist)
 eval/                 harness.py: regression check of every change against a saved baseline (replays
                       the LLM answers, diffs pages and text; see eval/README.md);
                       OpenMantra benchmark pages used to check quality; eval/djn/ doujin test runner;

@@ -28,3 +28,4 @@ eval/djn/llm_cache/
 eval/om/out/
 eval/djn/out/*/llm/
 eval/runs/
+.ci/

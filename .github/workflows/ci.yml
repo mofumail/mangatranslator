@@ -1,0 +1,27 @@
+name: CI
+
+# Lint, type check and unit tests on CPU, without torch or model downloads: the tests only
+# import modules whose import chain stays light (see tests/).
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install light dependencies
+        run: |
+          uv venv --python 3.13 .ci
+          uv pip install --python .ci/bin/python pydantic numpy pillow fonttools requests fastapi uvicorn pytest ruff pyright
+      - name: Ruff
+        run: |
+          .ci/bin/ruff check .
+          .ci/bin/ruff format --check .
+      - name: Pyright
+        run: .ci/bin/pyright --pythonpath .ci/bin/python
+      - name: Tests
+        run: .ci/bin/python -m pytest -q
