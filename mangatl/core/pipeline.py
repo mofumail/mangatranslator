@@ -827,7 +827,6 @@ def _detect_page_bubbles(
             config.detection.confidence,
             verbose=config.verbose,
             device=config.device,
-            seg_model=config.detection.seg_model,
             conjoined_detection=config.detection.conjoined_detection,
             conjoined_confidence=config.detection.conjoined_confidence,
             image_override=image,

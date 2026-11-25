@@ -14,7 +14,6 @@ class DetectionConfig:
     confidence: float = 0.6
     conjoined_confidence: float = 0.35
     panel_confidence: float = 0.25
-    seg_model: str = "yolo"  # "sam3", "sam2", or "yolo"
     bubble_detector_model: str = "yolo_2"  # "yolo_1" or "yolo_2"
     conjoined_detection: bool = True
     use_panel_sorting: bool = True

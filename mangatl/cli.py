@@ -162,14 +162,6 @@ def main():
         help="Confidence threshold for panel detection YOLO (0.0-1.0)",
     )
     parser.add_argument(
-        "--seg-model",
-        dest="seg_model",
-        type=str,
-        choices=["sam3", "sam2", "yolo"],
-        default="yolo",
-        help="Segmentation method",
-    )
-    parser.add_argument(
         "--no-conjoined-detection",
         dest="conjoined_detection",
         action="store_false",
@@ -911,7 +903,6 @@ def main():
             confidence=args.confidence,
             conjoined_confidence=args.conjoined_confidence,
             panel_confidence=args.panel_confidence,
-            seg_model=args.seg_model,
             bubble_detector_model=args.bubble_detector_model,
             conjoined_detection=args.conjoined_detection,
             use_panel_sorting=args.use_panel_sorting,

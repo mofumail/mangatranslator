@@ -19,7 +19,6 @@ class UnifiedCache:
 
         self._lock = threading.Lock()
         self._yolo_cache = LRUCache(max_size=1)
-        self._sam_cache = LRUCache(max_size=1)
         self._translation_cache = LRUCache(max_size=1)
         self._manga_ocr_cache = LRUCache(max_size=20)
         self._upscale_cache = LRUCache(max_size=20)
@@ -126,74 +125,6 @@ class UnifiedCache:
             verbose=verbose,
         )
 
-    def get_sam_cache_key(
-        self,
-        image: Image.Image,
-        yolo_boxes: Any,
-        seg_model: str = "yolo",
-        conjoined_detection: bool = True,
-        conjoined_confidence: float = 0.35,
-    ) -> str:
-        """Compute cache key for SAM segmentation.
-
-        Args:
-            image: Input image
-            yolo_boxes: YOLO detection boxes (tensor or list)
-            seg_model: Segmentation model to use ("yolo", "sam2", or "sam3")
-            conjoined_detection: Whether conjoined detection is enabled
-            conjoined_confidence: Confidence threshold for conjoined detection
-
-        Returns:
-            str: Cache key
-        """
-        image_hash = self._hash_image(image)
-
-        if hasattr(yolo_boxes, "cpu"):
-            boxes_np = yolo_boxes.cpu().numpy()
-        else:
-            boxes_np = np.array(yolo_boxes)
-        boxes_hash = self._hash_numpy(boxes_np)
-
-        model_ids = {
-            "sam2": "facebook/sam2.1-hiera-large",
-            "sam3": "facebook/sam3",
-            "yolo": "yolo",
-        }
-        seg_model_id = model_ids.get(seg_model, "yolo")
-        model_hash = hashlib.sha256(seg_model_id.encode()).hexdigest()[:8]
-        key_string = (
-            f"sam_{image_hash}_{boxes_hash}_{model_hash}_seg{seg_model}"
-            f"_conjoined{int(conjoined_detection)}"
-            f"_conf{conjoined_confidence:.3f}"
-        )
-        return hashlib.sha256(key_string.encode()).hexdigest()
-
-    def get_sam_masks(self, cache_key: str) -> Any | None:
-        """Get cached SAM masks.
-
-        Args:
-            cache_key: Cache key
-
-        Returns:
-            Cached SAM masks or None if not found
-        """
-        with self._lock:
-            return self._sam_cache.get(cache_key)
-
-    def set_sam_masks(self, cache_key: str, masks: Any, verbose: bool = False) -> None:
-        """Cache SAM masks.
-
-        Args:
-            cache_key: Cache key
-            masks: SAM masks to cache
-            verbose: Whether to print verbose logging
-        """
-        with self._lock:
-            self._sam_cache.put(cache_key, masks)
-        log_message(
-            f"  - Cached SAM masks (cache size: {len(self._sam_cache.cache)})",
-            verbose=verbose,
-        )
 
     def _is_deterministic(self, config) -> bool:
         """Check if translation config is deterministic.
@@ -567,11 +498,6 @@ class UnifiedCache:
             self._yolo_cache.cache.clear()
         log_message("YOLO cache cleared", verbose=verbose)
 
-    def clear_sam_cache(self, verbose: bool = False) -> None:
-        """Clear SAM masks cache."""
-        with self._lock:
-            self._sam_cache.cache.clear()
-        log_message("SAM cache cleared", verbose=verbose)
 
     def clear_translation_cache(self, verbose: bool = False) -> None:
         """Clear translation cache."""
@@ -601,7 +527,6 @@ class UnifiedCache:
         """Clear all caches."""
         with self._lock:
             self._yolo_cache.cache.clear()
-            self._sam_cache.cache.clear()
             self._translation_cache.cache.clear()
             self._manga_ocr_cache.cache.clear()
             self._upscale_cache.cache.clear()
@@ -626,7 +551,6 @@ class UnifiedCache:
                     "Different image detected - clearing all caches", verbose=verbose
                 )
                 self._yolo_cache.cache.clear()
-                self._sam_cache.cache.clear()
                 self._translation_cache.cache.clear()
                 self._manga_ocr_cache.cache.clear()
                 self._upscale_cache.cache.clear()
@@ -644,7 +568,6 @@ class UnifiedCache:
         with self._lock:
             return {
                 "yolo": len(self._yolo_cache.cache),
-                "sam": len(self._sam_cache.cache),
                 "translation": len(self._translation_cache.cache),
                 "manga_ocr": len(self._manga_ocr_cache.cache),
                 "upscale": len(self._upscale_cache.cache),

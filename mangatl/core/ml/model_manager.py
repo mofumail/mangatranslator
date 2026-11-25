@@ -11,10 +11,6 @@ from spandrel import ModelLoader
 from transformers import (
     RTDetrImageProcessor,
     RTDetrV2ForObjectDetection,
-    Sam2Model,
-    Sam2Processor,
-    Sam3TrackerModel,
-    Sam3TrackerProcessor,
 )
 from ultralytics import YOLO
 
@@ -35,8 +31,6 @@ class ModelType(Enum):
     RTDETR_CONJOINED_BUBBLE = "rtdetr_conjoined_bubble"
     YOLO_OSBTEXT = "yolo_osbtext"
     YOLO_PANEL = "yolo_panel"
-    SAM2 = "sam2"
-    SAM3 = "sam3"
     MANGA_OCR = "manga_ocr"
     PADDLE_OCR_VL = "paddle_ocr_vl"
     LAMA_MANGA = "lama_manga"
@@ -48,7 +42,6 @@ _LEGACY_MODEL_DIRS = (
     ("lama", "inpainting/lama"),
     ("yolo", "detection/yolo"),
     ("rtdetr", "detection/rtdetr"),
-    ("sam", "detection/sam"),
     ("manga-ocr-base", "ocr/manga-ocr-base"),
     ("paddleocr-vl-1.6", "ocr/paddleocr-vl-1.6"),
 )
@@ -119,7 +112,6 @@ class ModelManager:
 
     def _apply_models_dir(self, models_dir: Path) -> None:
         self.models_dir = Path(models_dir).resolve()
-        self.sam_cache_dir = self.models_dir / "detection" / "sam"
         self.model_paths = self._init_model_paths()
 
 
@@ -199,13 +191,6 @@ class ModelManager:
             ModelType.YOLO_PANEL: {
                 "repo_id": "deepghs/manga109_yolo",
                 "filename": "v2023.12.07_l_yv11/model.pt",
-            },
-            ModelType.SAM2: {
-                "repo_id": "facebook/sam2.1-hiera-large",
-            },
-            ModelType.SAM3: {
-                "repo_id": "facebook/sam3",
-                "requires_token": True,
             },
         }
 
@@ -780,70 +765,6 @@ class ModelManager:
             log_message("PaddleOCR-VL-1.6 initialized.", verbose=verbose)
             return self.models[ModelType.PADDLE_OCR_VL]
 
-    def load_sam2(self, verbose: bool = False):
-        """Load SAM 2.1 model and processor.
-
-        Returns:
-            tuple: (processor, model) - SAM2 processor and model instances
-        """
-        with self._lock:
-            if self.is_loaded(ModelType.SAM2):
-                return self.models[ModelType.SAM2]
-
-            log_message("Loading SAM 2.1 model...", verbose=verbose)
-            hf_info = self.model_hf_repos[ModelType.SAM2]
-            cache_dir = self._hf_cache_dir(self.sam_cache_dir)
-
-            processor = Sam2Processor.from_pretrained(
-                hf_info["repo_id"], cache_dir=cache_dir, token=self.hf_token
-            )
-            model = Sam2Model.from_pretrained(
-                hf_info["repo_id"],
-                torch_dtype=self.dtype,
-                cache_dir=cache_dir,
-                token=self.hf_token,
-            ).to(self.device)
-            model.eval()
-
-            self.models[ModelType.SAM2] = (processor, model)
-            log_message("SAM 2.1 model loaded.", verbose=verbose)
-            return self.models[ModelType.SAM2]
-
-    def load_sam3(self, token: str | None = None, verbose: bool = False):
-        """Load SAM 3 Tracker (PVS) model and processor.
-
-        SAM 3 requires a HuggingFace token with access to the gated facebook/sam3 repo.
-
-        Args:
-            token: HuggingFace token for gated model access
-            verbose: Whether to print verbose logging
-
-        Returns:
-            tuple: (processor, model) - SAM3 Tracker processor and model instances
-        """
-        with self._lock:
-            if self.is_loaded(ModelType.SAM3):
-                return self.models[ModelType.SAM3]
-
-            log_message("Loading SAM 3 Tracker model...", verbose=verbose)
-            hf_info = self.model_hf_repos[ModelType.SAM3]
-            cache_dir = self._hf_cache_dir(self.sam_cache_dir)
-
-            effective_token = token if token is not None else self.hf_token
-            processor = Sam3TrackerProcessor.from_pretrained(
-                hf_info["repo_id"], cache_dir=cache_dir, token=effective_token
-            )
-            model = Sam3TrackerModel.from_pretrained(
-                hf_info["repo_id"],
-                torch_dtype=self.dtype,
-                cache_dir=cache_dir,
-                token=effective_token,
-            ).to(self.device)
-            model.eval()
-
-            self.models[ModelType.SAM3] = (processor, model)
-            log_message("SAM 3 Tracker model loaded.", verbose=verbose)
-            return self.models[ModelType.SAM3]
 
     def set_device(self, device: torch.device):
         """Override the auto-detected device (e.g. --cpu). Call before loading models."""
@@ -967,13 +888,11 @@ class ModelManager:
         log_message("Upscale models unloaded.", verbose=verbose)
 
     def unload_ocr_models(self, verbose: bool = False):
-        """Unload OCR-related models (YOLO, SAM2/SAM3, and manga-ocr)."""
+        """Unload OCR-related models (YOLO and manga-ocr)."""
         ocr_models = (
             ModelType.YOLO_SPEECH_BUBBLE,
             ModelType.YOLO_SPEECH_BUBBLE_2,
             ModelType.RTDETR_CONJOINED_BUBBLE,
-            ModelType.SAM2,
-            ModelType.SAM3,
             ModelType.YOLO_OSBTEXT,
             ModelType.YOLO_PANEL,
             ModelType.MANGA_OCR,

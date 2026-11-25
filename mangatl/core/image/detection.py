@@ -12,7 +12,7 @@ from mangatl.utils.exceptions import ImageProcessingError, ModelError
 from mangatl.utils.logging import log_message
 
 IOA_THRESHOLD = 0.50  # 50% IoA threshold for conjoined bubble detection
-SAM_MASK_THRESHOLD = 0.5  # SAM2 mask binarization threshold
+SAM_MASK_THRESHOLD = 0.5  # mask binarization threshold
 IOA_OVERLAP_THRESHOLD = 0.5  # IoA threshold for general overlap detection between boxes
 IOU_DUPLICATE_THRESHOLD = 0.7  # IoU threshold for duplicate primary detection
 OSB_TEXT_MATCH_IOA_THRESHOLD = (
@@ -61,25 +61,6 @@ def _box_area(box) -> float:
 def _point_in_box(point_x: float, point_y: float, box) -> bool:
     """Return True if a point lies inside an xyxy box."""
     return box[0] <= point_x <= box[2] and box[1] <= point_y <= box[3]
-
-
-def _mask_to_bbox(mask, fallback_box=None) -> tuple[int, int, int, int]:
-    """Convert a binary mask to an xyxy bbox, falling back when empty."""
-    x, y, w, h = cv2.boundingRect((np.asarray(mask) > 0).view(np.uint8))
-    if w == 0 or h == 0:
-        if fallback_box is None:
-            return (0, 0, 0, 0)
-        x0_f, y0_f, x1_f, y1_f = (
-            fallback_box.tolist() if hasattr(fallback_box, "tolist") else fallback_box
-        )
-        return (
-            round(x0_f),
-            round(y0_f),
-            round(x1_f),
-            round(y1_f),
-        )
-
-    return (x, y, x + w, y + h)
 
 
 def _text_box_meaningfully_matches_box(t_box, b_box) -> bool:
@@ -467,46 +448,8 @@ def _detect_overlapping_primaries(
     return synthetic_groups, updated_simple
 
 
-def _process_simple_bubbles(
-    image, primary_boxes, simple_indices, processor, sam_model, device
-):
-    """Process simple (non-conjoined) speech bubbles using SAM2.
-
-    Args:
-        image: PIL Image
-        primary_boxes: Tensor of primary YOLO detection boxes
-        simple_indices: List of indices for simple bubbles
-        processor: SAM2 processor
-        sam_model: SAM2 model
-        device: PyTorch device
-
-    Returns:
-        list: List of numpy boolean masks for simple bubbles
-    """
-    if not simple_indices:
-        return []
-
-    simple_boxes_to_sam = primary_boxes[simple_indices].unsqueeze(0).cpu()
-    inputs = processor(image, input_boxes=simple_boxes_to_sam, return_tensors="pt")
-
-    for key in inputs:
-        if isinstance(inputs[key], torch.Tensor) and inputs[key].is_floating_point():
-            inputs[key] = inputs[key].to(sam_model.dtype)
-
-    inputs = inputs.to(device)
-
-    with torch.no_grad():
-        outputs = sam_model(multimask_output=False, **inputs)
-
-    masks_tensor = processor.post_process_masks(
-        outputs.pred_masks, inputs["original_sizes"]
-    )[0][:, 0]
-    simple_masks_np = (masks_tensor > SAM_MASK_THRESHOLD).cpu().numpy()
-    return [mask for mask in simple_masks_np]
-
-
 def _fallback_to_yolo_mask(primary_results, i, mask_type="points"):
-    """Extract YOLO mask as fallback when SAM2 fails.
+    """Extract the YOLO segmentation mask of one detection.
 
     Args:
         primary_results: YOLO detection results
@@ -1101,7 +1044,6 @@ def _build_segmentation_detections(
     conjoined_confidence: float,
     osb_text_boxes_np: np.ndarray | None = None,
     verbose: bool = False,
-    sam_masks: list | None = None,
     synthetic_conjoined_groups: list | None = None,
 ):
     """Build final detections from masks, including conjoined-mask partitioning."""
@@ -1120,9 +1062,7 @@ def _build_segmentation_detections(
         )
 
         sam_mask = None
-        if sam_masks is not None and sam_masks[idx] is not None:
-            sam_mask = sam_masks[idx]
-        elif source == "primary":
+        if source == "primary":
             sam_mask = _fallback_to_yolo_mask(primary_results, orig_idx, "binary")
 
         if sam_mask is None:
@@ -1163,9 +1103,7 @@ def _build_segmentation_detections(
         grouping_parent_box = combined_parent_box
         parent_mask = None
 
-        if sam_masks is not None and sam_masks[p_idx] is not None:
-            parent_mask = sam_masks[p_idx]
-        elif parent_source == "primary":
+        if parent_source == "primary":
             parent_mask = _fallback_to_yolo_mask(
                 primary_results, parent_orig_idx, "binary"
             )
@@ -1381,124 +1319,12 @@ def _drop_text_free_primaries(
     return primary_boxes, primary_sources
 
 
-def _sam_masks_for_boxes(
-    image_pil: Image.Image,
-    primary_boxes,
-    secondary_boxes,
-    simple_indices: list,
-    conjoined_indices: list,
-    synthetic_conjoined_groups: list[dict],
-    processor,
-    sam_model_instance,
-    device,
-    img_h: int,
-    img_w: int,
-    sam_model_name: str,
-    verbose: bool,
-) -> list:
-    """Run SAM on simple, conjoined-parent, and synthetic-parent boxes in one batch.
-
-    Returns per-primary-box masks (None where not prompted); synthetic group parent
-    masks are stored on the groups in place."""
-    boxes_to_process = []
-    process_indices = []
-
-    for idx in simple_indices:
-        boxes_to_process.append(primary_boxes[idx])
-        process_indices.append(idx)
-
-    for p_idx, s_indices in conjoined_indices:
-        # SAM needs the prompt box to cover all children for a usable mask
-        group_stack = torch.cat(
-            [primary_boxes[p_idx].unsqueeze(0)]
-            + [secondary_boxes[s_idx].unsqueeze(0) for s_idx in s_indices],
-            dim=0,
-        )
-        combined_parent_box = torch.cat(
-            [
-                group_stack[:, :2].min(dim=0).values,
-                group_stack[:, 2:].max(dim=0).values,
-            ]
-        )
-        boxes_to_process.append(combined_parent_box)
-        process_indices.append(p_idx)
-
-    # Append synthetic conjoined parent boxes to the same SAM batch
-    synth_start_idx = len(boxes_to_process)
-    for sg in synthetic_conjoined_groups:
-        boxes_to_process.append(sg["parent_box"])
-
-    sam_masks_for_yolo = [None] * len(primary_boxes)
-    if boxes_to_process:
-        all_boxes_tensor = torch.stack(boxes_to_process)
-
-        total_boxes = len(boxes_to_process)
-        simple_count = len(simple_indices)
-        conjoined_parent_count = len(conjoined_indices)
-        synth_parent_count = len(synthetic_conjoined_groups)
-
-        parts = []
-        if simple_count:
-            parts.append(f"{simple_count} simple")
-        if conjoined_parent_count:
-            parts.append(f"{conjoined_parent_count} conjoined parents")
-        if synth_parent_count:
-            parts.append(f"{synth_parent_count} synthetic conjoined parents")
-        if len(parts) > 1:
-            log_message(
-                f"Processing {total_boxes} bubbles ({' + '.join(parts)})...",
-                verbose=verbose,
-            )
-        else:
-            log_message(
-                f"Processing {total_boxes} simple bubbles...",
-                verbose=verbose,
-            )
-
-        all_masks_bool = _process_simple_bubbles(
-            image_pil,
-            all_boxes_tensor,
-            list(range(len(boxes_to_process))),
-            processor,
-            sam_model_instance,
-            device,
-        )
-
-        for i, (mask_bool, box) in enumerate(
-            zip(all_masks_bool, boxes_to_process, strict=False)
-        ):
-            x0_f, y0_f, x1_f, y1_f = box.tolist()
-            x0 = int(np.floor(max(0, min(x0_f, img_w))))
-            y0 = int(np.floor(max(0, min(y0_f, img_h))))
-            x1 = int(np.ceil(max(0, min(x1_f, img_w))))
-            y1 = int(np.ceil(max(0, min(y1_f, img_h))))
-
-            if x1 > x0 and y1 > y0:
-                clipped_mask = np.zeros((img_h, img_w), dtype=np.uint8)
-                clipped_mask[y0:y1, x0:x1] = mask_bool[y0:y1, x0:x1] * np.uint8(255)
-            else:
-                clipped_mask = mask_bool.astype(np.uint8) * 255
-
-            if i < synth_start_idx:
-                sam_masks_for_yolo[process_indices[i]] = clipped_mask
-            else:
-                sg_idx = i - synth_start_idx
-                synthetic_conjoined_groups[sg_idx]["parent_mask"] = clipped_mask
-
-        log_message(
-            f"Generated {len(all_masks_bool)} primary masks with {sam_model_name}",
-            always_print=True,
-        )
-    return sam_masks_for_yolo
-
-
 def detect_speech_bubbles(
     image_path: Path,
     model_path,
     confidence=0.6,
     verbose=False,
     device=None,
-    seg_model: str = "yolo",
     conjoined_detection: bool = True,
     conjoined_confidence=0.35,
     image_override: Image.Image | None = None,
@@ -1518,11 +1344,10 @@ def detect_speech_bubbles(
         confidence (float): Confidence threshold for primary YOLO model detections
         verbose (bool): Whether to show detailed processing information
         device (torch.device, optional): The device to run the model on. Autodetects if None.
-        seg_model (str): Segmentation model ("yolo", "sam2", "sam3")
         conjoined_detection (bool): Whether to enable conjoined bubble detection using secondary RT-DETR model
         conjoined_confidence (float): Confidence threshold for secondary RT-DETR model (conjoined bubble detection)
         osb_text_verification (bool): When True, expand bubble boxes to fully cover OSB text detections
-        osb_text_hf_token (str): Optional token for gated model downloads (SAM3, OSB text)
+        osb_text_hf_token (str): Optional token for gated model downloads (OSB text)
 
     Returns:
         tuple[list, list]: (speech bubble detections, text_free boxes from secondary model)
@@ -1618,7 +1443,6 @@ def detect_speech_bubbles(
     secondary_boxes = torch.tensor([])
     secondary_sources = []
     secondary_results = None
-    use_sam = seg_model in ("sam2", "sam3")
     if conjoined_detection:
         try:
             secondary_model = model_manager.load_rtdetr_conjoined_bubble()
@@ -1757,7 +1581,7 @@ def detect_speech_bubbles(
 
     img_h, img_w = image_cv.shape[:2]
 
-    def build_detections(sam_masks=None):
+    def build_detections():
         return _build_segmentation_detections(
             primary_boxes,
             grouping_primary_boxes,
@@ -1774,74 +1598,10 @@ def detect_speech_bubbles(
             conjoined_confidence,
             osb_text_boxes_np=osb_text_boxes_np,
             verbose=verbose,
-            sam_masks=sam_masks,
             synthetic_conjoined_groups=synthetic_conjoined_groups,
         )
 
-    if not use_sam:
-        log_message("SAM disabled, using YOLO segmentation masks", verbose=verbose)
-        return build_detections(), text_free_boxes
-
-    sam_model_name = "SAM 3" if seg_model == "sam3" else "SAM 2.1"
-    try:
-        log_message(
-            f"Applying {sam_model_name} segmentation refinement", verbose=verbose
-        )
-        sam_cache_key = cache.get_sam_cache_key(
-            image_pil,
-            primary_boxes,
-            seg_model,
-            conjoined_detection,
-            conjoined_confidence,
-        )
-        cached_sam = cache.get_sam_masks(sam_cache_key)
-
-        if cached_sam is not None:
-            log_message("  - Using cached SAM masks", always_print=True)
-            return cached_sam, text_free_boxes
-
-        if seg_model == "sam3":
-            processor, sam_model_instance = model_manager.load_sam3(
-                token=osb_text_hf_token, verbose=verbose
-            )
-        else:
-            processor, sam_model_instance = model_manager.load_sam2(verbose=verbose)
-
-        sam_masks_for_yolo = _sam_masks_for_boxes(
-            image_pil,
-            primary_boxes,
-            secondary_boxes,
-            simple_indices,
-            conjoined_indices,
-            synthetic_conjoined_groups,
-            processor,
-            sam_model_instance,
-            _device,
-            img_h,
-            img_w,
-            sam_model_name,
-            verbose,
-        )
-        detections = build_detections(sam_masks_for_yolo)
-
-        log_message(
-            f"{sam_model_name} segmentation completed successfully", verbose=verbose
-        )
-        cache.set_sam_masks(sam_cache_key, detections)
-
-    except Exception as e:
-        log_message(
-            f"{sam_model_name} segmentation failed: {e}. Falling back to YOLO segmentation masks.",
-            always_print=True,
-        )
-        detections = build_detections()
-
-        log_message(
-            f"Fallback segmentation used {len(detections)} boxes",
-            verbose=verbose,
-        )
-
-    return detections, text_free_boxes
+    return build_detections(), text_free_boxes
 
 
 def detect_panels(
