@@ -3,6 +3,7 @@ import threading
 import time
 from pathlib import Path
 from typing import TextIO
+from mangatl.settings import ROOT
 
 CURRENT_LOG_NAME = "mangatranslator.log"
 PREVIOUS_LOG_NAME = "mangatranslator.prev.log"
@@ -27,7 +28,7 @@ def init_file_logging(
             _log_file = None
 
         if log_dir is None:
-            target_dir = Path(__file__).resolve().parents[2] / "logs"  # <repo>/logs
+            target_dir = ROOT / "logs"
         else:
             target_dir = Path(log_dir)
 
