@@ -123,7 +123,7 @@ Sound effects are read twice (tight crop and with a margin, which fixes most mis
 kana) and the fuller read kept. Speech bubbles are read by Hayai too: on the OpenMantra bubbles it and
 manga-ocr are about equal (0.9% / 0.7% character errors), but manga-ocr turns hand-drawn moans in doujin
 bubbles into unrelated words (ぅ -> そして、). When one read contains the other the longer is kept.
-This lives in `mangatl/core/image/line_ocr.py` (with `mangatl/core/ml/text_lines.py` and `hayai_ocr.py`).
+This lives in `mangatl/ocr/line_ocr.py` (with `mangatl/detect/text_lines.py` and `mangatl/ocr/hayai.py`).
 
 Pages that print a Chinese translation next to the Japanese (common in `[中国翻訳]` releases): the
 Chinese block is erased and not translated, so the English appears once (`--keep-other-language`
@@ -150,12 +150,15 @@ mangatl/              the pipeline (derived from MangaTranslator at e347a09; see
                       <output>/settings.json with every run (secrets excluded)
   presets.py          user-facing options (translate.py, web UI) -> Settings
   cli.py              runs one input with a settings file (translate.py runs `python -m mangatl.cli`)
-  core/pipeline.py    page flow: detect, OCR, translate, render
-  core/image/         detection, cleaning, inpainting; line_ocr.py: Hayai line-by-line OCR
-  core/ml/            model loading; hayai_ocr.py, text_lines.py (comic-text-detector, ONNX/CPU)
-  core/services/      translation prompts and calls; vision_pass.py (--vision short)
-  core/text/          typesetting: layout, fonts, symbols, narration, sound-effect labels
-  utils/eval_hooks.py LLM cache/replay and text dumps for the harness (settings.debug)
+  pipeline/           page flow (page.py), long strips, batches; outside_text.py
+  detect/             bubbles, panels / reading order, outside-text detector, text lines, tilt
+  ocr/                Hayai OCR and line-by-line reading (line_ocr.py)
+  clean/              bubble cleaning, glyph masks, LaMa inpainting
+  translate/          prompts and calls (service.py), vision_pass.py, glossary, LLM client
+  typeset/            layout, fonts, renderer, symbols, narration, sound-effect labels
+  ml/                 model loading (model_manager.py), RT-DETR adapter, SAM-TS (hi_sam)
+  common/             shared helpers: image utils, caching, logging, eval_hooks (harness)
+  inputs/             archives and path lists
 bin/llama.cpp/        prebuilt llama.cpp b11972, CUDA 13.4
 models/llm/           translator GGUFs
 models/…              detection / OCR / inpainting weights (auto-downloaded)

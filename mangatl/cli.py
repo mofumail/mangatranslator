@@ -15,7 +15,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from mangatl.utils.archive import ARCHIVE_SUFFIXES, safe_extract_zip
+from mangatl.inputs.archive import ARCHIVE_SUFFIXES, safe_extract_zip
 
 
 def main():
@@ -27,15 +27,15 @@ def main():
     parser.add_argument("--batch", action="store_true", help="Translate a folder / archive")
     args = parser.parse_args()
 
-    from mangatl.utils.logging import init_file_logging
+    from mangatl.common.log import init_file_logging
 
     init_file_logging()
 
-    from mangatl.core.ml.model_manager import get_model_manager, migrate_model_dirs
-    from mangatl.core.pipeline import batch_translate_images, translate_and_render
+    from mangatl.ml.model_manager import get_model_manager, migrate_model_dirs
+    from mangatl.pipeline.page import batch_translate_images, translate_and_render
     from mangatl.settings import Settings
-    from mangatl.utils import eval_hooks
-    from mangatl.utils.logging import log_message
+    from mangatl.common import eval_hooks
+    from mangatl.common.log import log_message
 
     config = Settings.load(args.settings)
     eval_hooks.configure(config.debug)
@@ -98,7 +98,7 @@ def main():
                 )
                 sys.exit(1)
         elif input_path.is_file() and input_path.suffix.lower() == ".txt":
-            from mangatl.utils.path_list import stage_path_list
+            from mangatl.inputs.path_list import stage_path_list
 
             log_message(
                 f"Detected failed-paths list: {input_path.name}",

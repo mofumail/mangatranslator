@@ -1,0 +1,530 @@
+import math
+import os
+import threading
+
+import skia
+import uharfbuzz as hb
+from PIL import Image
+
+from mangatl.typeset.fonts import LRUCache, get_variable_font_style_info, load_font_data
+from mangatl.typeset.layout import shape_line
+from mangatl.typeset.text import is_rtl_script, parse_styled_segments
+from mangatl.common.exceptions import FontError, RenderingError
+from mangatl.common.log import log_message
+
+_typeface_cache = LRUCache(max_size=50)
+_hb_face_cache = LRUCache(max_size=50)
+_font_cache_lock = threading.RLock()
+
+OUTLINE_MIN_PX = 1.0
+OUTLINE_MAX_PX = 6.0
+OUTLINE_REF_PX = 36.0
+
+
+def resolve_outline_width(
+    font_size: float,
+    outline_ratio: float,
+    min_px: float = OUTLINE_MIN_PX,
+    max_px: float = OUTLINE_MAX_PX,
+) -> float:
+    if outline_ratio <= 0 or font_size <= 0:
+        return 0.0
+    # Sub-linear growth so small glyphs keep readable weight while large
+    # ones stay bounded; equals ratio * size at OUTLINE_REF_PX.
+    effective = outline_ratio * math.sqrt(font_size * OUTLINE_REF_PX)
+    return max(min_px, min(effective, max_px))
+
+
+def load_font_resources(
+    font_path: str,
+    style: str = "regular",
+) -> tuple[bytes, skia.Typeface, hb.Face]:
+    """
+    Loads font data, Skia Typeface, and HarfBuzz Face, using LRU caching.
+    Supports variable font styles and instances.
+
+    Args:
+        font_path: Path to the font file
+        style: Font style variant ("regular", "bold", "italic", "bold_italic")
+
+    Returns:
+        Tuple of (font_data, skia_typeface, harfbuzz_face)
+
+    Raises:
+        FontError: If font data cannot be loaded or Skia/HarfBuzz resources fail to load
+    """
+    font_data = load_font_data(font_path)
+    cache_key = f"{font_path}::{style}"
+
+    with _font_cache_lock:
+        typeface = _typeface_cache.get(cache_key)
+        hb_face = _hb_face_cache.get(cache_key)
+        if typeface is not None and hb_face is not None:
+            return font_data, typeface, hb_face
+
+        var_info = get_variable_font_style_info(font_path, style)
+
+        if typeface is None:
+            skia_data = skia.Data.MakeWithoutCopy(font_data)
+            base_typeface = skia.Typeface.MakeFromData(skia_data)
+            if base_typeface is None:
+                log_message(
+                    f"Skia typeface load failed: {os.path.basename(font_path)}",
+                    always_print=True,
+                )
+                raise FontError(
+                    f"Failed to create Skia typeface from font: {font_path}"
+                )
+
+            if var_info and var_info.get("coords"):
+                try:
+                    coords = skia.FontArguments.VariationPosition.Coordinates()
+                    for tag_str, val in var_info["coords"].items():
+                        tag_int = int.from_bytes(tag_str.encode("ascii"), "big")
+                        coords.append(
+                            skia.FontArguments.VariationPosition.Coordinate(
+                                tag_int, float(val)
+                            )
+                        )
+                    args = skia.FontArguments()
+                    args.setVariationDesignPosition(
+                        skia.FontArguments.VariationPosition(coords)
+                    )
+                    cloned_tf = base_typeface.makeClone(args)
+                    typeface = cloned_tf if cloned_tf is not None else base_typeface
+                except Exception as e:
+                    log_message(
+                        f"Failed to apply variation coordinates for {style} on {os.path.basename(font_path)}: {e}",
+                        always_print=True,
+                    )
+                    typeface = base_typeface
+            else:
+                typeface = base_typeface
+
+            _typeface_cache.put(cache_key, typeface)
+
+        if hb_face is None:
+            try:
+                hb_idx = 0
+                if var_info and var_info.get("instance_index"):
+                    hb_idx = var_info["instance_index"] << 16
+
+                hb_face = hb.Face(font_data, hb_idx)
+                _hb_face_cache.put(cache_key, hb_face)
+            except Exception as e:
+                log_message(
+                    f"HarfBuzz face load failed: {os.path.basename(font_path)}: {e}",
+                    always_print=True,
+                )
+                # Clean up Skia cache if HarfBuzz fails to avoid inconsistent state
+                if cache_key in _typeface_cache:
+                    del _typeface_cache[cache_key]
+                raise FontError(
+                    f"Failed to create HarfBuzz face from font: {font_path}"
+                ) from e
+
+    return font_data, typeface, hb_face
+
+
+def pil_to_skia_surface(pil_image: Image.Image) -> skia.Surface:
+    """Converts a PIL image to a Skia Surface.
+
+    Raises:
+        RenderingError: If conversion fails
+    """
+    try:
+        if pil_image.mode != "RGBA":
+            pil_image = pil_image.convert("RGBA")
+        skia_image = skia.Image.frombytes(
+            pil_image.tobytes(), pil_image.size, skia.kRGBA_8888_ColorType
+        )
+        if skia_image is None:
+            log_message("PIL to Skia conversion failed", always_print=True)
+            raise RenderingError("Failed to create Skia image from PIL")
+        surface = skia.Surface(pil_image.width, pil_image.height)
+        with surface as canvas:
+            canvas.drawImage(skia_image, 0, 0)
+        return surface
+    except Exception as e:
+        log_message(f"PIL to Skia conversion error: {e}", always_print=True)
+        raise RenderingError("PIL to Skia conversion failed") from e
+
+
+def skia_surface_to_pil(surface: skia.Surface) -> Image.Image:
+    """Converts a Skia Surface back to a PIL image.
+
+    Raises:
+        RenderingError: If conversion fails
+    """
+    try:
+        skia_image: skia.Image | None = surface.makeImageSnapshot()
+        if skia_image is None:
+            log_message("Skia surface snapshot failed", always_print=True)
+            raise RenderingError("Failed to create Skia image snapshot")
+
+        skia_image = skia_image.convert(
+            alphaType=skia.kUnpremul_AlphaType, colorType=skia.kRGBA_8888_ColorType
+        )
+        pil_image = Image.fromarray(skia_image)
+        return pil_image
+    except Exception as e:
+        log_message(f"Skia to PIL conversion error: {e}", always_print=True)
+        raise RenderingError("Skia to PIL conversion failed") from e
+
+
+def draw_layout(
+    surface: skia.Surface,
+    layout_data: dict,
+    target_center_x: float,
+    target_center_y: float,
+    loaded_typefaces: dict[str, skia.Typeface | None],
+    loaded_hb_faces: dict[str, hb.Face | None],
+    regular_typeface: skia.Typeface,
+    regular_hb_face: hb.Face,
+    features_to_enable: dict[str, bool],
+    text_color: int,
+    outline_width: float = 0.0,
+    verbose: bool = False,
+    pre_translate_x: float = 0.0,
+    pre_translate_y: float = 0.0,
+    pre_rotate_deg: float = 0.0,
+    text_background_color: int | None = None,
+) -> bool:
+    """
+    Draws the text layout onto a Skia surface.
+
+    This is a "dumb" renderer - all layout decisions have been made.
+    It just executes the drawing plan.
+
+    Args:
+        surface: Skia surface to draw on
+        layout_data: Layout data from layout_engine (font_size, lines, metrics, etc.)
+        target_center_x: X coordinate of the text block center
+        target_center_y: Y coordinate of the text block center
+        loaded_typefaces: Dictionary of Skia typefaces for each style
+        loaded_hb_faces: Dictionary of HarfBuzz faces for each style
+        regular_typeface: Regular Skia typeface (fallback)
+        regular_hb_face: Regular HarfBuzz face (fallback)
+        features_to_enable: HarfBuzz features to enable
+        text_color: Skia color for the text
+        outline_width: Width of text outline (0 = no outline)
+        verbose: Whether to print detailed logs
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        final_font_size = layout_data["font_size"]
+        final_lines_data = layout_data["lines"]
+        final_metrics = layout_data["metrics"]
+        final_max_line_width = layout_data["max_line_width"]
+        final_line_height = layout_data["line_height"]
+
+        for line_data in final_lines_data:
+            line_data["segments"] = parse_styled_segments(
+                line_data["text_with_markers"]
+            )
+
+        paint = skia.Paint(AntiAlias=True, Color=text_color)
+
+        outline_paint = None
+        if outline_width > 0:
+            r = skia.ColorGetR(text_color)
+            g = skia.ColorGetG(text_color)
+            b = skia.ColorGetB(text_color)
+            lum = 0.299 * r + 0.587 * g + 0.114 * b
+            outline_color = skia.ColorBLACK if lum >= 80 else skia.ColorWHITE
+
+            outline_paint = skia.Paint(
+                AntiAlias=True,
+                Color=outline_color,
+                Style=skia.Paint.kStroke_Style,
+                StrokeWidth=outline_width,
+                StrokeJoin=skia.Paint.kRound_Join,
+            )
+
+        block_start_x = target_center_x - final_max_line_width / 2.0
+
+        num_lines = len(final_lines_data)
+        if num_lines > 0:
+            total_visual_height = (
+                (num_lines - 1) * final_line_height
+                - final_metrics.fAscent
+                + final_metrics.fDescent
+            )
+            block_top_y = target_center_y - (total_visual_height / 2.0)
+            first_baseline_y = block_top_y - final_metrics.fAscent
+        else:
+            first_baseline_y = (
+                target_center_y - (final_metrics.fAscent + final_metrics.fDescent) / 2.0
+            )
+
+        log_message(
+            f"Rendering at size {final_font_size}, center: ({target_center_x:.0f}, {target_center_y:.0f})",
+            verbose=verbose,
+        )
+
+        def _resolve_style_resources(style_name: str):
+            if style_name == "bold_italic":
+                typeface = loaded_typefaces.get("bold_italic")
+                hb_face = loaded_hb_faces.get("bold_italic")
+                if typeface and hb_face:
+                    return typeface, hb_face
+                typeface = loaded_typefaces.get("bold")
+                hb_face = loaded_hb_faces.get("bold")
+                if typeface and hb_face:
+                    return typeface, hb_face
+                typeface = loaded_typefaces.get("italic")
+                hb_face = loaded_hb_faces.get("italic")
+                if typeface and hb_face:
+                    return typeface, hb_face
+            elif style_name == "bold":
+                typeface = loaded_typefaces.get("bold")
+                hb_face = loaded_hb_faces.get("bold")
+                if typeface and hb_face:
+                    return typeface, hb_face
+            elif style_name == "italic":
+                typeface = loaded_typefaces.get("italic")
+                hb_face = loaded_hb_faces.get("italic")
+                if typeface and hb_face:
+                    return typeface, hb_face
+            if loaded_typefaces.get(style_name) is not None and loaded_hb_faces.get(style_name) is not None:
+                return loaded_typefaces[style_name], loaded_hb_faces[style_name]  # e.g. "symbol"
+            return regular_typeface, regular_hb_face
+
+        with surface as canvas:
+            # Apply optional pre-transform (used for rotated OSB rendering)
+            need_transform = (
+                abs(pre_translate_x) > 1e-3
+                or abs(pre_translate_y) > 1e-3
+                or abs(pre_rotate_deg) > 1e-3
+            )
+            if need_transform:
+                canvas.save()
+                if abs(pre_translate_x) > 1e-3 or abs(pre_translate_y) > 1e-3:
+                    canvas.translate(float(pre_translate_x), float(pre_translate_y))
+                if abs(pre_rotate_deg) > 1e-3:
+                    canvas.rotate(float(pre_rotate_deg))
+
+            bg_paint = None
+            if text_background_color is not None:
+                bg_paint = skia.Paint(AntiAlias=False, Color=text_background_color)
+
+            if layout_data.get("orientation") == "vertical":
+                block_height = layout_data.get("block_height") or 0.0
+                block_top_y = target_center_y - block_height / 2.0
+
+                for line_data in final_lines_data:
+                    segment_text = line_data.get("text_with_markers", "")
+                    style_name = line_data.get("style", "regular")
+                    typeface_to_use, hb_face_to_use = _resolve_style_resources(
+                        style_name
+                    )
+
+                    skia_font_segment = skia.Font(typeface_to_use, final_font_size)
+                    skia_font_segment.setSubpixel(True)
+                    skia_font_segment.setHinting(skia.FontHinting.kNone)
+
+                    hb_font_segment = hb.Font(hb_face_to_use)
+                    hb_font_segment.ptem = float(final_font_size)
+                    hb_scale = int(final_font_size * 64)
+                    hb_font_segment.scale = (hb_scale, hb_scale)
+
+                    try:
+                        infos, positions, _ = shape_line(
+                            segment_text, hb_font_segment, features_to_enable
+                        )
+                        if not infos:
+                            continue
+                    except Exception as e:
+                        log_message(
+                            f"Shaping failed for '{segment_text}': {e}",
+                            always_print=True,
+                        )
+                        continue
+
+                    HB_26_6_SCALE_FACTOR = 64.0
+                    left = line_data.get("left", 0.0)
+                    right = line_data.get("right", line_data.get("width", 0.0))
+                    top = line_data.get("top", -line_data.get("height", 0.0))
+                    bottom = line_data.get("bottom", 0.0)
+                    baseline_x = target_center_x - (left + right) / 2.0
+                    baseline_y = block_top_y + line_data.get("origin_y", 0.0)
+
+                    if bg_paint is not None:
+                        pad_x = final_font_size * 0.1
+                        pad_y = final_font_size * 0.05
+                        rect = skia.Rect.MakeXYWH(
+                            baseline_x + left - pad_x,
+                            baseline_y + top - pad_y,
+                            (right - left) + 2 * pad_x,
+                            (bottom - top) + 2 * pad_y,
+                        )
+                        canvas.drawRect(rect, bg_paint)
+
+                    builder = skia.TextBlobBuilder()
+                    glyph_ids = [info.codepoint for info in infos]
+                    skia_point_positions = []
+                    segment_cursor_x = 0.0
+
+                    for _, pos in zip(infos, positions, strict=False):
+                        glyph_x = (
+                            baseline_x
+                            + segment_cursor_x
+                            + (pos.x_offset / HB_26_6_SCALE_FACTOR)
+                        )
+                        glyph_y = baseline_y - (pos.y_offset / HB_26_6_SCALE_FACTOR)
+                        skia_point_positions.append(skia.Point(glyph_x, glyph_y))
+                        segment_cursor_x += pos.x_advance / HB_26_6_SCALE_FACTOR
+
+                    try:
+                        _ = builder.allocRunPos(
+                            skia_font_segment, glyph_ids, skia_point_positions
+                        )
+                        text_blob = builder.make()
+                        if text_blob:
+                            if outline_paint:
+                                canvas.drawTextBlob(text_blob, 0, 0, outline_paint)
+                            canvas.drawTextBlob(text_blob, 0, 0, paint)
+                            log_message(
+                                f"Rendered vertical '{segment_text}' ({style_name})",
+                                verbose=verbose,
+                            )
+                    except Exception as e:
+                        log_message(
+                            f"Skia rendering error for '{segment_text}': {e}",
+                            always_print=True,
+                        )
+
+            else:
+                current_baseline_y = first_baseline_y
+                for i, line_data in enumerate(final_lines_data):
+                    line_width_measured = line_data["width"]
+
+                    line_start_x = (
+                        block_start_x
+                        + (final_max_line_width - line_width_measured) / 2.0
+                    )
+                    cursor_x = line_start_x
+
+                    if bg_paint is not None:
+                        pad_x = final_font_size * 0.1
+                        pad_y = final_font_size * 0.05
+                        rect = skia.Rect.MakeXYWH(
+                            line_start_x - pad_x,
+                            current_baseline_y + final_metrics.fAscent - pad_y,
+                            line_width_measured + 2 * pad_x,
+                            -final_metrics.fAscent + final_metrics.fDescent + 2 * pad_y,
+                        )
+                        canvas.drawRect(rect, bg_paint)
+
+                    segments = line_data.get("segments", [])
+                    log_message(f"Line {i}: {len(segments)} segments", verbose=verbose)
+
+                    is_line_rtl = is_rtl_script(line_data.get("text_with_markers", ""))
+                    if is_line_rtl:
+                        cursor_x = line_start_x + line_width_measured
+
+                    for segment_text, style_name in segments:
+                        typeface_to_use, hb_face_to_use = _resolve_style_resources(
+                            style_name
+                        )
+                        if not typeface_to_use or not hb_face_to_use:
+                            log_message(
+                                f"ERROR: No font resources for style '{style_name}' - skipping segment",
+                                always_print=True,
+                            )
+                            continue
+
+                        skia_font_segment = skia.Font(typeface_to_use, final_font_size)
+                        skia_font_segment.setSubpixel(True)
+                        skia_font_segment.setHinting(skia.FontHinting.kNone)
+
+                        hb_font_segment = hb.Font(hb_face_to_use)
+                        hb_font_segment.ptem = float(final_font_size)
+                        hb_scale = int(final_font_size * 64)
+                        hb_font_segment.scale = (hb_scale, hb_scale)
+
+                        try:
+                            infos, positions, _ = shape_line(
+                                segment_text, hb_font_segment, features_to_enable
+                            )
+                            if not infos:
+                                log_message(
+                                    f"No glyphs for segment '{segment_text}'",
+                                    verbose=verbose,
+                                )
+                                continue
+                        except Exception as e:
+                            log_message(
+                                f"Shaping failed for '{segment_text}': {e}",
+                                always_print=True,
+                            )
+                            continue
+
+                        builder = skia.TextBlobBuilder()
+                        glyph_ids = [info.codepoint for info in infos]
+                        skia_point_positions = []
+                        segment_cursor_x = 0.0
+                        HB_26_6_SCALE_FACTOR = 64.0
+                        segment_width_calculated = (
+                            sum(pos.x_advance for pos in positions)
+                            / HB_26_6_SCALE_FACTOR
+                        )
+
+                        if is_line_rtl:
+                            cursor_x -= segment_width_calculated
+                            segment_start_x = cursor_x
+                        else:
+                            segment_start_x = cursor_x
+
+                        for _, pos in zip(infos, positions, strict=False):
+                            glyph_x = (
+                                segment_start_x
+                                + segment_cursor_x
+                                + (pos.x_offset / HB_26_6_SCALE_FACTOR)
+                            )
+                            glyph_y = current_baseline_y - (
+                                pos.y_offset / HB_26_6_SCALE_FACTOR
+                            )
+                            skia_point_positions.append(skia.Point(glyph_x, glyph_y))
+                            segment_cursor_x += pos.x_advance / HB_26_6_SCALE_FACTOR
+
+                        try:
+                            _ = builder.allocRunPos(
+                                skia_font_segment, glyph_ids, skia_point_positions
+                            )
+                            text_blob = builder.make()
+                            if text_blob:
+                                if outline_paint:
+                                    canvas.drawTextBlob(text_blob, 0, 0, outline_paint)
+                                canvas.drawTextBlob(text_blob, 0, 0, paint)
+                                if not is_line_rtl:
+                                    cursor_x += segment_width_calculated
+                                log_message(
+                                    f"Rendered '{segment_text}' ({style_name}) width={segment_width_calculated:.0f}",
+                                    verbose=verbose,
+                                )
+                            else:
+                                log_message(
+                                    f"TextBlob build failed for '{segment_text}'",
+                                    verbose=verbose,
+                                )
+                        except Exception as e:
+                            log_message(
+                                f"Skia rendering error for '{segment_text}': {e}",
+                                always_print=True,
+                            )
+                            if not is_line_rtl:
+                                cursor_x += segment_width_calculated
+
+                    current_baseline_y += final_line_height
+
+            if need_transform:
+                canvas.restore()
+
+        return True
+
+    except Exception as e:
+        log_message(f"Drawing failed: {e}", always_print=True)
+        return False

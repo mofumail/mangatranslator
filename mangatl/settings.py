@@ -288,7 +288,7 @@ class Settings(_Section):
         if self._device is None:
             import torch
 
-            from mangatl.core.device import get_best_device
+            from mangatl.common.device import get_best_device
 
             self._device = torch.device("cpu") if self.runtime.device == "cpu" else get_best_device()
         return self._device
