@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -96,12 +97,12 @@ def units_for(sets: list[str]) -> list[Unit]:
 
 # ---------------------------------------------------------------- running
 
-def run_unit(unit: Unit, run_dir: Path, cache: Path, replay: bool) -> dict:
+def run_unit(unit: Unit, run_dir: Path, cache: Path, replay: bool, extra: list[str] | None = None) -> dict:
     d = run_dir / unit.name
     d.mkdir(parents=True)
     out = d / "out"
     argv = [sys.executable, str(ROOT / "translate.py"), "--input", str(ROOT / unit.input),
-            "--output", str(out), *COMMON, *unit.args]
+            "--output", str(out), *COMMON, *unit.args, *(extra or [])]
     env = {**os.environ, "MT_LLM_FRESH": "1", "MT_LLM_CACHE": str(cache), "MT_DUMP_TEXT": str(d / "text")}
     env.pop("MT_SKIP_EXISTING_SINCE", None)
     if replay:
@@ -112,7 +113,8 @@ def run_unit(unit: Unit, run_dir: Path, cache: Path, replay: bool) -> dict:
     secs = time.time() - t0
     pages = len(list(out.glob("*.png"))) if out.exists() else 0
     log(f"{unit.name}: rc={rc} pages={pages} {secs:.0f}s")
-    return {"unit": unit.name, "argv": [str(a) for a in argv[1:]], "rc": rc, "seconds": round(secs, 1),
+    return {"unit": unit.name, "argv": [str(a) for a in argv[1:]], "extra": list(extra or []), "rc": rc,
+            "seconds": round(secs, 1),
             "pages": pages, "replay": replay, "cache": str(cache.relative_to(ROOT))}
 
 
@@ -136,7 +138,8 @@ def write_meta(run_dir: Path, kind: str, results: list[dict], against: str | Non
 def cmd_baseline(a) -> int:
     run_dir = new_run_dir(a.name, a.force)
     units = units_for(a.sets)
-    results = [run_unit(u, run_dir, run_dir / u.name / "llm", replay=False) for u in units]
+    extra = shlex.split(a.extra_args) if a.extra_args else []
+    results = [run_unit(u, run_dir, run_dir / u.name / "llm", replay=False, extra=extra) for u in units]
     write_meta(run_dir, "baseline", results)
     if any(r["rc"] for r in results):
         log("a unit failed; see its log.txt")
@@ -144,7 +147,8 @@ def cmd_baseline(a) -> int:
     if a.no_self_check:
         return 0
     log("self-check: replaying the baseline (expect no differences)")
-    a2 = argparse.Namespace(against=a.name, name=f"{a.name}-selfcheck", force=True, live=False, tol=a.tol)
+    a2 = argparse.Namespace(against=a.name, name=f"{a.name}-selfcheck", force=True, live=False, tol=a.tol,
+                            only=None, extra_args=None)
     return cmd_check(a2)
 
 
@@ -154,17 +158,22 @@ def cmd_check(a) -> int:
     run_dir = new_run_dir(a.name or time.strftime("check-%Y%m%d-%H%M%S"), a.force)
     known = {u.name: u for s in SETS.values() for u in s}
     results = []
+    only = a.only.split(",") if a.only else None
+    extra = shlex.split(a.extra_args) if a.extra_args else []
     for r in meta["units"]:
         u = known.get(r["unit"])
         if u is None:
             log(f"skip {r['unit']}: no longer defined in SETS")
+            continue
+        if only and not any(r["unit"] == o or r["unit"].startswith(o + "/") for o in only):
             continue
         cache = base / u.name / "llm"
         if a.live:  # misses are sent to the LLM and stored in this run's own copy of the cache
             own = run_dir / "_llm" / u.name
             shutil.copytree(cache, own, copy_function=os.link)
             cache = own
-        results.append(run_unit(u, run_dir, cache, replay=not a.live))
+        # a variant baseline (baseline --extra-args) is replayed with the same flags
+        results.append(run_unit(u, run_dir, cache, replay=not a.live, extra=r.get("extra", []) + extra))
     write_meta(run_dir, "check", results, against=a.against)
     return report(base, run_dir, a.tol)
 
@@ -388,11 +397,18 @@ def main() -> None:
                    help=f"comma-separated, from: {', '.join(SETS)}")
     b.add_argument("--force", action="store_true", help="replace an existing run of that name")
     b.add_argument("--no-self-check", action="store_true")
+    b.add_argument("--extra-args", default=None,
+                   help='extra translate.py flags for a variant baseline, e.g. "--vision full"; check '
+                        "replays it with the same flags")
     c = sub.add_parser("check", help="re-run with the baseline's LLM answers and report differences")
     c.add_argument("--against", default="baseline")
     c.add_argument("--name", default=None, help="default: check-<timestamp>")
     c.add_argument("--force", action="store_true")
     c.add_argument("--live", action="store_true", help="send cache misses to the LLM instead of failing them")
+    c.add_argument("--only", default=None, help="comma-separated units or sets to run, e.g. ch6,om10")
+    c.add_argument("--extra-args", default=None,
+                   help='extra translate.py flags for a variant run, e.g. "--sfx redraw" (render-only '
+                        "variants replay without misses; compare a pre/post pair of such runs)")
     m = sub.add_parser("compare", help="report differences between two existing runs")
     m.add_argument("a")
     m.add_argument("b")
