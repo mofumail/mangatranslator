@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 
 from mangatl.core.services import translation as tr
@@ -26,13 +25,13 @@ def _short_item(ocr: str, osb: bool) -> bool:
 
 def revise_short_items(config, bubble_metadata: list[dict], ocr_texts: list[str], texts: list[str],
                        full_image_b64: str | None, full_image_mime_type: str | None) -> list[str]:
-    """MT_VISION_SHORT=1 (--vision short): translate the page from text as usual, then show the model the page
+    """translation.vision = "short": translate the page from text as usual, then show the model the page
     image and let it redo only the short items: sound effects, gasps, one- or two-word lines
     and cut-off words, whose meaning depends on the picture. Measured: the page image fixes
     those (sound effects, speaker of a short reply, OCR slips on two-kana effects) but adds
     meaning errors and pronoun guesses to longer dialogue and breaks the " / " separators of
     text blocks, so long items keep their text-only translation. Needs the vision projector."""
-    if os.environ.get("MT_VISION_SHORT") != "1":
+    if config.translation.vision != "short":
         return texts
     try:
         meta = bubble_metadata or []
@@ -60,16 +59,16 @@ def revise_short_items(config, bubble_metadata: list[dict], ocr_texts: list[str]
             + f"\n\n## TASK\nItems {wanted} are short: sound effects, gasps, one-word lines, cut-off "
             "words. Their meaning depends on the picture. For each of them, find it on the page, "
             "see what is happening there (what makes the sound, who speaks, to whom), and give its "
-            f"final {config.output_language} translation, keeping the draft when it is already right. "
+            f"final {config.translation.target_language} translation, keeping the draft when it is already right. "
             "The source of a short sound effect may be misread; go by the lettering on the page. "
             "Keep every other item's draft in mind so the lines fit together. Output only items "
             f"{wanted}, one per line as `N: translation`, nothing else."
             + tr._format_special_instructions(config)
         )
         system = tr._build_system_prompt_translation(
-            config.output_language, full_page_context=True,
-            ero_doujinshi_mode=getattr(config, "ero_doujinshi_mode", False),
-            input_language=config.input_language)
+            config.translation.target_language, full_page_context=True,
+            ero_doujinshi_mode=config.translation.adult,
+            input_language=config.translation.source_language)
         parts = [{"text": tr._FULL_PAGE_LABEL}, tr._image_part(page_mime, page_b64)]
         reply = tr._call_llm_endpoint(config, parts, prompt, system_prompt=system) or ""
     except Exception as e:  # never lose the page over the second look

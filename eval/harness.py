@@ -6,10 +6,10 @@
     uv run python eval/harness.py compare RUN_A RUN_B   # diff two existing runs
 
 A baseline stores the output pages, a text dump per page (OCR + translation per region) and every LLM
-response (MT_LLM_CACHE). `check` re-runs the pipeline with those responses replayed (MT_LLM_REPLAY), so
+response (--llm-cache). `check` re-runs the pipeline with those responses replayed (--llm-replay), so
 detection, OCR, cleaning and typesetting changes show up as image/text diffs within minutes, and any change
-to what the translator is asked shows up as a cache miss (the prompt changed). MT_LLM_FRESH=1 is set on
-every run: it makes temperature-0 answers repeatable, and it is part of the cache key.
+to what the translator is asked shows up as a cache miss (the prompt changed). cache_prompt=false is set on
+every run (--llm-fresh): it makes temperature-0 answers repeatable, and it is part of the cache key.
 
 Runs go to eval/runs/<name>/ (git-ignored). Sets whose pages are not on this machine are skipped.
 Exit code of check/compare: 0 no differences, 1 differences, 2 error.
@@ -36,7 +36,7 @@ ROOT = Path(__file__).resolve().parent.parent
 RUNS = ROOT / "eval" / "runs"
 
 # Fixed for every run: the port is part of the LLM cache key, PNG avoids JPEG noise in pixel diffs.
-COMMON = ["--port", "8090", "--temperature", "0", "--format", "png", "--verbose"]
+COMMON = ["--port", "8090", "--set", "translation.temperature=0", "--format", "png", "--verbose", "--llm-fresh"]
 
 
 @dataclass
@@ -103,11 +103,11 @@ def run_unit(unit: Unit, run_dir: Path, cache: Path, replay: bool, extra: list[s
     d.mkdir(parents=True)
     out = d / "out"
     argv = [sys.executable, str(ROOT / "translate.py"), "--input", str(ROOT / unit.input),
-            "--output", str(out), *COMMON, *unit.args, *(extra or [])]
-    env = {**os.environ, "MT_LLM_FRESH": "1", "MT_LLM_CACHE": str(cache), "MT_DUMP_TEXT": str(d / "text")}
-    env.pop("MT_SKIP_EXISTING_SINCE", None)
+            "--output", str(out), *COMMON, "--llm-cache", str(cache), "--dump-text", str(d / "text"),
+            *unit.args, *(extra or [])]
     if replay:
-        env.update(MT_LLM_REPLAY="1", MT_LLM_MISSES=str(d / "misses.jsonl"))
+        argv += ["--llm-replay", "--llm-misses", str(d / "misses.jsonl")]
+    env = dict(os.environ)
     t0 = time.time()
     with open(d / "log.txt", "w") as fh:
         rc = subprocess.call(argv, cwd=ROOT, env=env, stdout=fh, stderr=subprocess.STDOUT)

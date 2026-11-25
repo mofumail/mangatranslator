@@ -1,4 +1,4 @@
-"""Sound-effect labels (--sfx label, the default; MT_SFX=label).
+"""Sound-effect labels (typesetting.sfx = "label", the default).
 
 Like a professional scanlation, keep the artist's sound-effect lettering and add a small outlined
 English label beside it, instead of erasing it and drawing the English over the cleaned art.
@@ -7,7 +7,6 @@ Only outside-bubble sound effects (see _sfx_label); speech, moans and narration 
 
 from __future__ import annotations
 
-import os
 import re
 
 import numpy as np
@@ -15,10 +14,6 @@ from PIL import ImageDraw, ImageFont
 
 from mangatl.core.text.font_manager import find_font_variants
 from mangatl.utils.logging import log_message
-
-
-def enabled() -> bool:
-    return os.environ.get("MT_SFX") == "label"
 
 
 # Sound effects: source all kana (plus small-tsu, long marks, hearts, punctuation)
@@ -114,7 +109,7 @@ def draw_labels(image, labels: list[tuple], sorted_bubble_data: list[dict], conf
     """Draw the labels beside their effects, sized to the effect, away from other text."""
     if not labels:
         return image
-    font_dir = config.outside_text.osb_font_dir or config.rendering.font_dir
+    font_dir = config.typesetting.outside.font_dir or config.typesetting.bubbles.font_dir
     variants = find_font_variants(font_dir)
     font_path = variants.get("bold") or variants.get("regular")
     base = max(sizes.main_min_font, sizes.main_max_font)

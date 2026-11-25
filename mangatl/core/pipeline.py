@@ -10,7 +10,6 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 from functools import partial
 from itertools import pairwise
 from pathlib import Path
@@ -22,7 +21,6 @@ from PIL import Image
 
 from mangatl.core.batch_coordinator import BatchRequestCoordinator
 from mangatl.core.caching import get_cache
-from mangatl.core.config import MangaTranslatorConfig, PreprocessingConfig, RenderingConfig
 from mangatl.core.scaling import scale_font_size, scale_length, scale_scalar
 from mangatl.core.image.line_ocr import _script_ratios
 from mangatl.core.terminology import default_glossary_path, load_terms
@@ -75,7 +73,8 @@ from .services.translation import (
 )
 from .text.font_manager import find_font_variants, get_cap_height_ratio
 from .text.text_processing import supports_long_word_breaking
-from .text.text_renderer import render_text_skia
+from .text.text_renderer import RenderingConfig, render_text_skia
+from mangatl.settings import PROVIDER, PreprocessingSettings, Settings
 
 if TYPE_CHECKING:
     from mangatl.utils.cancellation import CancellationManager
@@ -158,7 +157,7 @@ def _bubble_glyph_sizes(
 
 
 def _resolve_main_max_font(
-    config: MangaTranslatorConfig,
+    config: Settings,
     page_image: np.ndarray,
     bubbles_info: list[dict[str, Any]],
     min_font: int,
@@ -174,10 +173,10 @@ def _resolve_main_max_font(
     ("page") and each bubble's own (glyph size, ink parts) by bbox ("own"), for _emphasis_sizes.
     Sections of a long strip that reuse the first section's size get no emphasis data.
     """
-    if not config.rendering.auto_font_size:
+    if not config.typesetting.bubbles.auto_font_size:
         return max_font
 
-    cjk_source = config.translation.input_language.lower().startswith(
+    cjk_source = config.translation.source_language.lower().startswith(
         AUTO_FONT_CJK_LANGUAGE_PREFIXES
     )
     if strip_glyph_size:
@@ -194,7 +193,7 @@ def _resolve_main_max_font(
         cap_height = AUTO_FONT_TYPICAL_CAP_HEIGHT * processing_scale
     else:
         cap_height = glyph_size * (AUTO_FONT_CJK_GLYPH_RATIO if cjk_source else 1.0)
-    regular_font_path = find_font_variants(config.rendering.font_dir, verbose=verbose)[
+    regular_font_path = find_font_variants(config.typesetting.bubbles.font_dir, verbose=verbose)[
         "regular"
     ]
     auto_max = round(cap_height / get_cap_height_ratio(str(regular_font_path)))
@@ -203,23 +202,23 @@ def _resolve_main_max_font(
     return auto_max
 
 
-def _should_overlap_llm_with_inpaint(config: MangaTranslatorConfig) -> bool:
+def _should_overlap_llm_with_inpaint(config: Settings) -> bool:
     return (
-        bool(getattr(config, "overlap_llm_with_inpaint", False))
-        and not config.cleaning_only
+        config.runtime.overlap_llm_with_inpaint
+        and not config.runtime.cleaning_only
     )
 
 
-def _inpaints_colored_bubbles(config: MangaTranslatorConfig) -> bool:
+def _inpaints_colored_bubbles(config: Settings) -> bool:
     """Colored bubbles are inpainted with the OSB inpainting model, so only while OSB
     text removal is enabled."""
-    return config.cleaning.inpaint_colored_bubbles and config.outside_text.enabled
+    return config.cleaning.inpaint_colored_bubbles and config.detection.outside_text.enabled
 
 
 def _clean_speech_bubbles_for_page(
     pil_image_processed: Image.Image,
     bubble_data: list[dict[str, Any]],
-    config: MangaTranslatorConfig,
+    config: Settings,
     device,
     processing_scale: float,
     verbose: bool,
@@ -228,7 +227,7 @@ def _clean_speech_bubbles_for_page(
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
     """Clean bubbles (including optional colored-bubble Flux). Returns (cv_image, info)."""
     try:
-        use_otsu = config.cleaning.use_otsu_threshold
+        use_otsu = config.cleaning.otsu
         if _inpaints_colored_bubbles(config):
             log_message(
                 "Flux inpainting enabled for colored bubbles",
@@ -241,7 +240,7 @@ def _clean_speech_bubbles_for_page(
             config.detection.confidence,
             pre_computed_detections=bubble_data,
             device=device,
-            thresholding_value=config.cleaning.thresholding_value,
+            thresholding_value=config.cleaning.threshold,
             use_otsu_threshold=use_otsu,
             auto_threshold=config.cleaning.auto_threshold,
             roi_shrink_px=config.cleaning.roi_shrink_px,
@@ -249,13 +248,13 @@ def _clean_speech_bubbles_for_page(
             processing_scale=processing_scale,
             conjoined_confidence=config.detection.conjoined_confidence,
             inpaint_colored_bubbles=_inpaints_colored_bubbles(config),
-            flux_seed=config.outside_text.seed,
-            osb_text_verification=config.detection.use_osb_text_verification,
-            osb_text_hf_token=config.outside_text.huggingface_token,
-            inpaint_method=config.outside_text.inpainting_method,
-            flux_luminance_correction=config.outside_text.flux_luminance_correction,
-            bubble_detector_model=config.detection.bubble_detector_model,
-            request_coordinator=getattr(config, "request_coordinator", None),
+            flux_seed=config.cleaning.seed,
+            osb_text_verification=config.detection.outside_text.cover_with_bubbles,
+            osb_text_hf_token=config.runtime.hf_token,
+            inpaint_method=config.cleaning.inpainter,
+            flux_luminance_correction=config.cleaning.luminance_correction,
+            bubble_detector_model=config.detection.bubble_model,
+            request_coordinator=config.request_coordinator,
             glyph_map=glyph_map,
         )
         return cleaned_image_cv, processed_bubbles_info
@@ -289,18 +288,18 @@ def get_image_encoding_params(pil_image_format: str | None) -> tuple[str, str]:
 
 
 def _encode_context_image(
-    image: Image.Image, config: MangaTranslatorConfig, cv2_ext: str
+    image: Image.Image, config: Settings, cv2_ext: str
 ) -> str:
     """Resize a page for LLM context per the context upscale setting, base64-encoded."""
     verbose = config.verbose
     # processing_scale is intentionally not used for context_image_max_side_pixels
     max_side = scale_length(
-        config.translation.context_image_max_side_pixels,
+        config.translation.context_image_max_side,
         None,
         minimum=512,
         maximum=4096,
     )
-    upscale_method = config.translation.upscale_method
+    upscale_method = config.ocr.upscale
 
     if upscale_method in ("model", "model_lite"):
         model_manager = get_model_manager()
@@ -331,7 +330,7 @@ def _encode_context_image(
 def _build_previous_context_texts(
     image_files: list[Path],
     image_index: int,
-    config: MangaTranslatorConfig,
+    config: Settings,
     ocr_text_history: dict[Path, list[str]] | None = None,
     ocr_text_history_lock: threading.Lock | None = None,
 ) -> list[list[str]]:
@@ -341,7 +340,7 @@ def _build_previous_context_texts(
     wait for the required previous pages before calling this helper.
     """
     requested_count = int(
-        getattr(config.translation, "previous_context_text_count", 0) or 0
+        config.translation.context_pages
     )
     if requested_count <= 0 or ocr_text_history is None:
         return []
@@ -366,14 +365,11 @@ def _build_previous_context_texts(
     return previous_texts
 
 
-def _resolve_pre_upscale_factor(
-    pre_cfg: PreprocessingConfig | None,
-    verbose: bool = False,
-) -> float:
-    if pre_cfg is None or not pre_cfg.enabled:
+def _resolve_pre_upscale_factor(pre: PreprocessingSettings, verbose: bool = False) -> float:
+    if not pre.upscale:
         return 1.0
 
-    factor = max(1.0, min(float(pre_cfg.factor or 1.0), 8.0))
+    factor = pre.upscale_factor  # validated to 1.0-8.0
     if factor <= 1.01:
         return 1.0
 
@@ -383,27 +379,20 @@ def _resolve_pre_upscale_factor(
 
 def _apply_pre_upscale_if_needed(
     image: Image.Image,
-    config: MangaTranslatorConfig,
+    config: Settings,
     verbose: bool = False,
 ) -> tuple[Image.Image, float]:
-    factor = _resolve_pre_upscale_factor(
-        getattr(config, "preprocessing", None), verbose
-    )
+    factor = _resolve_pre_upscale_factor(config.preprocessing, verbose)
     if factor == 1.0:
         return image, 1.0
 
-    # Use the output upscale model setting for initial upscaling as well
-    model_type = (
-        getattr(config.output, "image_upscale_model", "model_lite")
-        if hasattr(config, "output")
-        else "model_lite"
-    )
+    model_type = config.preprocessing.upscale_model
     upscaled = upscale_image(image, factor, model_type=model_type, verbose=verbose)
     return upscaled, factor
 
 
 def _detect_strip_text_rows(
-    crop: Image.Image, image_path: Path, config: MangaTranslatorConfig
+    crop: Image.Image, image_path: Path, config: Settings
 ) -> list[tuple[int, int]]:
     """Row ranges occupied by bubbles and text in a strip crop, for choosing cut rows."""
     bubbles, text_free_boxes = detect_speech_bubbles(
@@ -412,10 +401,10 @@ def _detect_strip_text_rows(
         config.detection.confidence,
         verbose=config.verbose,
         device=config.device,
-        conjoined_detection=config.detection.conjoined_detection,
+        conjoined_detection=config.detection.conjoined,
         conjoined_confidence=config.detection.conjoined_confidence,
         image_override=crop,
-        bubble_detector_model=config.detection.bubble_detector_model,
+        bubble_detector_model=config.detection.bubble_model,
     )
     boxes = [bubble["bbox"] for bubble in bubbles] + list(text_free_boxes)
     return [(int(box[1]), int(box[3])) for box in boxes]
@@ -425,7 +414,7 @@ def _translate_strip(
     image_path: Path,
     strip: Image.Image,
     cut_rows: list[int],
-    config: MangaTranslatorConfig,
+    config: Settings,
     output_path: str | Path | None,
     target_mode: str,
     cancellation_manager: Optional["CancellationManager"],
@@ -444,22 +433,18 @@ def _translate_strip(
         always_print=True,
     )
 
-    section_config = replace(
-        config,
-        preprocessing=replace(config.preprocessing, split_long_strips=False),
-    )
+    section_config = config.updated(**{"preprocessing.split_long_strips": False})
     if config.preprocessing.auto_scale:
         # Section heights vary, so scaling each by its own area would change font sizes
         # and kernels from one section to the next. All share a nominal section's scale.
         pre_upscale = _resolve_pre_upscale_factor(config.preprocessing)
-        section_config = replace(
-            section_config,
-            processing_scale=math.sqrt(STRIP_TARGET_RATIO) * width * pre_upscale / 1000,
-            preprocessing=replace(section_config.preprocessing, auto_scale=False),
-        )
+        section_config = section_config.updated(**{
+            "preprocessing.processing_scale": math.sqrt(STRIP_TARGET_RATIO) * width * pre_upscale / 1000,
+            "preprocessing.auto_scale": False,
+        })
     # Sections of one image are one page to the reader, so they always share context.
     context_count = max(
-        int(getattr(config.translation, "previous_context_text_count", 0) or 0), 1
+        config.translation.context_pages, 1
     )
     section_texts: list[list[str]] = []
     strip_glyph_size: list[float] = []
@@ -535,13 +520,13 @@ class _RenderSizes(NamedTuple):
 
 
 def _scaled_render_sizes(
-    config: MangaTranslatorConfig, processing_scale: float
+    config: Settings, processing_scale: float
 ) -> _RenderSizes:
     main_min_font = scale_font_size(
-        config.rendering.min_font_size, processing_scale, minimum=4, maximum=256
+        config.typesetting.bubbles.min_font_size, processing_scale, minimum=4, maximum=256
     )
     osb_min_font = scale_font_size(
-        config.outside_text.osb_min_font_size,
+        config.typesetting.outside.min_font_size,
         processing_scale,
         minimum=4,
         maximum=512,
@@ -549,31 +534,31 @@ def _scaled_render_sizes(
     return _RenderSizes(
         main_min_font=main_min_font,
         main_max_font=scale_font_size(
-            config.rendering.max_font_size,
+            config.typesetting.bubbles.max_font_size,
             processing_scale,
             minimum=main_min_font,
             maximum=384,
         ),
         osb_min_font=osb_min_font,
         osb_max_font=scale_font_size(
-            config.outside_text.osb_max_font_size,
+            config.typesetting.outside.max_font_size,
             processing_scale,
             minimum=osb_min_font,
             maximum=640,
         ),
         padding_pixels=scale_scalar(
-            config.rendering.padding_pixels,
+            config.typesetting.bubbles.padding,
             processing_scale,
             minimum=1.0,
             maximum=80.0,
         ),
         osb_padding_pixels=scale_scalar(
-            config.outside_text.osb_padding_pixels,
+            config.typesetting.outside.padding,
             processing_scale,
             minimum=1.0,
             maximum=80.0,
         ),
-        osb_outline_ratio=config.outside_text.osb_outline_ratio,
+        osb_outline_ratio=config.typesetting.outside.outline_ratio,
     )
 
 
@@ -598,10 +583,10 @@ def _open_source_image(image_path: Path) -> Image.Image:
 
 
 def _resolve_target_mode(
-    config: MangaTranslatorConfig, image_path: Path, output_path: str | Path | None
+    config: Settings, image_path: Path, output_path: str | Path | None
 ) -> str:
     """RGB for JPEG output, RGBA for PNG, WEBP, and other formats in auto mode."""
-    desired_format = config.output.output_format
+    desired_format = config.output.format
     output_ext = (
         Path(output_path).suffix.lower() if output_path else image_path.suffix.lower()
     )
@@ -613,11 +598,11 @@ def _resolve_target_mode(
 
 
 def _resolve_processing_scale(
-    image: Image.Image, config: MangaTranslatorConfig
+    image: Image.Image, config: Settings
 ) -> float:
     """Scale relative to a 1 MP page when auto scale is on, else the configured scale."""
     if not config.preprocessing.auto_scale:
-        return config.processing_scale
+        return config.preprocessing.processing_scale
     width, height = image.size
     processing_scale = math.sqrt((width * height) / 1_000_000)
     log_message(
@@ -628,7 +613,7 @@ def _resolve_processing_scale(
 
 def _finish_page(
     image: Image.Image,
-    config: MangaTranslatorConfig,
+    config: Settings,
     output_path: str | Path | None,
     target_mode: str,
     start_time: float,
@@ -658,7 +643,7 @@ def _finish_page(
 
 
 def _detect_page_bubbles(
-    image_path: Path, image: Image.Image, config: MangaTranslatorConfig
+    image_path: Path, image: Image.Image, config: Settings
 ) -> tuple[list[dict[str, Any]], list]:
     """Returns (bubbles, text-free boxes), both empty if detection fails."""
     log_message("Detecting speech bubbles...", verbose=config.verbose)
@@ -669,13 +654,13 @@ def _detect_page_bubbles(
             config.detection.confidence,
             verbose=config.verbose,
             device=config.device,
-            conjoined_detection=config.detection.conjoined_detection,
+            conjoined_detection=config.detection.conjoined,
             conjoined_confidence=config.detection.conjoined_confidence,
             image_override=image,
-            osb_enabled=config.outside_text.enabled,
-            osb_text_verification=config.detection.use_osb_text_verification,
-            osb_text_hf_token=config.outside_text.huggingface_token,
-            bubble_detector_model=config.detection.bubble_detector_model,
+            osb_enabled=config.detection.outside_text.enabled,
+            osb_text_verification=config.detection.outside_text.cover_with_bubbles,
+            osb_text_hf_token=config.runtime.hf_token,
+            bubble_detector_model=config.detection.bubble_model,
         )
     except Exception as e:
         log_message(f"Error during detection: {e}", always_print=True)
@@ -683,10 +668,10 @@ def _detect_page_bubbles(
 
 
 def _detect_page_panels(
-    image_path: Path, image: Image.Image, config: MangaTranslatorConfig
+    image_path: Path, image: Image.Image, config: Settings
 ) -> list | None:
     """Panels for reading order, or None when panel sorting is off or detection fails."""
-    if not config.detection.use_panel_sorting:
+    if not config.detection.panel_sorting:
         return None
 
     verbose = config.verbose
@@ -712,7 +697,7 @@ def _detect_page_panels(
 
 
 def _encode_full_page_context(
-    image: Image.Image, config: MangaTranslatorConfig, cv2_ext: str
+    image: Image.Image, config: Settings, cv2_ext: str
 ) -> str | None:
     try:
         encoded = _encode_context_image(image, config, cv2_ext)
@@ -728,7 +713,7 @@ def _encode_full_page_context(
 def _clean_page(
     image: Image.Image,
     bubble_data: list[dict[str, Any]],
-    config: MangaTranslatorConfig,
+    config: Settings,
     processing_scale: float,
     target_mode: str,
     glyph_map: PageGlyphMap | None = None,
@@ -758,7 +743,7 @@ def _finish_deferred_cleaning(
     outside_work,
     image: Image.Image,
     bubble_data: list[dict[str, Any]],
-    config: MangaTranslatorConfig,
+    config: Settings,
     processing_scale: float,
     target_mode: str,
     glyph_map: PageGlyphMap | None = None,
@@ -775,7 +760,7 @@ def _prepare_bubble_crops(
     bubble_data: list[dict[str, Any]],
     processed_bubbles_info: list[dict[str, Any]],
     page_cv: np.ndarray,
-    config: MangaTranslatorConfig,
+    config: Settings,
     mime_type: str,
 ) -> list[dict[str, Any]]:
     """Attach the refined cleaning masks to the bubbles and encode their crops for the LLM."""
@@ -797,7 +782,7 @@ def _prepare_bubble_crops(
         if bbox_key in mask_by_bbox:
             bubble["sam_mask"] = mask_by_bbox[bbox_key]
 
-    upscale_method = config.translation.upscale_method
+    upscale_method = config.ocr.upscale
 
     model_manager = get_model_manager()
     upscale_model = None
@@ -812,9 +797,9 @@ def _prepare_bubble_crops(
         upscale_model,
         config.device,
         mime_type,
-        config.translation.bubble_min_side_pixels,
+        config.ocr.bubble_min_side,
         upscale_method,
-        config.translation.whiteout_conjoined_bubbles,
+        config.ocr.whiteout_neighbors,
         verbose,
     )
     if upscale_model is not None:
@@ -831,7 +816,7 @@ def _prepare_bubble_crops(
 def _sort_text_elements(
     valid_bubble_data: list[dict[str, Any]],
     outside_text_data: list[dict[str, Any]],
-    config: MangaTranslatorConfig,
+    config: Settings,
     panels: list | None,
 ) -> list[dict[str, Any]]:
     """Sort speech bubbles and outside text together into reading order."""
@@ -851,7 +836,7 @@ def _sort_text_elements(
 
 
 def _call_translation_api(
-    config: MangaTranslatorConfig,
+    config: Settings,
     sorted_bubble_data: list[dict[str, Any]],
     images_b64: list[str],
     mime_types: list[str],
@@ -881,7 +866,7 @@ def _call_translation_api(
     context_suffix = f" ({', '.join(context_parts)})" if context_parts else ""
     log_message(
         f"Translating {len(images_b64)} bubbles: "
-        f"{config.translation.input_language} → {config.translation.output_language}"
+        f"{config.translation.source_language} → {config.translation.target_language}"
         f"{context_suffix}",
         always_print=True,
     )
@@ -890,7 +875,7 @@ def _call_translation_api(
 
     def translate(ocr_out: list[str]) -> list[str]:
         return call_translation_api_batch(
-            config=config.translation,
+            config=config,
             images_b64=images_b64,
             full_image_b64=page_b64,
             mime_types=mime_types,
@@ -905,7 +890,7 @@ def _call_translation_api(
     texts = _retry_truncated(texts, sorted_bubble_data, ocr_texts, translate)
     _mark_failed_and_skipped(texts, sorted_bubble_data)
     mark_narration(texts, sorted_bubble_data)
-    texts = revise_short_items(config.translation, sorted_bubble_data, ocr_texts, texts,
+    texts = revise_short_items(config, sorted_bubble_data, ocr_texts, texts,
                                page_b64, page_mime)
     eval_hooks.dump_text(sorted_bubble_data, ocr_texts, texts)
     return texts, ocr_texts
@@ -961,7 +946,7 @@ def _translate_or_error_texts(
     get_result: Callable[[], tuple[list[str], list[str]]],
     sorted_bubble_data: list[dict[str, Any]],
     image_count: int,
-    config: MangaTranslatorConfig,
+    config: Settings,
     ocr_texts_out: list[str] | None,
 ) -> tuple[list[str], list[str]]:
     """Run the translation; non-critical failures become per-bubble error text."""
@@ -986,7 +971,7 @@ def _translate_or_error_texts(
     if ocr_texts and ocr_texts_out is not None:
         ocr_texts_out.extend(_pair_context_lines(ocr_texts, texts))
 
-    provider_tag = f"[{config.translation.provider}:"
+    provider_tag = f"[{PROVIDER}:"
     valid_translations = [
         t
         for t in texts
@@ -1022,50 +1007,34 @@ def _paste_original_crop(image: Image.Image, bubble: dict[str, Any]) -> Image.Im
 
 
 def _text_render_config(
-    config: MangaTranslatorConfig, sizes: _RenderSizes, is_outside_text: bool
+    config: Settings, sizes: _RenderSizes, is_outside_text: bool
 ) -> RenderingConfig:
-    rendering = config.rendering
-    osb = config.outside_text
+    ts = config.typesetting
+    style = ts.outside if is_outside_text else ts.bubbles
     # Hyphenating languages insert hyphens; Korean/Thai use
     # no-hyphen emergency breaks under the same user setting.
     should_hyphenate = (
-        rendering.hyphenate_before_scaling
-        and supports_long_word_breaking(config.translation.output_language)
+        ts.hyphenate_before_scaling
+        and supports_long_word_breaking(config.translation.target_language)
     )
     return RenderingConfig(
         min_font_size=sizes.osb_min_font if is_outside_text else sizes.main_min_font,
         max_font_size=sizes.osb_max_font if is_outside_text else sizes.main_max_font,
-        line_spacing_mult=(
-            osb.osb_line_spacing if is_outside_text else rendering.line_spacing_mult
-        ),
-        use_ligatures=(
-            osb.osb_use_ligatures if is_outside_text else rendering.use_ligatures
-        ),
+        line_spacing_mult=style.line_spacing,
+        use_ligatures=style.ligatures,
         hyphenate_before_scaling=should_hyphenate,
-        hyphenation_min_word_length=rendering.hyphenation_min_word_length,
-        hyphenation_language=config.translation.output_language,
-        badness_exponent=rendering.badness_exponent,
+        hyphenation_min_word_length=ts.hyphenation_min_word_length,
+        hyphenation_language=config.translation.target_language,
+        badness_exponent=ts.badness_exponent,
         padding_pixels=(
             sizes.osb_padding_pixels if is_outside_text else sizes.padding_pixels
         ),
         outline_ratio=sizes.osb_outline_ratio if is_outside_text else 0.0,
-        supersampling_factor=rendering.supersampling_factor,
-        detach_trailing_punctuation=rendering.detach_trailing_punctuation,
-        auto_vertical_text=(
-            osb.osb_auto_vertical_text
-            if is_outside_text
-            else rendering.auto_vertical_text
-        ),
-        vertical_line_spacing_mult=(
-            osb.osb_vertical_line_spacing_mult
-            if is_outside_text
-            else rendering.vertical_line_spacing_mult
-        ),
-        vertical_font_size_mult=(
-            osb.osb_vertical_font_size_mult
-            if is_outside_text
-            else rendering.vertical_font_size_mult
-        ),
+        supersampling_factor=ts.supersampling,
+        detach_trailing_punctuation=ts.detach_trailing_punctuation,
+        auto_vertical_text=style.auto_vertical,
+        vertical_line_spacing_mult=style.vertical_line_spacing,
+        vertical_font_size_mult=style.vertical_font_size,
     )
 
 
@@ -1073,23 +1042,23 @@ _OsbAttempt = tuple[float, bool, tuple[float, float] | None]
 
 
 def _osb_render_attempts(
-    bubble: dict[str, Any], config: MangaTranslatorConfig, sizes: _RenderSizes
+    bubble: dict[str, Any], config: Settings, sizes: _RenderSizes
 ) -> list[_OsbAttempt]:
     """(rotation, vertical stack, layout dimensions) to try for an outside text, in order."""
     if bubble.get("mt_narration"):  # narration / dialogue on the art: upright (core.text.narration)
         return [(0.0, False, None), (0.0, True, None)]
     verbose = config.verbose
-    osb = config.outside_text
+    osb = config.typesetting.outside
     bbox = bubble["bbox"]
     rotation_deg = 0.0
-    if osb.osb_follow_tilt:
+    if osb.follow_tilt:
         rotation_deg = compute_effective_tilt_angle(
             tilt_deg=float(bubble.get("tilt_deg", 0.0) or 0.0),
             tilt_conf=float(bubble.get("tilt_conf", 0.0) or 0.0),
-            follow_tilt=osb.osb_follow_tilt,
-            confidence_threshold=osb.osb_tilt_confidence_threshold,
-            min_tilt_deg=osb.osb_min_tilt_deg,
-            max_tilt_deg=osb.osb_max_tilt_deg,
+            follow_tilt=osb.follow_tilt,
+            confidence_threshold=osb.tilt_confidence,
+            min_tilt_deg=osb.min_tilt,
+            max_tilt_deg=osb.max_tilt,
         )
         if abs(rotation_deg) > 0.01:
             conf = float(bubble.get("tilt_conf", 0.0) or 0.0)
@@ -1119,7 +1088,7 @@ def _render_osb_attempt(
     bubble: dict[str, Any],
     text: str,
     bubble_id: str,
-    config: MangaTranslatorConfig,
+    config: Settings,
     sizes: _RenderSizes,
     attempt: _OsbAttempt,
     layout_only: bool = False,
@@ -1129,8 +1098,7 @@ def _render_osb_attempt(
         # narration / dialogue on the art: normal case, one utterance per line, dialogue font
         # (core.text.narration); the caller passes text.upper()
         text = bubble.get("mt_text", text)
-        config = dataclasses.replace(
-            config, outside_text=dataclasses.replace(config.outside_text, osb_font_dir=None))
+        config = config.updated(**{"typesetting.outside.font": config.typesetting.bubbles.font})
     rotation_deg, vertical_stack, layout_dims = attempt
     is_dark_text = bubble.get("is_dark_text", True)
     text_color_rgb = bubble.get("text_color_rgb", None)
@@ -1150,7 +1118,7 @@ def _render_osb_attempt(
         pil_image=image,
         text=text,
         bbox=bubble["bbox"],
-        font_dir=config.outside_text.osb_font_dir or config.rendering.font_dir,
+        font_dir=config.typesetting.outside.font_dir or config.typesetting.bubbles.font_dir,
         # Outside text was inpainted, no mask needed
         cleaned_mask=None,
         bubble_color_bgr=(50, 50, 50) if is_dark_text else (255, 255, 255),
@@ -1173,7 +1141,7 @@ def _fitting_osb_attempts(
     bubble: dict[str, Any],
     text: str,
     bubble_id: str,
-    config: MangaTranslatorConfig,
+    config: Settings,
     sizes: _RenderSizes,
 ) -> list[_OsbAttempt]:
     """The OSB attempts from the first one whose layout fits; empty if none fits."""
@@ -1199,7 +1167,7 @@ def _render_outside_text(
     bubble: dict[str, Any],
     text: str,
     bubble_id: str,
-    config: MangaTranslatorConfig,
+    config: Settings,
     sizes: _RenderSizes,
     attempts: list[_OsbAttempt],
 ) -> Image.Image | None:
@@ -1239,7 +1207,7 @@ def _emphasis_sizes(
     bubble_id: str,
     sizes: _RenderSizes,
     page_glyphs: dict | None,
-    config: MangaTranslatorConfig,
+    config: Settings,
 ) -> _RenderSizes:
     """Every bubble is capped at one page-wide size taken from the typical source glyph, so a
     shout lettered three times bigger would get the same small English as a whisper, lost in
@@ -1277,7 +1245,7 @@ def _render_bubble(
     bubble_id: str,
     render_info: dict[str, Any] | None,
     page_cv: np.ndarray,
-    config: MangaTranslatorConfig,
+    config: Settings,
     sizes: _RenderSizes,
     processing_scale: float,
     page_glyphs: dict | None = None,
@@ -1317,7 +1285,7 @@ def _render_bubble_once(
     bubble_id: str,
     render_info: dict[str, Any] | None,
     page_cv: np.ndarray,
-    config: MangaTranslatorConfig,
+    config: Settings,
     sizes: _RenderSizes,
     processing_scale: float,
     outlined: bool = False,
@@ -1354,7 +1322,7 @@ def _render_bubble_once(
             pil_image=image,
             text=text,
             bbox=bbox,
-            font_dir=config.rendering.font_dir,
+            font_dir=config.typesetting.bubbles.font_dir,
             cleaned_mask=mask,
             bubble_color_bgr=color,
             config=render_config,
@@ -1391,7 +1359,7 @@ def _render_bubble_once(
                         render_info.get("text_color_bgr") if render_info else None
                     ),
                 },
-                config.cleaning.thresholding_value,
+                config.cleaning.threshold,
                 config.cleaning.roi_shrink_px,
                 processing_scale,
                 verbose=verbose,
@@ -1447,8 +1415,7 @@ def _render_action(bubble: dict[str, Any], text: str, provider_tag: str) -> str:
     if (action == "render" and bubble.get("is_outside_text") and "original_crop_pil" in bubble
             and _junk_read(bubble.get("ocr_text", ""))):
         action = "keep_original"
-    if (sfx_labels.enabled() and bubble.get("_sfx_label")
-            and action not in ("ocr_failed", "invalid")):
+    if bubble.get("_sfx_label") and action not in ("ocr_failed", "invalid"):  # label mode only
         action = "keep_original"
     return action
 
@@ -1498,7 +1465,7 @@ def _paint_osb_fills(
     sorted_bubble_data: list[dict[str, Any]],
     translated_texts: list[str],
     provider_tag: str,
-    config: MangaTranslatorConfig,
+    config: Settings,
     sizes: _RenderSizes,
 ) -> tuple[Image.Image, dict[int, list[_OsbAttempt]]]:
     """Paint each outside text's pending fill at the angle its translation fits at.
@@ -1535,7 +1502,7 @@ def _render_translations(
     translated_texts: list[str],
     processed_bubbles_info: list[dict[str, Any]],
     page_cv: np.ndarray,
-    config: MangaTranslatorConfig,
+    config: Settings,
     sizes: _RenderSizes,
     processing_scale: float,
     empty_bubbles: list,
@@ -1545,7 +1512,7 @@ def _render_translations(
     """Render the page's translations (_render_page_texts); with --sfx label, sound effects keep
     their lettering and get an English label beside it (core.text.sfx_labels)."""
     labels = (sfx_labels.mark_labels(sorted_bubble_data, translated_texts)
-              if sfx_labels.enabled() else [])
+              if config.typesetting.sfx == "label" else [])
     image = _render_page_texts(image, sorted_bubble_data, translated_texts, processed_bubbles_info,
                                page_cv, config, sizes, processing_scale, empty_bubbles,
                                cancellation_manager, page_glyphs)
@@ -1558,7 +1525,7 @@ def _render_page_texts(
     translated_texts: list[str],
     processed_bubbles_info: list[dict[str, Any]],
     page_cv: np.ndarray,
-    config: MangaTranslatorConfig,
+    config: Settings,
     sizes: _RenderSizes,
     processing_scale: float,
     empty_bubbles: list,
@@ -1591,7 +1558,7 @@ def _render_page_texts(
         empty_bubbles.extend(b["bbox"] for b in sorted_bubble_data if not b.get("mt_skip"))
         return paint_pending_osb_fills(image, sorted_bubble_data)
 
-    provider_tag = f"[{config.translation.provider}:"
+    provider_tag = f"[{PROVIDER}:"
     image, osb_attempts = _paint_osb_fills(
         image, sorted_bubble_data, translated_texts, provider_tag, config, sizes
     )
@@ -1670,7 +1637,7 @@ def _render_page_texts(
 
 def translate_and_render(
     image_path: str | Path,
-    config: MangaTranslatorConfig,
+    config: Settings,
     output_path: str | Path | None = None,
     cancellation_manager: Optional["CancellationManager"] = None,
     previous_context_texts: list[list[str]] | None = None,
@@ -1684,7 +1651,7 @@ def translate_and_render(
 
     Args:
         image_path (str or Path): Path to input image
-        config (MangaTranslatorConfig): Configuration object containing all settings.
+        config (Settings): Configuration object containing all settings.
         output_path (str or Path, optional): Path to save the final image. If None, image is not saved.
         previous_context_texts: Batch-only previous source page OCR transcripts for LLM reference
             (oldest-to-newest, one inner list per page).
@@ -1709,13 +1676,13 @@ def translate_and_render(
     verbose = config.verbose
     previous_context_texts = previous_context_texts or []
     empty_bubbles = empty_bubbles_out if empty_bubbles_out is not None else []
-    config.translation.request_coordinator = getattr(
+    config.request_coordinator = getattr(
         config, "request_coordinator", None
     )
 
     log_message(f"Using device: {config.device}", verbose=verbose)
 
-    get_model_manager().set_hf_token(config.outside_text.huggingface_token)
+    get_model_manager().set_hf_token(config.runtime.hf_token)
 
     pil_original = _open_source_image(image_path)
     image_format = pil_original.format
@@ -1797,7 +1764,7 @@ def translate_and_render(
     page_cv = pil_to_cv2(page)
 
     full_image_b64 = None
-    if config.translation.send_full_page_context:
+    if config.translation.full_page_context:
         full_image_b64 = _encode_full_page_context(
             full_page_context_source, config, cv2_ext
         )
@@ -1820,7 +1787,7 @@ def translate_and_render(
             page, bubble_data, config, processing_scale, target_mode, glyph_map
         )
 
-    if config.cleaning_only:
+    if config.runtime.cleaning_only:
         log_message("Cleaning only mode - skipping translation", always_print=True)
         cleaned = paint_pending_osb_fills(cleaned, outside_text_data)
         return _finish_page(cleaned, config, output_path, target_mode, start_time)
@@ -1941,7 +1908,7 @@ def _resolve_output_path(
     img_path: Path,
     input_dir: Path,
     output_dir: Path,
-    config: MangaTranslatorConfig,
+    config: Settings,
     preserve_structure: bool,
 ) -> tuple[Path, str, str]:
     """Compute output path, display name, and error key for a single image."""
@@ -1959,7 +1926,7 @@ def _resolve_output_path(
         error_key = img_path.name
 
     original_ext = img_path.suffix.lower()
-    desired_format = config.output.output_format
+    desired_format = config.output.format
     if desired_format == "jpeg":
         output_ext = ".jpg"
     elif desired_format == "png":
@@ -2001,11 +1968,11 @@ def _translate_batch_page(*args, **kwargs) -> None:
 
 
 def _should_run_failed_retry(
-    config: MangaTranslatorConfig,
+    config: Settings,
     failed_jobs: list[dict[str, Any]],
     cancellation_manager: Optional["CancellationManager"] = None,
 ) -> bool:
-    if not getattr(config, "retry_failed_once", False):
+    if not config.runtime.retry_failed_once:
         return False
     if not failed_jobs:
         return False
@@ -2017,7 +1984,7 @@ def _should_run_failed_retry(
 def _retry_failed_batch_images(
     failed_jobs: list[dict[str, Any]],
     results: dict[str, Any],
-    config: MangaTranslatorConfig,
+    config: Settings,
     input_dir: Path,
     output_dir: Path,
     preserve_structure: bool = False,
@@ -2151,14 +2118,14 @@ def _retry_failed_batch_images(
 async def _batch_translate_pages(
     image_files: list[Path],
     input_dir: Path,
-    config: MangaTranslatorConfig,
+    config: Settings,
     output_dir: Path,
     preserve_structure: bool,
     progress_callback: Callable[[float, str], None] | None,
     cancellation_manager: Optional["CancellationManager"],
     source_path_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Process images with up to `config.parallel_requests` pages in flight.
+    """Process images with up to `config.runtime.parallel_requests` pages in flight.
 
     The first image is processed alone to warm up all ML models (triggering
     lazy loading and YOLO layer fusing on the main thread). Remaining images are
@@ -2166,7 +2133,7 @@ async def _batch_translate_pages(
     they run in order.
     """
     total_images = len(image_files)
-    n_workers = config.parallel_requests
+    n_workers = config.runtime.parallel_requests
     results = {
         "success_count": 0,
         "error_count": 0,
@@ -2178,7 +2145,7 @@ async def _batch_translate_pages(
     ocr_text_history_lock = threading.Lock()
     ocr_text_ready_events = [threading.Event() for _ in image_files]
     requested_text_context_count = int(
-        getattr(config.translation, "previous_context_text_count", 0) or 0
+        config.translation.context_pages
     )
 
     log_message(
@@ -2202,19 +2169,19 @@ async def _batch_translate_pages(
             with ocr_text_history_lock:
                 ocr_text_history[img_path] = texts
 
-    if n_workers > 1 and getattr(config, "batch_parallel_within_pages", False):
+    if n_workers > 1 and config.runtime.parallel_within_pages:
         request_coordinator = BatchRequestCoordinator(
             n_workers, cancellation_manager=cancellation_manager
         )
         config.request_coordinator = request_coordinator
-        config.translation.request_coordinator = request_coordinator
+        config.request_coordinator = request_coordinator
         log_message(
             "Intra-page parallel requests enabled",
             always_print=True,
         )
     else:
         config.request_coordinator = None
-        config.translation.request_coordinator = None
+        config.request_coordinator = None
 
     # -- Phase 1: process the first image sequentially to warm up models --
     first_img = image_files[0]
@@ -2406,7 +2373,7 @@ async def _batch_translate_pages(
 
 def batch_translate_images(
     input_dir: str | Path,
-    config: MangaTranslatorConfig,
+    config: Settings,
     output_dir: str | Path | None = None,
     progress_callback: Callable[[float, str], None] | None = None,
     preserve_structure: bool = False,
@@ -2420,7 +2387,7 @@ def batch_translate_images(
 
     Args:
         input_dir (str or Path): Directory containing images to process
-        config (MangaTranslatorConfig): Configuration object containing all settings.
+        config (Settings): Configuration object containing all settings.
         output_dir (str or Path, optional): Directory to save translated images.
                                             If None, uses input_dir / "output_translated".
         progress_callback (callable, optional): Function to call with progress updates (0.0-1.0, message).
@@ -2491,20 +2458,16 @@ def batch_translate_images(
         log_message(f"No image files found in '{input_dir}'", always_print=True)
         return empty_results
 
-    translation_cfg = config.translation
-    translates = not config.cleaning_only
-    if not (translates and translation_cfg.terminology_memory):
+    translates = not config.runtime.cleaning_only
+    if not (translates and config.translation.glossary):
         glossary_path = None
-    elif translation_cfg.terminology_memory_path:
-        glossary_path = translation_cfg.terminology_memory_path
+    elif config.translation.glossary_path:
+        glossary_path = config.translation.glossary_path
     else:
         glossary_path = glossary_path or str(
             default_glossary_path(glossary_name or image_files[0].stem)
         )
-        config = replace(
-            config,
-            translation=replace(translation_cfg, terminology_memory_path=glossary_path),
-        )
+        config = config.updated(**{"translation.glossary_path": Path(glossary_path)})
     if glossary_path:
         _check_glossary_path(Path(glossary_path))
         log_message(f"Terminology memory: {glossary_path}", always_print=True)
@@ -2553,7 +2516,7 @@ def batch_translate_images(
         raise
 
     copy_comic_info(
-        input_dir, output_dir, config.translation.output_language, preserve_structure
+        input_dir, output_dir, config.translation.target_language, preserve_structure
     )
 
     if progress_callback:

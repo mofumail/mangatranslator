@@ -126,10 +126,8 @@ def run_job(job_id: str, job: dict[str, Any]) -> None:
         cmd += ["--sfx", o["sfx"]]
     if o.get("honorifics"):
         cmd += ["--honorifics", "keep"]
-    env_extra = {}
     if job.get("resume"):  # only Resume skips pages, and only those this job already wrote
-        cmd += ["--skip-existing"]
-        env_extra["MT_SKIP_EXISTING_SINCE"] = str(job.get("first_started") or 0)
+        cmd += ["--skip-existing", "--skip-existing-since", str(job.get("first_started") or 0)]
 
     Path(job["output_dir"]).mkdir(parents=True, exist_ok=True)
     log_path = job_dir(job_id) / "log.txt"
@@ -142,7 +140,7 @@ def run_job(job_id: str, job: dict[str, Any]) -> None:
         logf.flush()
         proc = subprocess.Popen(cmd, cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT,
                                 start_new_session=True,
-                                env={**os.environ, "PYTHONUNBUFFERED": "1", **env_extra})
+                                env={**os.environ, "PYTHONUNBUFFERED": "1"})
         running[job_id] = proc
         rc = proc.wait()
         running.pop(job_id, None)

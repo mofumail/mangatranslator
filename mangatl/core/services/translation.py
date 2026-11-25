@@ -1,5 +1,4 @@
 import base64
-import os
 import re
 import threading
 from collections.abc import Callable
@@ -13,7 +12,6 @@ import numpy as np
 from PIL import Image
 
 from mangatl.core.caching import get_cache
-from mangatl.core.config import TranslationConfig
 from mangatl.core.image.image_utils import (
     cv2_to_pil,
     pil_to_cv2,
@@ -51,6 +49,7 @@ from mangatl.utils.model_metadata import (
     supports_openai_original_image_detail,
     supports_openai_verbosity,
 )
+from mangatl.settings import PROVIDER, Settings
 
 T = TypeVar("T")
 
@@ -190,9 +189,9 @@ def _image_part(mime_type: str, data: str) -> dict[str, Any]:
     return {"inline_data": {"mime_type": mime_type, "data": data}}
 
 
-def _normalized_image_detail(model_name: str, config: TranslationConfig) -> str:
+def _normalized_image_detail(model_name: str, config: Settings) -> str:
     """OpenAI image detail, falling back to "high" where "original" is unsupported."""
-    image_detail = (config.image_detail or "auto").lower()
+    image_detail = (config.translation.image_detail or "auto").lower()
     if image_detail not in ("auto", "original", "high", "low"):
         image_detail = "auto"
     if image_detail == "original" and not supports_openai_original_image_detail(
@@ -203,7 +202,7 @@ def _normalized_image_detail(model_name: str, config: TranslationConfig) -> str:
 
 
 def _routed_model_config(
-    model_name: str, config: TranslationConfig, max_tokens: int
+    model_name: str, config: Settings, max_tokens: int
 ) -> dict[str, Any]:
     """Start the config for OpenRouter or OpenAI-Compatible, which route other vendors' models.
 
@@ -226,15 +225,15 @@ def _routed_model_config(
     if is_openai_model:
         generation_config["image_detail"] = _normalized_image_detail(model_name, config)
     if supports_verbosity:
-        generation_config["verbosity"] = config.verbosity or "low"
-    if claude_flags and config.effort:
-        generation_config["effort"] = config.effort
+        generation_config["verbosity"] = config.translation.verbosity or "low"
+    if claude_flags and config.translation.effort:
+        generation_config["effort"] = config.translation.effort
     return generation_config
 
 
 def _openai_compatible_generation_config(
     model_name: str,
-    config: TranslationConfig,
+    config: Settings,
     max_tokens: int,
 ) -> dict[str, Any]:
     generation_config = _routed_model_config(model_name, config, max_tokens)
@@ -243,15 +242,15 @@ def _openai_compatible_generation_config(
     is_openai_reasoning = is_openai_model and is_openai_reasoning_model(model_name)
     metadata["is_openai_reasoning"] = is_openai_reasoning
     # The endpoint leaves out the sampling parameters the model's family rejects
-    if config.use_custom_sampling and not is_openai_reasoning:
+    if config.translation.custom_sampling and not is_openai_reasoning:
         generation_config.update(
             {
-                "temperature": config.temperature,
-                "top_p": config.top_p,
-                "top_k": config.top_k,
+                "temperature": config.translation.temperature,
+                "top_p": config.translation.top_p,
+                "top_k": config.translation.top_k,
             }
         )
-    reasoning_effort = config.reasoning_effort
+    reasoning_effort = config.translation.reasoning_effort
     if reasoning_effort and is_openai_compatible_reasoning_model(model_name):
         if is_openai_model and is_gpt6_series(model_name):
             reasoning_effort = clamp_gpt6_reasoning_effort(model_name, reasoning_effort)
@@ -259,14 +258,14 @@ def _openai_compatible_generation_config(
     return generation_config
 
 
-def _build_generation_config(model_name: str, config: TranslationConfig) -> dict[str, Any]:
+def _build_generation_config(model_name: str, config: Settings) -> dict[str, Any]:
     """Generation config for the OpenAI-compatible endpoint (llama-server or --llm-url).
 
     max_tokens defaults to 32768 for reasoning models and 4096 otherwise, capped where the
     model family has a lower limit.
     """
-    if config.max_tokens is not None:
-        max_tokens_value = config.max_tokens
+    if config.translation.max_tokens is not None:
+        max_tokens_value = config.translation.max_tokens
     else:
         max_tokens_value = 32768 if is_openai_compatible_reasoning_model(model_name) else 4096
     max_tokens_cap = get_max_tokens_cap("OpenAI-Compatible", model_name)
@@ -276,21 +275,21 @@ def _build_generation_config(model_name: str, config: TranslationConfig) -> dict
 
 
 def _call_llm_endpoint(
-    config: TranslationConfig,
+    config: Settings,
     parts: list[dict[str, Any]],
     prompt_text: str,
     debug: bool = False,
     system_prompt: str | None = None,
 ) -> str | None:
     """Send one request to the OpenAI-compatible endpoint."""
-    model_name = config.model_name
+    model_name = config.translation.model
     api_parts = [*parts, {"text": prompt_text}]
-    coordinator = getattr(config, "request_coordinator", None)
+    coordinator = config.request_coordinator
     if coordinator is not None and not coordinator.in_slot():
         return coordinator.run(
             _call_llm_endpoint, config, parts, prompt_text, debug, system_prompt
         )
-    if not config.openai_compatible_url:
+    if not config.translation.url:
         raise TranslationError("OpenAI-Compatible URL is missing.")
     return _run_abandoning_on_cancel(
         call_openai_compatible_endpoint,
@@ -299,8 +298,8 @@ def _call_llm_endpoint(
         generation_config=_build_generation_config(model_name, config),
         system_prompt=system_prompt,
         debug=debug,
-        base_url=config.openai_compatible_url,
-        api_key=config.openai_compatible_api_key,
+        base_url=config.translation.url,
+        api_key=config.translation.api_key,
     )
 
 
@@ -596,21 +595,21 @@ def _record_glossary_terms(
         )
 
 
-def _format_special_instructions(config: TranslationConfig) -> str:
+def _format_special_instructions(config: Settings) -> str:
     """Format user's special instructions section for prompts.
 
     Args:
-        config: TranslationConfig with special_instructions
+        config: Settings with special_instructions
 
     Returns:
         Formatted special instructions string (empty if none)
     """
-    if config.special_instructions and config.special_instructions.strip():
+    if config.translation.special_instructions and config.translation.special_instructions.strip():
         return f"""
 
 ## CUSTOM USER INSTRUCTIONS
 These come from the user and override the translation and styling rules where they conflict; the output format still applies.
-{config.special_instructions.strip()}
+{config.translation.special_instructions.strip()}
 """
     return ""
 
@@ -619,14 +618,18 @@ def _perform_manga_ocr(
     images_b64: list[str],
     bubble_metadata: list[dict[str, Any]],
     debug: bool = False,
+    keep_other_language: bool = False,
 ) -> list[str]:
     """Japanese OCR: manga-ocr, then Hayai re-reads and the other-language skip (_refine_ocr_reads)."""
     texts = _manga_ocr_reads(images_b64, bubble_metadata, debug)
-    return _refine_ocr_reads(texts, images_b64, bubble_metadata)
+    return _refine_ocr_reads(texts, images_b64, bubble_metadata, keep_other_language)
 
 
 def _refine_ocr_reads(
-    texts: list[str], images_b64: list[str], bubble_metadata: list[dict[str, Any]]
+    texts: list[str],
+    images_b64: list[str],
+    bubble_metadata: list[dict[str, Any]],
+    keep_other_language: bool = False,
 ) -> list[str]:
     """Improve the manga-ocr reads of a page.
 
@@ -636,10 +639,8 @@ def _refine_ocr_reads(
       character error rate for both) but reads hand-drawn moans that manga-ocr turns into
       unrelated words ("ぅ" -> "そして、"); when one read contains the other the longer is kept.
     - Pages carrying both the Japanese text and a Chinese translation of it: the Chinese block
-      is marked `mt_skip` (erased, not translated) unless MT_KEEP_OTHER_LANGUAGE is set.
+      is marked `mt_skip` (erased, not translated) unless keep_other_language is set.
     """
-    import os
-
     from mangatl.core.image import line_ocr
     from mangatl.core.ml import hayai_ocr
     from mangatl.core.ml.model_manager import get_model_manager
@@ -667,7 +668,7 @@ def _refine_ocr_reads(
                 texts[i] = picked
                 changed = True
 
-    if not os.environ.get("MT_KEEP_OTHER_LANGUAGE") and any(line_ocr.is_japanese(t) for t in texts):
+    if not keep_other_language and any(line_ocr.is_japanese(t) for t in texts):
         for i, t in enumerate(texts):
             if i < len(bubble_metadata) and line_ocr.is_other_cjk(t):
                 bubble_metadata[i]["mt_skip"] = True
@@ -870,18 +871,18 @@ def _layout_hints(bubble_metadata: list[dict[str, Any]]) -> str:
 
 
 def _run_ocr_step(
-    config: TranslationConfig,
+    config: Settings,
     images_b64: list[str],
     bubble_metadata: list[dict[str, Any]],
     debug: bool,
 ) -> list[str]:
     """The OCR pass with the configured local OCR method."""
     log_message("Starting OCR step", verbose=debug)
-    if config.ocr_method == "manga-ocr":
-        return _perform_manga_ocr(images_b64, bubble_metadata, debug)
-    if config.ocr_method == "paddleocr-vl-1.6":
+    if config.ocr.method == "manga-ocr":
+        return _perform_manga_ocr(images_b64, bubble_metadata, debug, config.ocr.keep_other_language)
+    if config.ocr.method == "paddleocr-vl-1.6":
         return _perform_paddle_ocr_vl(images_b64, bubble_metadata, debug)
-    raise TranslationError(f"Unknown OCR method: {config.ocr_method}")
+    raise TranslationError(f"Unknown OCR method: {config.ocr.method}")
 
 
 def _mark_ocr_failures(
@@ -921,7 +922,7 @@ def _keep_ocr_failures(
 
 
 def call_translation_api_batch(
-    config: TranslationConfig,
+    config: Settings,
     images_b64: list[str],
     full_image_b64: str,
     mime_types: list[str],
@@ -938,7 +939,7 @@ def call_translation_api_batch(
     Supports "one-step" (OCR+Translate+Style) and "two-step" (OCR then Translate+Style) modes.
 
     Args:
-        config (TranslationConfig): Configuration object.
+        config (Settings): Configuration object.
         images_b64 (list): List of base64 encoded images of all text elements, in reading order.
         full_image_b64 (str): Base64 encoded image of the full manga page.
         mime_types (List[str]): List of MIME types for each text element image.
@@ -959,17 +960,17 @@ def call_translation_api_batch(
         ValueError: If required config (API key, provider, URL) is missing or invalid.
         RuntimeError: If an API call fails irrecoverably after retries (raised by endpoint functions).
     """
-    provider = config.provider
-    input_language = config.input_language
-    output_language = config.output_language
+    provider = PROVIDER
+    input_language = config.translation.source_language
+    output_language = config.translation.target_language
     cleaned_previous_texts = _clean_previous_context_texts(
         previous_context_texts,
-        int(getattr(config, "previous_context_text_count", 0) or 0),
+        int(config.translation.context_pages or 0),
     )
     previous_context_text_count = len(cleaned_previous_texts)
     previous_text_section = _format_previous_context_texts(cleaned_previous_texts)
     glossary_path = (
-        config.terminology_memory_path if config.terminology_memory else None
+        config.translation.glossary_path if config.translation.glossary else None
     )
     glossary_terms = load_terms(glossary_path) if glossary_path else {}
     previous_text_section += format_glossary_section(glossary_terms)
@@ -999,7 +1000,7 @@ def call_translation_api_batch(
             ocr_texts_output.extend(cached_ocr_texts)
         return cached_translation
 
-    has_full_page = bool(config.send_full_page_context and full_image_b64)
+    has_full_page = bool(config.translation.full_page_context and full_image_b64)
     has_previous_context = bool(previous_context_text_count)
 
     try:
@@ -1020,7 +1021,7 @@ def call_translation_api_batch(
         # Local OCR implies a text-only translation request, unless MT_PAGE_IMAGE=1
         # (--vision full: the model runs with its vision projector and sees the whole page,
         # so it can tell who speaks and catch OCR misreads)
-        page_attached = has_full_page and os.environ.get("MT_PAGE_IMAGE") == "1"
+        page_attached = has_full_page and config.translation.vision == "full"
         full_page_context = _FULL_PAGE_NOTE if page_attached else ""
         previous_page_context = _format_previous_context_prompt_note(
             previous_context_text_count
@@ -1047,8 +1048,8 @@ Translate each item under `## INPUT DATA` into {output_language}.{special_instru
         translation_system = _build_system_prompt_translation(
             output_language,
             full_page_context=page_attached,
-            ero_doujinshi_mode=getattr(config, "ero_doujinshi_mode", False),
-            ocr_correction=getattr(config, "ocr_correction", False),
+            ero_doujinshi_mode=config.translation.adult,
+            ocr_correction=config.translation.ocr_correction,
             input_language=input_language,
             previous_context=has_previous_context,
             terminology_memory=bool(glossary_path),

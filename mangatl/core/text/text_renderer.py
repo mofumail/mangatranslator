@@ -1,10 +1,10 @@
 import math
+from dataclasses import dataclass
 
 import numpy as np
 import skia
 from PIL import Image
 
-from mangatl.core.config import RenderingConfig
 from mangatl.core.image.image_utils import (
     calculate_centroid_expansion_box,
     padded_safe_area_mask,
@@ -26,6 +26,31 @@ from mangatl.core.text.layout_engine import find_optimal_layout
 from mangatl.core.text.text_processing import is_rtl_script, parse_styled_segments
 from mangatl.utils.exceptions import FontError, ImageProcessingError, RenderingError
 from mangatl.utils.logging import log_message
+
+
+@dataclass
+class RenderingConfig:
+    """Parameters of one text render (built from Settings by pipeline._text_render_config)."""
+
+    font_dir: str = "./fonts"
+    max_font_size: int = 32
+    min_font_size: int = 8
+    auto_font_size: bool = True
+    line_spacing_mult: float = 1.0
+    use_ligatures: bool = False
+    hyphenate_before_scaling: bool = True
+    hyphenation_min_word_length: int = 8
+    # Set per render from the output language; not a user setting.
+    hyphenation_language: str = ""
+    badness_exponent: float = 3.0
+    padding_pixels: float = 4.0
+    outline_ratio: float = 0.0
+    supersampling_factor: int = 4
+    detach_trailing_punctuation: bool = True
+    auto_vertical_text: bool = True
+    vertical_line_spacing_mult: float = 1.0
+    vertical_font_size_mult: float = 1.0
+
 
 GRAYSCALE_MIDPOINT = 128  # Threshold for determining text color
 FALLBACK_PADDING_RATIO = 0.08  # 8% padding ratio when safe area calculation fails

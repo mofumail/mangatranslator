@@ -105,7 +105,9 @@ the llama-server start adds ~5-10 s per run.
 --model 12b                          # faster dense translator, fully on GPU
 --gguf models/llm/other.gguf [--cpu-moe N]         # use another GGUF (MoE: N layers' experts in RAM)
 --vertical-text                      # allow stacking short text vertically (default only for CJK targets)
---upstream-help                      # every pipeline (mangatl/cli.py) option; unknown flags are passed through
+--set typesetting.bubbles.max_font_size=28   # any setting (repeatable); see --show-settings
+--show-settings                      # print the run's settings as JSON
+--verbose                            # detailed pipeline log
 ```
 
 ## Text outside speech bubbles (OSB)
@@ -144,13 +146,16 @@ once the model is accessible/downloaded.
 translate.py          wrapper / entry point (CLI)
 webui.py, webui/      browser UI + reader (state in webui_data/, default output in translated/)
 mangatl/              the pipeline (derived from MangaTranslator at e347a09; see mangatl/NOTICE)
-  cli.py              pipeline CLI (translate.py runs `python -m mangatl.cli`)
+  settings.py         Settings: one typed object (pydantic) describing a run, by stage; written to
+                      <output>/settings.json with every run (secrets excluded)
+  presets.py          user-facing options (translate.py, web UI) -> Settings
+  cli.py              runs one input with a settings file (translate.py runs `python -m mangatl.cli`)
   core/pipeline.py    page flow: detect, OCR, translate, render
   core/image/         detection, cleaning, inpainting; line_ocr.py: Hayai line-by-line OCR
   core/ml/            model loading; hayai_ocr.py, text_lines.py (comic-text-detector, ONNX/CPU)
   core/services/      translation prompts and calls; vision_pass.py (--vision short)
   core/text/          typesetting: layout, fonts, symbols, narration, sound-effect labels
-  utils/eval_hooks.py LLM cache/replay and text dumps for the harness (MT_LLM_*, MT_DUMP_TEXT)
+  utils/eval_hooks.py LLM cache/replay and text dumps for the harness (settings.debug)
 bin/llama.cpp/        prebuilt llama.cpp b11972, CUDA 13.4
 models/llm/           translator GGUFs
 models/…              detection / OCR / inpainting weights (auto-downloaded)
@@ -163,7 +168,7 @@ eval/                 harness.py: regression check of every change against a sav
                       OpenMantra benchmark pages used to check quality; eval/djn/ doujin test runner;
                       eval/ch6/ a chapter vs its English scanlation (refs.py reads the pro lettering,
                       compare.py / checklist.py side by side); eval/om/ OpenMantra books vs their
-                      pro English. Runs set MT_LLM_FRESH=1, which makes temperature-0 output repeatable
+                      pro English. Runs pass --llm-fresh, which makes temperature-0 output repeatable
                       (model licenses: Hayai Apache-2.0; comic-text-detector weights GPL-3.0)
 logs/llama-server.log
 ```

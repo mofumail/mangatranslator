@@ -26,7 +26,8 @@ uv run python eval/harness.py compare A B       # report on two existing runs
 ```
 
 - Sets: `om10` (the pages in `in/`, always available), `ch6` and `djn` (local only, skipped when missing).
-  Each chapter is its own `translate.py` run with default settings plus `--temperature 0 --format png`.
+  Each chapter is its own `translate.py` run with default settings plus
+  `--set translation.temperature=0 --format png --llm-fresh` (and `--llm-cache`, `--dump-text`, `--llm-replay`).
 - A baseline keeps the output pages, a per-page text dump (box, OCR, translation of every region) and every
   LLM answer. `check` replays those answers: changes to detection, OCR, cleaning or typesetting show up as
   image and text differences; a change to what the translator is asked (prompt, OCR text, context) shows up

@@ -5,7 +5,6 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from mangatl.core.config import MangaTranslatorConfig
 from mangatl.core.image.glyph_mask import (
     UpscaledGlyphMap,
     glyph_dilation_radius,
@@ -17,6 +16,7 @@ from mangatl.core.ml.hi_sam import predict_text_probability
 from mangatl.core.ml.model_manager import get_model_manager
 from mangatl.utils.exceptions import CancellationError
 from mangatl.utils.logging import log_message
+from mangatl.settings import Settings
 
 
 @dataclass
@@ -41,12 +41,12 @@ class PageGlyphMap:
 
     @classmethod
     def for_page(
-        cls, image: Image.Image, config: MangaTranslatorConfig, verbose: bool
+        cls, image: Image.Image, config: Settings, verbose: bool
     ) -> "PageGlyphMap":
         return cls(
             image,
             verbose=verbose,
-            upscale_boxes=config.outside_text.inpainting_method == "lama_manga",
+            upscale_boxes=config.cleaning.inpainter == "lama_manga",
             enabled=config.cleaning.text_segmentation,
         )
 

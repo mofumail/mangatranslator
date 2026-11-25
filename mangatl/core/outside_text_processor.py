@@ -18,7 +18,6 @@ from mangatl.core.batch_coordinator import (
     partition_non_overlapping_waves,
     paste_image_region,
 )
-from mangatl.core.config import MangaTranslatorConfig
 from mangatl.core.image.glyph_mask import THRESHOLD as GLYPH_THRESHOLD
 from mangatl.core.image.glyph_mask import (
     glyph_dilation_radius,
@@ -44,6 +43,7 @@ from mangatl.core.ml.model_manager import get_model_manager
 from mangatl.utils.cancellation import raise_if_cancelled
 from mangatl.utils.exceptions import CancellationError
 from mangatl.utils.logging import log_message
+from mangatl.settings import Settings
 
 OSB_EXPANSION_PIXEL_BUFFER = 5  # for bubbles, nearby OSB regions, panels
 OSB_SOLID_RATIO_THRESHOLD = (
@@ -72,7 +72,7 @@ class OutsideTextWork:
     """Prepared outside-text state: translation data ready, inpaint still pending."""
 
     pil_image: Image.Image
-    config: MangaTranslatorConfig
+    config: Settings
     image_path: str | Path
     image_format: str | None
     verbose: bool
@@ -106,7 +106,7 @@ def _build_outside_text_data(
     none_skipped_clip_bboxes,
     mime_type: str,
     cv2_ext: str,
-    config: MangaTranslatorConfig,
+    config: Settings,
     verbose: bool,
     glyph_map: PageGlyphMap | None,
 ) -> list[dict[str, Any]]:
@@ -135,7 +135,7 @@ def _build_outside_text_data(
         outside_text_image_pil = cv2_to_pil(outside_text_image_cv)
         original_crop_pil = cv2_to_pil(original_cv_image[y1:y2, x1:x2].copy())
 
-        osb_upscale_method = config.translation.upscale_method
+        osb_upscale_method = config.ocr.upscale
 
         if osb_upscale_method == "model":
             model_manager = get_model_manager()
@@ -144,7 +144,7 @@ def _build_outside_text_data(
                 outside_text_image_pil,
                 upscale_model,
                 config.device,
-                config.translation.osb_min_side_pixels,
+                config.ocr.outside_min_side,
                 "min",
                 "model",
                 verbose,
@@ -157,7 +157,7 @@ def _build_outside_text_data(
                 outside_text_image_pil,
                 upscale_model,
                 config.device,
-                config.translation.osb_min_side_pixels,
+                config.ocr.outside_min_side,
                 "min",
                 "model_lite",
                 verbose,
@@ -166,8 +166,8 @@ def _build_outside_text_data(
         elif osb_upscale_method == "lanczos":
             w, h = outside_text_image_pil.size
             min_side = min(w, h)
-            if min_side < config.translation.osb_min_side_pixels:
-                scale_factor = config.translation.osb_min_side_pixels / min_side
+            if min_side < config.ocr.outside_min_side:
+                scale_factor = config.ocr.outside_min_side / min_side
                 new_w = int(w * scale_factor)
                 new_h = int(h * scale_factor)
                 resized_text = resize_lanczos_antiring(
@@ -202,15 +202,15 @@ def _build_outside_text_data(
             "none",
         )
         osb_tilt_estimation_side_pixels = 256
-        if config.outside_text.osb_follow_tilt and rx2 > rx1 and ry2 > ry1:
+        if config.typesetting.outside.follow_tilt and rx2 > rx1 and ry2 > ry1:
             glyph_prob = None if glyph_map is None else glyph_map.get()
             angle_deg, tilt_conf, obb_dims, tilt_axis = detect_crop_tilt_angle(
                 crop_cv=original_cv_image[ry1:ry2, rx1:rx2],
                 # original_text_colors flags a dark background, i.e. light ink
                 is_dark_text=not original_text_colors.get(raw_bbox_tuple, False),
                 max_side=osb_tilt_estimation_side_pixels,
-                deadband_deg=config.outside_text.osb_min_tilt_deg,
-                max_tilt_deg=config.outside_text.osb_max_tilt_deg,
+                deadband_deg=config.typesetting.outside.min_tilt,
+                max_tilt_deg=config.typesetting.outside.max_tilt,
                 ink_mask=(
                     None
                     if glyph_prob is None
@@ -432,7 +432,7 @@ def _drop_small_osb_regions(
 def _drop_page_numbers(
     pil_image: Image.Image,
     outside_text_results: list,
-    config: MangaTranslatorConfig,
+    config: Settings,
     img_w: int,
     img_h: int,
     verbose: bool,
@@ -445,10 +445,10 @@ def _drop_page_numbers(
     safe_results = []
 
     margin_threshold = max(
-        0.0, min(0.3, config.outside_text.page_filter_margin_threshold)
+        0.0, min(0.3, config.detection.outside_text.page_filter_margin)
     )
     min_area_threshold = max(
-        0.0, min(0.2, config.outside_text.page_filter_min_area_ratio)
+        0.0, min(0.2, config.detection.outside_text.page_filter_min_area)
     )
 
     for i, res in enumerate(outside_text_results):
@@ -494,7 +494,7 @@ def _drop_page_numbers(
 
 def _expand_osb_bboxes(
     outside_text_results: list,
-    config: MangaTranslatorConfig,
+    config: Settings,
     img_w: int,
     img_h: int,
     bubble_data: list[dict[str, Any]] | None,
@@ -503,18 +503,11 @@ def _expand_osb_bboxes(
 ) -> list:
     """Grow narrow/tall and tiny OSB boxes (which render too small) within their
     panel, without overlapping bubbles or other OSB boxes."""
-    narrow_expansion_mult = getattr(
-        config.outside_text, "osb_render_expansion_narrow_multiplier", 1.0
-    )
-    tiny_expansion_mult = getattr(
-        config.outside_text, "osb_render_expansion_tiny_multiplier", 1.0
-    )
-    aspect_ratio_threshold = getattr(
-        config.outside_text, "osb_render_expansion_aspect_ratio_threshold", 0.4
-    )
-    area_ratio_threshold = getattr(
-        config.outside_text, "osb_render_expansion_area_ratio_threshold", 0.005
-    )
+    style = config.typesetting.outside
+    narrow_expansion_mult = style.expansion_narrow
+    tiny_expansion_mult = style.expansion_tiny
+    aspect_ratio_threshold = style.expansion_aspect_threshold
+    area_ratio_threshold = style.expansion_area_threshold
     if max(narrow_expansion_mult, tiny_expansion_mult) <= 1.0:
         return outside_text_results
     log_message(
@@ -741,12 +734,12 @@ def _probe_original_text_colors(
     return original_text_colors
 
 
-def _recovers_missed_text(config: MangaTranslatorConfig) -> bool:
+def _recovers_missed_text(config: Settings) -> bool:
     # Caption-box-only mode deliberately ignores the SFX that recovery mostly finds
     return bool(
-        config.outside_text.osb_recover_missed_text
+        config.detection.outside_text.recover_missed_text
         and config.cleaning.text_segmentation
-        and not config.outside_text.osb_text_free_only
+        and not config.detection.outside_text.text_free_only
     )
 
 
@@ -839,7 +832,7 @@ def _recover_missed_osb_text(
 
 def prepare_outside_text_work(
     pil_image: Image.Image,
-    config: MangaTranslatorConfig,
+    config: Settings,
     image_path: str | Path,
     image_format: str | None,
     verbose: bool = False,
@@ -853,14 +846,14 @@ def prepare_outside_text_work(
     `glyph_map` is the original page's text map, shared with bubble cleaning; one is
     made for `pil_image` without it.
     """
-    if not config.outside_text.enabled:
+    if not config.detection.outside_text.enabled:
         return None
 
     log_message("Detecting text outside speech bubbles...", verbose=verbose)
 
     try:
         outside_detector = OutsideTextDetector(
-            device=config.device, hf_token=config.outside_text.huggingface_token
+            device=config.device, hf_token=config.runtime.hf_token
         )
         detect = partial(
             outside_detector.detect_outside_text,
@@ -871,11 +864,11 @@ def prepare_outside_text_work(
             image_override=pil_image,
             existing_bubbles=bubble_data,
             text_free_boxes=text_free_boxes,
-            bubble_detector_model=config.detection.bubble_detector_model,
-            min_area_ignore_ratio=config.outside_text.min_area_ignore_ratio,
-            text_free_only=config.outside_text.osb_text_free_only,
+            bubble_detector_model=config.detection.bubble_model,
+            min_area_ignore_ratio=config.detection.outside_text.min_area_ignore_ratio,
+            text_free_only=config.detection.outside_text.text_free_only,
         )
-        osb_confidence = config.outside_text.osb_confidence
+        osb_confidence = config.detection.outside_text.confidence
         outside_text_results = detect(confidence=osb_confidence)
 
         if glyph_map is None:
@@ -916,7 +909,7 @@ def prepare_outside_text_work(
 
         img_w, img_h = pil_image.size
 
-        min_ignore = max(0.0, min(0.05, config.outside_text.min_area_ignore_ratio))
+        min_ignore = max(0.0, min(0.05, config.detection.outside_text.min_area_ignore_ratio))
         if min_ignore > 0.0:
             outside_text_results = _drop_small_osb_regions(
                 outside_text_results, min_ignore, img_w, img_h, verbose
@@ -928,7 +921,7 @@ def prepare_outside_text_work(
                 )
                 return None
 
-        if config.outside_text.enable_page_number_filtering and outside_text_results:
+        if config.detection.outside_text.filter_page_numbers and outside_text_results:
             outside_text_results = _drop_page_numbers(
                 pil_image, outside_text_results, config, img_w, img_h, verbose
             )
@@ -953,9 +946,9 @@ def prepare_outside_text_work(
 
         mask_groups, _ = outside_detector.get_text_masks(
             str(image_path),
-            bbox_expansion_percent_width=config.outside_text.bbox_expansion_percent_width,
-            bbox_expansion_percent_height=config.outside_text.bbox_expansion_percent_height,
-            text_box_proximity_ratio=config.outside_text.text_box_proximity_ratio,
+            bbox_expansion_percent_width=config.detection.outside_text.bbox_expansion_width,
+            bbox_expansion_percent_height=config.detection.outside_text.bbox_expansion_height,
+            text_box_proximity_ratio=config.detection.outside_text.text_box_proximity_ratio,
             verbose=verbose,
             image_override=pil_image,
             existing_results=raw_outside_text_results,
@@ -1004,14 +997,14 @@ def prepare_outside_text_work(
         return None
 
 
-def _effective_osb_tilt(item: dict[str, Any], config: MangaTranslatorConfig) -> float:
+def _effective_osb_tilt(item: dict[str, Any], config: Settings) -> float:
     return compute_effective_tilt_angle(
         tilt_deg=item.get("tilt_deg", 0.0),
         tilt_conf=item.get("tilt_conf", 0.0),
-        follow_tilt=config.outside_text.osb_follow_tilt,
-        confidence_threshold=config.outside_text.osb_tilt_confidence_threshold,
-        min_tilt_deg=config.outside_text.osb_min_tilt_deg,
-        max_tilt_deg=config.outside_text.osb_max_tilt_deg,
+        follow_tilt=config.typesetting.outside.follow_tilt,
+        confidence_threshold=config.typesetting.outside.tilt_confidence,
+        min_tilt_deg=config.typesetting.outside.min_tilt,
+        max_tilt_deg=config.typesetting.outside.max_tilt,
     )
 
 
@@ -1114,7 +1107,7 @@ def _build_osb_simple_fill_mask(
     mask_indices: list[int],
     outside_text_results: list,
     outside_text_data: list[dict[str, Any]],
-    config: MangaTranslatorConfig,
+    config: Settings,
     fallback_bounds: tuple[int | None, int | None, int | None, int | None]
     | None = None,
     total_bubble_mask: np.ndarray | None = None,
@@ -1155,16 +1148,16 @@ def _build_osb_simple_fill_mask(
     return rect_mask if np.any(rect_mask) else None
 
 
-def _create_osb_inpainter(config: MangaTranslatorConfig, verbose: bool):
+def _create_osb_inpainter(config: Settings, verbose: bool):
     """Create the inpainter for the configured OSB method, or None for OpenCV/none."""
-    inpainting_method = config.outside_text.inpainting_method
+    inpainting_method = config.cleaning.inpainter
     inpainter = None
     if inpainting_method == "lama_manga":
         try:
             inpainter = make_inpainter(
                 inpainting_method,
                 device=config.device,
-                luminance_correction=config.outside_text.flux_luminance_correction,
+                luminance_correction=config.cleaning.luminance_correction,
                 verbose=verbose,
             )
             log_message("Using LaMa Manga for inpainting", verbose=verbose)
@@ -1728,7 +1721,7 @@ def _decide_osb_region_fill(
         work.glyph_map.get() if work.is_color_page else None,
     )
 
-    force_fill = work.config.outside_text.inpainting_method == "opencv"
+    force_fill = work.config.cleaning.inpainter == "opencv"
 
     # Get expanded bounds for this group to check solid color and for cv2 fill
     p_x0, p_y0, p_x1, p_y1 = composite_clip_bbox
@@ -1938,22 +1931,22 @@ def finish_outside_text_work(
     try:
         log_message("Inpainting outside text regions...", verbose=verbose)
 
-        inpainting_method = config.outside_text.inpainting_method
+        inpainting_method = config.cleaning.inpainter
         inpainter = _create_osb_inpainter(config, verbose)
         current_image = pil_image
         none_skipped_clip_bboxes = set()
         if mask_groups:
             base_seed = (
                 random.randint(1, 999999)
-                if config.outside_text.seed == -1
-                else config.outside_text.seed
+                if config.cleaning.seed == -1
+                else config.cleaning.seed
             )
 
             extracted_text_colors = {}
             flux_inpaints = 0
             cv2_inpaints = 0
             none_skips = 0
-            request_coordinator = getattr(config, "request_coordinator", None)
+            request_coordinator = config.request_coordinator
             pending_flux_candidates = []
 
             def simple_fill(
@@ -2173,7 +2166,7 @@ def finish_outside_text_work(
 
 def process_outside_text(
     pil_image: Image.Image,
-    config: MangaTranslatorConfig,
+    config: Settings,
     image_path: str | Path,
     image_format: str | None,
     verbose: bool = False,
@@ -2192,7 +2185,7 @@ def process_outside_text(
 
     Args:
         pil_image: The PIL image to process
-        config: MangaTranslatorConfig containing all settings
+        config: Settings containing all settings
         image_path: Path to the original image file
         image_format: Original image format (PNG, JPEG, etc.)
         processing_scale: The scale factor for image processing

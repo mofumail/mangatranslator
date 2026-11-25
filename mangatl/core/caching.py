@@ -8,6 +8,7 @@ from PIL import Image
 
 from mangatl.core.terminology import load_terms
 from mangatl.utils.logging import log_message
+from mangatl.settings import PROVIDER
 
 
 class UnifiedCache:
@@ -130,12 +131,12 @@ class UnifiedCache:
         """Check if translation config is deterministic.
 
         Args:
-            config: TranslationConfig object
+            config: Settings object
 
         Returns:
             bool: True if translation is deterministic
         """
-        return config.temperature == 0.0 or config.top_k == 1 or config.top_p == 0.0
+        return config.translation.temperature == 0.0 or config.translation.top_k == 1 or config.translation.top_p == 0.0
 
     def get_translation_cache_key(
         self,
@@ -151,14 +152,14 @@ class UnifiedCache:
         Args:
             images_b64: List of base64 encoded bubble images
             full_image_b64: Base64 encoded full page image
-            config: TranslationConfig object
+            config: Settings object
             previous_context_texts: Previous page OCR transcripts (oldest-to-newest)
 
         Returns:
             str: Cache key, or None if caching is not enabled/deterministic
         """
         if not (
-            getattr(config, "force_cache_translations", False)
+            config.translation.force_cache
             or self._is_deterministic(config)
         ):
             return None
@@ -168,29 +169,29 @@ class UnifiedCache:
         previous_context_texts = previous_context_texts or []
 
         cache_params = {
-            "provider": config.provider,
-            "model_name": config.model_name,
-            "input_language": config.input_language,
-            "output_language": config.output_language,
-            "reading_direction": config.reading_direction,
-            "send_full_page_context": config.send_full_page_context,
-            "temperature": config.temperature,
-            "top_k": config.top_k,
-            "top_p": config.top_p,
-            "ocr_method": config.ocr_method,
+            "provider": PROVIDER,
+            "model_name": config.translation.model,
+            "input_language": config.translation.source_language,
+            "output_language": config.translation.target_language,
+            "reading_direction": config.translation.reading_direction,
+            "send_full_page_context": config.translation.full_page_context,
+            "temperature": config.translation.temperature,
+            "top_k": config.translation.top_k,
+            "top_p": config.translation.top_p,
+            "ocr_method": config.ocr.method,
             "special_instructions": (
-                config.special_instructions.strip()
-                if config.special_instructions
+                config.translation.special_instructions.strip()
+                if config.translation.special_instructions
                 else None
             ),
-            "ero_doujinshi_mode": getattr(config, "ero_doujinshi_mode", False),
-            "ocr_correction": getattr(config, "ocr_correction", False),
-            "max_tokens": config.max_tokens,
-            "reasoning_effort": config.reasoning_effort,
-            "effort": config.effort,
-            "image_detail": getattr(config, "image_detail", None),
-            "upscale_method": getattr(config, "upscale_method", None),
-            "bubble_min_side_pixels": getattr(config, "bubble_min_side_pixels", None),
+            "ero_doujinshi_mode": config.translation.adult,
+            "ocr_correction": config.translation.ocr_correction,
+            "max_tokens": config.translation.max_tokens,
+            "reasoning_effort": config.translation.reasoning_effort,
+            "effort": config.translation.effort,
+            "image_detail": config.translation.image_detail,
+            "upscale_method": config.ocr.upscale,
+            "bubble_min_side_pixels": config.ocr.bubble_min_side,
             "context_image_max_side_pixels": getattr(
                 config, "context_image_max_side_pixels", None
             ),
@@ -203,8 +204,8 @@ class UnifiedCache:
             ).hexdigest()[:16]
             cache_params["previous_context_text_count"] = len(previous_context_texts)
             cache_params["previous_context_text_hash"] = previous_texts_hash
-        glossary_path = getattr(config, "terminology_memory_path", None)
-        if getattr(config, "terminology_memory", False) and glossary_path:
+        glossary_path = config.translation.glossary_path
+        if config.translation.glossary and glossary_path:
             cache_params["glossary"] = sorted(load_terms(glossary_path).items())
         config_hash = self._hash_dict(cache_params)
 

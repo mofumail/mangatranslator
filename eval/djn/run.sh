@@ -6,6 +6,7 @@ cd "$(dirname "$0")/../.."
 label=$1; shift
 out=eval/djn/out/$label; mkdir -p "$out"
 start=$(date +%s)
-MT_LLM_FRESH="${MT_LLM_FRESH:-1}" MT_LLM_CACHE="${MT_LLM_CACHE:-$PWD/$out/llm}" MT_DUMP_TEXT="$PWD/$out/text" uv run python translate.py --input eval/djn/in --output "$out" --port 8090 --adult \
-  --font "CC Wild Words" --temperature 0 --verbose "$@" > "$out.log" 2>&1
+uv run python translate.py --input eval/djn/in --output "$out" --port 8090 --adult --llm-fresh \
+  --llm-cache "${LLM_CACHE:-$PWD/$out/llm}" --dump-text "$PWD/$out/text" \
+  --font "CC Wild Words" --set translation.temperature=0 --verbose "$@" > "$out.log" 2>&1
 echo "$label rc=$? $(grep -h 'Batch complete' "$out.log") total $(( $(date +%s) - start ))s"

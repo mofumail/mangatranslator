@@ -8,13 +8,15 @@ Pipeline (all on this machine):
   translate   Gemma 4 26B-A4B (QAT) served by a local llama.cpp server
   typeset     auto font size, hyphenation, emphasis, sound-effect labels
 
-The pipeline lives in ./mangatl (derived from MangaTranslator, see mangatl/NOTICE).
-This wrapper starts/stops llama-server, picks sane local defaults and runs a batch.
+The pipeline lives in ./mangatl (derived from MangaTranslator, see mangatl/NOTICE). This wrapper
+turns its options into one Settings object (mangatl/presets.py), writes it to
+<output>/settings.json, starts/stops llama-server and runs the pipeline per chapter.
 
 Usage:
   uv run python translate.py --input chapter01/ --output chapter01_en/
   uv run python translate.py --input vol1.cbz --output vol1_en/ --target English
-Unknown flags are passed straight through to mangatl/cli.py (see `--upstream-help`).
+  uv run python translate.py ... --set typesetting.bubbles.max_font_size=28   # any setting
+  uv run python translate.py ... --show-settings                              # see them all
 """
 
 from __future__ import annotations
@@ -35,28 +37,13 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+from mangatl import presets  # noqa: E402
+from mangatl.settings import FONTS_DIR, Settings  # noqa: E402
+
 MODELS_DIR = ROOT / "models"
-FONTS_DIR = ROOT / "fonts"
 LOG_DIR = ROOT / "logs"
 LLAMA_SERVER = ROOT / "bin" / "llama.cpp" / "llama-server"
-LLM_DIR = MODELS_DIR / "llm"
-# Translator presets (Gemma 4 QAT GGUFs from unsloth). Measured on 10 OpenMantra pages, RTX 4070 Ti:
-#   26b: MoE 26B-A4B, experts in system RAM -> ~2.4 GB VRAM, ~10 s/page, best translations
-#   12b: dense 12B fully on GPU            -> ~7.4 GB VRAM,  ~6 s/page, a few more meaning errors
-MODEL_PRESETS = {
-    "26b": dict(gguf=LLM_DIR / "gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf", cpu_moe=99,
-                mmproj=LLM_DIR / "gemma-4-26B-A4B-mmproj-F16.gguf",
-                repo="unsloth/gemma-4-26B-A4B-it-qat-GGUF"),
-    "12b": dict(gguf=LLM_DIR / "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf", cpu_moe=0,
-                mmproj=LLM_DIR / "mmproj-F16.gguf",
-                repo="unsloth/gemma-4-12B-it-qat-GGUF"),
-}
-
-
-def model_alias(gguf: str) -> str:
-    """Served model name, unique per GGUF so translation caches never mix models.
-    Avoids the substring "gemma-", which upstream reserves for Google API models."""
-    return "local-" + Path(gguf).stem.lower().replace("gemma-", "gemma")
 
 OSB_TEXT_MODEL = MODELS_DIR / "detection" / "yolo" / "animetext_yolov12x.pt"
 OSB_TEXT_URL = (
@@ -80,19 +67,19 @@ def server_healthy(base_url: str) -> bool:
         return False
 
 
-def start_llama_server(args: argparse.Namespace, vision: bool) -> subprocess.Popen:
+def start_llama_server(server, vision: bool, repo: str) -> subprocess.Popen:
     if not LLAMA_SERVER.exists():
         sys.exit(f"llama-server not found at {LLAMA_SERVER}")
-    if not Path(args.gguf).exists():
-        sys.exit(f"LLM weights not found: {args.gguf}")
+    if not Path(server.gguf).exists():
+        sys.exit(f"LLM weights not found: {server.gguf}")
 
     cmd = [
         str(LLAMA_SERVER),
-        "-m", str(args.gguf),
-        "--alias", model_alias(args.gguf),
+        "-m", str(server.gguf),
+        "--alias", presets.model_alias(server.gguf),
         "--host", "127.0.0.1",
-        "--port", str(args.port),
-        "-c", str(args.ctx),
+        "--port", str(server.port),
+        "-c", str(server.ctx),
         "-np", "1",
         "-ngl", "99",
         "-fa", "on",
@@ -100,16 +87,16 @@ def start_llama_server(args: argparse.Namespace, vision: bool) -> subprocess.Pop
         "--no-webui",
     ]
     if vision:
-        if not Path(args.mmproj).exists():
-            sys.exit(f"Vision projector not found: {args.mmproj}\n"
-                     f"Download mmproj-F16.gguf from https://huggingface.co/{args.repo} to that path.")
+        if not Path(server.mmproj).exists():
+            sys.exit(f"Vision projector not found: {server.mmproj}\n"
+                     f"Download mmproj-F16.gguf from https://huggingface.co/{repo} to that path.")
         # Gemma 4 vision needs the whole image in one ubatch
-        cmd += ["--mmproj", str(args.mmproj), "-b", "2048", "-ub", "2048"]
+        cmd += ["--mmproj", str(server.mmproj), "-b", "2048", "-ub", "2048"]
     else:
         cmd += ["--no-mmproj"]
-    if args.cpu_moe:  # MoE models: keep expert weights of the first N layers in system RAM
-        cmd += ["--n-cpu-moe", str(args.cpu_moe)]
-    extra = shlex.split(args.llm_server_args)
+    if server.cpu_moe:  # MoE models: keep expert weights of the first N layers in system RAM
+        cmd += ["--n-cpu-moe", str(server.cpu_moe)]
+    extra = shlex.split(server.extra_args)
     if "--fit" in extra or "-fit" in extra:  # let llama.cpp choose the GPU layer count
         i = cmd.index("-ngl")
         del cmd[i:i + 2]
@@ -133,7 +120,7 @@ def start_llama_server(args: argparse.Namespace, vision: bool) -> subprocess.Pop
 
     atexit.register(_stop)
 
-    url = f"http://127.0.0.1:{args.port}/v1"
+    url = f"http://127.0.0.1:{server.port}/v1"
     deadline = time.time() + 300
     while time.time() < deadline:
         if proc.poll() is not None:
@@ -168,14 +155,13 @@ def osb_model_available(offline: bool) -> bool:
         return False
 
 
-def font_pack(name: str) -> str:
+def check_font_pack(name: str) -> None:
     p = Path(name)
     if not p.is_absolute():
         p = FONTS_DIR / name
     if not p.is_dir() or not (list(p.glob("*.ttf")) + list(p.glob("*.otf"))):
         packs = ", ".join(sorted(d.name for d in FONTS_DIR.iterdir() if d.is_dir()))
         sys.exit(f"Font pack '{name}' not found (folder of .ttf/.otf). Available: {packs}")
-    return str(p)
 
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -200,7 +186,7 @@ def translated_name(img: Path, fmt: str) -> str:
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
     p = argparse.ArgumentParser(
         description="Fully local batch manga translator (mangatl pipeline + llama.cpp).",
-        epilog="Any other flags are forwarded to mangatl/cli.py; see --upstream-help.",
+        epilog="Every other setting: --set section.field=value (see --show-settings).",
     )
     p.add_argument("--input", "-i", help="Folder of images, a single image, or a .zip/.cbz archive")
     p.add_argument("--output", "-o", help="Output folder")
@@ -262,7 +248,7 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     g.add_argument("--llm-url", default=None,
                    help="Use an already-running OpenAI-compatible server instead of starting llama-server")
     g.add_argument("--llm-model-name", default=None, help="Model name to request from --llm-url")
-    g.add_argument("--model", choices=list(MODEL_PRESETS), default="26b",
+    g.add_argument("--model", choices=list(presets.MODEL_PRESETS), default="26b",
                    help="Translator: 26b (default, best, ~2.4 GB VRAM) or 12b (faster, all on GPU)")
     g.add_argument("--gguf", default=None, help="Custom GGUF weights for llama-server (overrides --model)")
     g.add_argument("--mmproj", default=None, help="Vision projector (for --vision)")
@@ -275,65 +261,67 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
 
     p.add_argument("--skip-existing", action="store_true",
                    help="Folder input: skip pages that already have a translated output (resume)")
+    p.add_argument("--skip-existing-since", type=float, default=0.0, metavar="UNIX_TIME",
+                   help="With --skip-existing: only trust outputs written after this time")
     p.add_argument("--offline", action="store_true",
                    help="Forbid all network access (models must already be downloaded)")
-    p.add_argument("--dry-run", action="store_true", help="Print the upstream command and exit")
-    p.add_argument("--upstream-help", action="store_true", help="Show all pipeline (mangatl/cli.py) options")
-    return p.parse_known_args()
+    p.add_argument("--verbose", action="store_true", help="Detailed pipeline log")
+    p.add_argument("--set", action="append", default=[], metavar="PATH=VALUE",
+                   help="Any setting, e.g. --set typesetting.bubbles.max_font_size=28 (repeatable)")
+    p.add_argument("--show-settings", action="store_true", help="Print the run's settings as JSON and exit")
+    p.add_argument("--dry-run", action="store_true", help="Print the pipeline commands and exit")
+
+    d = p.add_argument_group("evaluation (eval/harness.py)")
+    d.add_argument("--llm-cache", default=None, metavar="DIR", help="Store / replay LLM answers by request")
+    d.add_argument("--llm-fresh", action="store_true",
+                   help="cache_prompt=false on every request: repeatable temperature-0 output")
+    d.add_argument("--llm-replay", action="store_true",
+                   help="Answers only from --llm-cache; no LLM server; misses fail at once")
+    d.add_argument("--llm-misses", default=None, metavar="FILE", help="With --llm-replay: log misses here")
+    d.add_argument("--dump-text", default=None, metavar="DIR", help="Write each page's regions as JSON")
+    return p.parse_args()
 
 
 # --------------------------------------------------------------------------- main
 
 
+def build_settings(args: argparse.Namespace, out: Path, batch: bool, outside_text: bool) -> Settings:
+    settings = presets.build(
+        batch=batch, output=out, outside_text=outside_text, source=args.source, target=args.target,
+        ocr=args.ocr, inpaint=args.inpaint, font=args.font, osb_font=args.osb_font,
+        reading_direction=args.reading_direction, context_pages=args.context_pages,
+        glossary=args.glossary, instructions=args.instructions, honorifics=args.honorifics, sfx=args.sfx,
+        adult=args.adult, keep_other_language=args.keep_other_language, vision=args.vision,
+        ocr_correction=args.ocr_correction, output_format=args.format, vertical_text=args.vertical_text,
+        llm_url=args.llm_url, llm_model_name=args.llm_model_name, model=args.model, gguf=args.gguf,
+        mmproj=args.mmproj, port=args.port, ctx=args.ctx, llm_server_args=args.llm_server_args,
+        cpu_moe=args.cpu_moe, verbose=args.verbose, log=log)
+    d = settings.debug
+    d.llm_cache = Path(args.llm_cache).resolve() if args.llm_cache else None
+    d.llm_fresh, d.llm_replay = args.llm_fresh, args.llm_replay
+    d.llm_misses = Path(args.llm_misses).resolve() if args.llm_misses else None
+    d.dump_text = Path(args.dump_text).resolve() if args.dump_text else None
+    try:
+        return presets.apply_overrides(settings, args.set)
+    except (KeyError, ValueError) as e:
+        sys.exit(f"--set: {e}")
+
+
 def main() -> None:
-    args, passthrough = parse_args()
-    preset = MODEL_PRESETS[args.model]
-    args.repo = preset["repo"]
-    # short vision by default only where it is measured to fit: the 26B with experts in RAM.
-    # The 12B is all on the GPU; with the projector the page runs out of VRAM (12 GB card).
-    vision_fits = args.gguf is None and args.model == "26b" and not args.llm_url
-    if args.gguf is None:
-        args.gguf = str(preset["gguf"])
-        args.cpu_moe = preset["cpu_moe"] if args.cpu_moe is None else args.cpu_moe
-    args.mmproj = args.mmproj or str(preset["mmproj"])
-    args.cpu_moe = args.cpu_moe or 0
+    args = parse_args()
     env = os.environ.copy()
     # No telemetry, ever. Downloads (first run only) are still allowed unless --offline.
     env.update(HF_HUB_DISABLE_TELEMETRY="1", YOLO_OFFLINE="1", DO_NOT_TRACK="1",
-               GRADIO_ANALYTICS_ENABLED="False", PYTHONUNBUFFERED="1",
-               PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True")
+               PYTHONUNBUFFERED="1", PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True")
     if args.offline:
         env.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
-    if args.keep_other_language:
-        env["MT_KEEP_OTHER_LANGUAGE"] = "1"
-    env["MT_SFX"] = args.sfx
 
-    upstream_main = [sys.executable, "-m", "mangatl.cli"]  # run from ROOT (cwd)
-    if args.upstream_help:
-        sys.exit(subprocess.call([sys.executable, "-m", "mangatl.cli", "--help"], cwd=ROOT, env=env))
     if not args.input or not args.output:
         sys.exit("error: --input and --output are required")
-
     inp = Path(args.input).expanduser().resolve()
     out = Path(args.output).expanduser().resolve()
     if not inp.exists():
         sys.exit(f"Input not found: {inp}")
-    if not args.dry_run:
-        out.mkdir(parents=True, exist_ok=True)
-
-    ocr = args.ocr
-    if ocr == "auto":
-        ocr = "manga-ocr" if args.source.lower() == "japanese" else "paddleocr-vl-1.6"
-    if args.vision is None:
-        args.vision = "short" if vision_fits else "off"
-        if args.vision != "off" and not Path(args.mmproj).exists():
-            log(f"Vision projector not found ({args.mmproj}); translating without the page image")
-            args.vision = "off"
-    if args.vision == "full":
-        env["MT_PAGE_IMAGE"] = "1"  # local OCR, plus the page image for the translator
-    elif args.vision == "short":
-        env["MT_VISION_SHORT"] = "1"  # text first, then the page image for short items only
-    reading_dir = args.reading_direction or ("rtl" if args.source.lower() == "japanese" else "ltr")
 
     if args.osb == "auto":
         osb = osb_model_available(args.offline)
@@ -342,22 +330,27 @@ def main() -> None:
                 "accept its terms on huggingface.co to enable)")
     else:
         osb = args.osb == "on"
-
-    # LLM endpoint. MT_LLM_REPLAY=1 (eval/harness.py): answers come only from MT_LLM_CACHE, no server.
-    replay = os.environ.get("MT_LLM_REPLAY") == "1"
-    if args.llm_url:
-        llm_url, model_name = args.llm_url, args.llm_model_name or "default"
-        if not server_healthy(llm_url):
-            log(f"warning: {llm_url} does not answer /health; continuing anyway")
-    else:
-        llm_url, model_name = f"http://127.0.0.1:{args.port}/v1", model_alias(args.gguf)
-        if not replay and server_healthy(llm_url):
-            sys.exit(f"Something is already listening on port {args.port}. "
-                     f"Pass --llm-url {llm_url} to reuse it, or --port to pick another.")
+    check_font_pack(args.font)
+    if osb:
+        check_font_pack(args.osb_font)
 
     batch = inp.is_dir() or inp.suffix.lower() in {".zip", ".cbz", ".txt"}
-    # (input, output) per upstream run. Upstream only reads the top level of a folder, so a
+    settings = build_settings(args, out, batch, osb)
+    if args.show_settings:
+        print(settings.to_json())
+        return
+
+    t = settings.translation
+    if not settings.server.launch:
+        if not server_healthy(t.url):
+            log(f"warning: {t.url} does not answer /health; continuing anyway")
+    elif not settings.debug.llm_replay and server_healthy(t.url):
+        sys.exit(f"Something is already listening on port {settings.server.port}. "
+                 f"Pass --llm-url {t.url} to reuse it, or --port to pick another.")
+
+    # (input, output) per pipeline run. The pipeline only reads the top level of a folder, so a
     # volume folder with chapter subfolders becomes one run per chapter, mirrored in the output.
+    fmt = settings.output.format
     jobs: list[tuple[Path, Path]] = []
     if inp.is_dir():
         dirs = image_dirs(inp)
@@ -366,88 +359,30 @@ def main() -> None:
         jobs = [(d, out / d.relative_to(inp)) for d in dirs]
     elif batch:
         jobs = [(inp, out)]
-    else:  # single image: upstream wants a file path
-        ext = inp.suffix if args.format == "auto" else (".jpg" if args.format == "jpeg" else ".png")
+    else:  # single image: the pipeline wants a file path
+        ext = inp.suffix if fmt == "auto" else (".jpg" if fmt == "jpeg" else ".png")
         jobs = [(inp, out / f"{inp.stem}{ext}")]
 
-    cmd = [
-        "--batch" if batch else "",
-        "--openai-compatible-url", llm_url,
-        "--model-name", model_name,
-        "--input-language", args.source,
-        "--output-language", args.target,
-        "--reading-direction", reading_dir,
-        "--models", str(MODELS_DIR),
-        "--font-dir", font_pack(args.font),
-        "--output-format", args.format,
-        "--batch-previous-context-texts", str(args.context_pages),
-        "--osb-inpainting-method", args.inpaint,
-        # narrow/tall regions (vertical Japanese asides) may grow so English fits
-        "--osb-render-expansion-narrow", "2.0",
-    ]
-    cmd += ["--ocr-method", ocr]
-    if args.adult:
-        cmd += ["--ero-doujinshi-mode"]
-    if args.ocr_correction:
-        cmd += ["--ocr-correction"]
-    if osb:
-        cmd += ["--osb-enable", "--osb-font-dir", font_pack(args.osb_font)]
-    else:
-        cmd += ["--no-osb-text-verification"]
-    if batch:  # names/terms memory, shared by all chapters; reuse it later with --glossary
-        glossary = Path(args.glossary).expanduser().resolve() if args.glossary else out / "glossary.txt"
-        cmd += ["--batch-glossary-file", str(glossary)]
-    cjk_target = any(k in args.target.lower() for k in ("chinese", "japanese", "korean"))
-    if not (args.vertical_text or cjk_target):
-        # letter-stacked Latin text ("H/u/h/?") reads badly in bubbles; outside them it's
-        # allowed when it makes text much bigger (text_renderer._auto_vertical_layout_is_better)
-        cmd += ["--no-auto-vertical-text"]
-    notes = [args.instructions] if args.instructions else []
-    notes.append("Localize like a professional manga translator: natural, idiomatic English with contractions "
-                 "and each character's own voice; keep the meaning exact but never translate word for word. "
-                 "Narration reads like a light novel: past tense, flowing sentences.")
-    # Outside-bubble fonts often lack italics, so emphasis markup must not replace quote marks
-    notes.append("Render quoted speech in 「」 and 『』 with quotation marks (\"...\" and '...'); "
-                 "never use * or ** markdown in place of quotation marks.")
-    notes.append("An item with \" / \" separators is a list (chat comments, credits): translate each entry "
-                 "and keep every \" / \" in place.")
-    if args.honorifics == "drop":
-        notes.append("Drop Japanese honorifics (-san, -kun, -chan, -sama, -dono, -senpai). Where one carries "
-                     "meaning, say it the English way instead (Lady Priscilla, Master, big sis).")
-    else:
-        notes.append("Keep Japanese honorifics on names as written (Leaf-san, Priscilla-sama).")
-    notes.append("A personal name in katakana that is a Western or fantasy name gets its natural Western "
-                 "spelling (プリシラ → Priscilla), not a syllable-by-syllable romanization.")
-    # A bubble that is only エ / エエエ!! after 死ねェ is the same shout drawn out, not a new sound.
-    # Guarded on the previous item so standalone あ/ん bubbles (moans, gasps) stay vocalizations.
-    notes.append("When an item is only a drawn-out vowel (エ, ェェ, エエエ!!, ーー) and the previous item ends "
-                 "on that same vowel, it is the previous word stretched across bubbles: repeat that English "
-                 "word drawn out (死ねェ / エ / エエエ!! → Die! / Die... / DIEEEE!!). Otherwise a lone vowel "
-                 "is a vocalization as usual.")
+    settings_file = out / "settings.json"
+    pipeline = [sys.executable, "-m", "mangatl.cli", "--settings", str(settings_file)]  # run from ROOT
     if batch:
-        # Local models tend to write the English name on both sides of the new-terms block,
-        # which upstream rejects ("source not on page"), leaving the glossary empty.
-        notes.append(f"In the new-terms block, the left side of each line must be the term copied "
-                     f"verbatim from the {args.source} transcription (original script), never its translation. "
-                     f"Sound effects and interjections are never terms.")
-    if notes:
-        cmd += ["--special-instructions", "\n".join(notes)]
-    cmd = [c for c in cmd if c] + passthrough
-
+        pipeline.append("--batch")
     if args.dry_run:
         for src, dst in jobs:
-            full = upstream_main + ["--input", str(src), "--output", str(dst)] + cmd
-            print(" ".join(f"'{c}'" if " " in c else c for c in full))
+            print(shlex.join(pipeline + ["--input", str(src), "--output", str(dst)]))
         return
+    out.mkdir(parents=True, exist_ok=True)
+    settings.save(settings_file)  # secrets excluded; the pipeline reads them from the environment
 
-    if not args.llm_url and not replay:
-        start_llama_server(args, args.vision != "off")
+    if settings.server.launch and not settings.debug.llm_replay:
+        start_llama_server(settings.server, t.vision != "off", presets.MODEL_PRESETS[settings.server.model]["repo"])
 
-    log(f"{inp} -> {out}  ({args.source} -> {args.target}, LLM: {Path(args.gguf).stem if not args.llm_url else model_name}, "
-        f"OCR: {ocr}, inpaint: {args.inpaint}, "
-        f"OSB: {'on' if osb else 'off'}, page image: {args.vision})")
+    llm = Path(settings.server.gguf).stem if settings.server.launch else t.model
+    log(f"{inp} -> {out}  ({t.source_language} -> {t.target_language}, LLM: {llm}, "
+        f"OCR: {settings.ocr.method}, inpaint: {settings.cleaning.inpainter}, "
+        f"OSB: {'on' if osb else 'off'}, page image: {t.vision})")
     t0 = time.time()
-    # Upstream logs model-loading problems but still exits 0 (and writes untranslated
+    # The pipeline logs model-loading problems but still exits 0 (and writes untranslated
     # pages), so watch its output and turn those into a failing exit code.
     fatal_markers = ("Error loading", "Failed to download", "Error during detection",
                      "Failed image paths saved to")
@@ -468,13 +403,12 @@ def main() -> None:
             src = src0
             if skip_existing and src0.is_dir():
                 pages = [f for f in src0.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTS]
-                # --skip-existing (resume): trust outputs since MT_SKIP_EXISTING_SINCE (default: any).
+                # --skip-existing (resume): trust outputs since --skip-existing-since (default: any).
                 # Restart after a GPU fault in a fresh run: only outputs written by this run.
-                since = (float(os.environ.get("MT_SKIP_EXISTING_SINCE", "0") or 0)
-                         if args.skip_existing else t0)
+                since = args.skip_existing_since if args.skip_existing else t0
 
                 def finished(f: Path) -> bool:
-                    out_file = dst / translated_name(f, args.format)
+                    out_file = dst / translated_name(f, fmt)
                     return out_file.exists() and out_file.stat().st_mtime >= since
 
                 todo = [f for f in pages if not finished(f)]
@@ -488,7 +422,7 @@ def main() -> None:
                     for f in todo:
                         (Path(tmp.name) / f.name).symlink_to(f)
                     src = Path(tmp.name)
-            full = upstream_main + ["--input", str(src), "--output", str(dst)] + cmd
+            full = pipeline + ["--input", str(src), "--output", str(dst)]
             proc = subprocess.Popen(full, cwd=ROOT, env=env, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True, bufsize=1)
             assert proc.stdout is not None
@@ -513,7 +447,7 @@ def main() -> None:
                     proc.kill()
                     proc.wait()
                 if current:  # its output (if any) was made with a broken GPU context
-                    (dst / Path(current).parent / translated_name(Path(current), args.format)).unlink(missing_ok=True)
+                    (dst / Path(current).parent / translated_name(Path(current), fmt)).unlink(missing_ok=True)
                 if restarts < max_gpu_restarts:
                     restarts += 1
                     skip_existing = True
