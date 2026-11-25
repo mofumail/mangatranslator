@@ -129,13 +129,23 @@ def test_settings_attribute_chains_exist():
                     continue
                 obj = root_obj
                 for attr in roots[c[0]] + c[1:]:
-                    if not hasattr(obj, attr):
+                    fields = getattr(type(obj), "model_fields", {})
+                    if attr in fields:
+                        obj = getattr(obj, attr)
+                        continue
+                    if not hasattr(type(obj), attr):  # properties are checked on the class, not run
                         problems.append(
                             f"{src.relative_to(ROOT)}:{node.lineno}: {'.'.join(c)} ({attr!r} missing)"
                         )
-                        break
-                    value = getattr(obj, attr)
-                    if not hasattr(type(obj), "model_fields") or attr not in type(obj).model_fields:
-                        break  # property / method / runtime object: stop following
-                    obj = value
+                    break  # property / method / runtime object: stop following
     assert not problems, "\n".join(sorted(set(problems)))
+
+
+def test_webui_uses_existing_translate_names():
+    """webui.py calls into translate.py as `tr.X`; every X must exist there (a rename in #7
+    once broke /api/config this way)."""
+    import re
+
+    used = set(re.findall(r"\btr\.(\w+)", (ROOT / "webui.py").read_text()))
+    defined = _top_level_names(ROOT / "translate.py")
+    assert used <= defined, f"translate.py lacks {sorted(used - defined)}"
