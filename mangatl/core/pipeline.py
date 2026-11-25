@@ -26,6 +26,7 @@ from mangatl.core.config import MangaTranslatorConfig, PreprocessingConfig, Rend
 from mangatl.core.scaling import scale_font_size, scale_length, scale_scalar
 from mangatl.core.terminology import default_glossary_path, load_terms
 from mangatl.core.validation import validate_config
+from mangatl.utils import eval_hooks
 from mangatl.utils.archive import copy_comic_info
 from mangatl.utils.exceptions import (
     CancellationError,
@@ -1043,6 +1044,7 @@ def _call_translation_api(
         ocr_texts_output=ocr_texts,
         debug=config.verbose,
     )
+    eval_hooks.dump_text(sorted_bubble_data, ocr_texts, texts)
     return texts, ocr_texts
 
 
@@ -1537,7 +1539,8 @@ def _render_translations(
             f"({len(sorted_bubble_data)}/{len(translated_texts)})",
             always_print=True,
         )
-        empty_bubbles.extend(b["bbox"] for b in sorted_bubble_data)
+        # blocks erased on purpose (mt_skip: other-language text) are not "left empty"
+        empty_bubbles.extend(b["bbox"] for b in sorted_bubble_data if not b.get("mt_skip"))
         return paint_pending_osb_fills(image, sorted_bubble_data)
 
     provider_tag = f"[{config.translation.provider}:"
@@ -1567,14 +1570,16 @@ def _render_translations(
                     f"Skipping {entry_type} {bbox} - OCR failed and no original crop available",
                     verbose=verbose,
                 )
-                empty_bubbles.append(bbox)
+                if not bubble.get("mt_skip"):
+                    empty_bubbles.append(bbox)
             continue
 
         if action == "invalid":
             log_message(
                 f"Skipping {entry_type} {bbox} - invalid translation", verbose=verbose
             )
-            empty_bubbles.append(bbox)
+            if not bubble.get("mt_skip"):  # erased on purpose (other-language block)
+                empty_bubbles.append(bbox)
             continue
 
         if action == "keep_original":
@@ -1607,7 +1612,8 @@ def _render_translations(
 
         if rendered is None:
             log_message(f"Failed to render bubble {bbox}", verbose=verbose)
-            empty_bubbles.append(bbox)
+            if not bubble.get("mt_skip"):
+                empty_bubbles.append(bbox)
         else:
             image = rendered
     return image
@@ -1651,6 +1657,7 @@ def translate_and_render(
         PIL.Image: Final translated image
     """
     start_time = time.time()
+    eval_hooks.set_page(image_path)
     validate_config(config)
     image_path = Path(image_path)
     verbose = config.verbose

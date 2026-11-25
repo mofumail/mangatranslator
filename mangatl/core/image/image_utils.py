@@ -725,6 +725,10 @@ def process_bubble_image_cached(
     Returns:
         Image.Image: The processed bubble image
     """
+    # Crops are read by local OCR, which needs full resolution: only upscale, never downscale
+    # (resizing to the 128 px short side meant for cloud LLMs made big narration blocks unreadable).
+    if mode == "min" and min(bubble_image_pil.size) >= target_min_side:
+        return bubble_image_pil
     cache = get_cache()
     cache_key = cache.get_bubble_processing_cache_key(
         bubble_image_pil, target_min_side, mode, model_type

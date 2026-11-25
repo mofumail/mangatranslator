@@ -1385,6 +1385,73 @@ def _perform_manga_ocr(
     bubble_metadata: list[dict[str, Any]],
     debug: bool = False,
 ) -> list[str]:
+    """Japanese OCR: manga-ocr, then Hayai re-reads and the other-language skip (_refine_ocr_reads)."""
+    texts = _manga_ocr_reads(images_b64, bubble_metadata, debug)
+    return _refine_ocr_reads(texts, images_b64, bubble_metadata)
+
+
+def _refine_ocr_reads(
+    texts: list[str], images_b64: list[str], bubble_metadata: list[dict[str, Any]]
+) -> list[str]:
+    """Improve the manga-ocr reads of a page.
+
+    - Outside bubbles: Hayai OCR, line by line when comic-text-detector finds several lines
+      (see core.image.line_ocr).
+    - Bubbles: Hayai matches manga-ocr on regular dialogue (OpenMantra ground truth: 0.9%
+      character error rate for both) but reads hand-drawn moans that manga-ocr turns into
+      unrelated words ("ぅ" -> "そして、"); when one read contains the other the longer is kept.
+    - Pages carrying both the Japanese text and a Chinese translation of it: the Chinese block
+      is marked `mt_skip` (erased, not translated) unless MT_KEEP_OTHER_LANGUAGE is set.
+    """
+    import os
+
+    from mangatl.core.image import line_ocr
+    from mangatl.core.ml import hayai_ocr
+    from mangatl.core.ml.model_manager import get_model_manager
+
+    models_dir = get_model_manager().models_dir
+    changed = False
+    for i, meta in enumerate(bubble_metadata):
+        if i >= len(texts) or not meta.get("is_outside_text"):
+            continue
+        text = line_ocr.read_region(meta, models_dir)
+        if text:
+            texts[i] = text
+            changed = True
+
+    bubble_idx = [i for i, m in enumerate(bubble_metadata)
+                  if i < len(texts) and not m.get("is_outside_text")]
+    if bubble_idx:
+        crops = _prepare_images_for_ocr([images_b64[i] for i in bubble_idx])
+        ok = [(i, c) for i, c in zip(bubble_idx, crops) if c is not None]
+        reads = hayai_ocr.get(models_dir).read([c.convert("RGB") for _, c in ok],
+                                               max_patches=512, max_new_tokens=160)
+        for (i, _), t in zip(ok, reads):
+            picked = line_ocr.pick_read(texts[i] if texts[i] != "[OCR FAILED]" else "", t.strip())
+            if picked and picked != texts[i]:
+                texts[i] = picked
+                changed = True
+
+    if not os.environ.get("MT_KEEP_OTHER_LANGUAGE") and any(line_ocr.is_japanese(t) for t in texts):
+        for i, t in enumerate(texts):
+            if i < len(bubble_metadata) and line_ocr.is_other_cjk(t):
+                bubble_metadata[i]["mt_skip"] = True
+                texts[i] = "(no text)"
+                changed = True
+                log_message(f"Skipping block {i + 1}: not in the source language "
+                            "(erased, not translated)", always_print=True)
+    if changed:
+        log_message("Text re-read with Hayai OCR (outside bubbles: line by line via comic-text-detector):",
+                    always_print=True)
+        _format_ocr_results(texts, bubble_metadata)
+    return texts
+
+
+def _manga_ocr_reads(
+    images_b64: list[str],
+    bubble_metadata: list[dict[str, Any]],
+    debug: bool = False,
+) -> list[str]:
     """Perform OCR using manga-ocr model.
 
     Args:

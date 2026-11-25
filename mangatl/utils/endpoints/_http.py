@@ -5,6 +5,7 @@ from typing import Any, TypeVar
 
 import requests
 
+from mangatl.utils import eval_hooks
 from mangatl.utils.cancellation import raise_if_cancelled
 from mangatl.utils.exceptions import TranslationError
 from mangatl.utils.logging import log_message
@@ -72,7 +73,7 @@ def post_with_retries(
             verbose=debug,
         )
         try:
-            response = requests.post(
+            response = eval_hooks.post(  # requests.post, plus the eval cache/replay
                 url, headers=headers, json=payload, timeout=timeout
             )
             response.raise_for_status()

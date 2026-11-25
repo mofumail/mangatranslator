@@ -32,6 +32,7 @@ from mangatl.core.image.image_utils import (
     process_bubble_image_cached,
     resize_lanczos_antiring,
 )
+from mangatl.core.image import line_ocr
 from mangatl.core.image.inpainting import make_flux_inpainter
 from mangatl.core.image.ocr_detection import OutsideTextDetector, extract_text_with_manga_ocr
 from mangatl.core.image.page_glyph_map import PageGlyphMap
@@ -258,6 +259,10 @@ def _build_outside_text_data(
                 verbose=verbose,
             )
 
+    if outside_text_data:  # line-by-line OCR finds this page's text lines once (line_ocr)
+        token = line_ocr.register_page(pil_image)
+        for item in outside_text_data:
+            item["mt_page"] = token
     return outside_text_data
 
 
@@ -324,8 +329,16 @@ def _results_bounds(results: list, indices: list[int]) -> tuple[int, int, int, i
     )
 
 
+FLAT_P90_MAX = 6  # paper measured 2-6; blurred dark art 9-10
+
+
 def _border_color(pixels: np.ndarray) -> tuple[tuple[int, int, int], float]:
-    """Median RGB of border pixels (snapped to pure white/black) and the share near it."""
+    """Median RGB of border pixels (snapped to pure white/black) and the share near it.
+
+    A border only counts as solid when it is truly flat (90% of pixels within FLAT_P90_MAX of
+    the median): blurred dark art passes the 95%-within-15-levels test and got hard black boxes,
+    so anything less flat is reported just under the solid threshold (sent to inpainting).
+    """
     median = np.median(pixels, axis=0).astype(int)
     diffs = np.max(np.abs(pixels.astype(int) - median), axis=1)
     solid_ratio = float(np.mean(diffs <= OSB_COLOR_TOLERANCE))
@@ -335,6 +348,8 @@ def _border_color(pixels: np.ndarray) -> tuple[tuple[int, int, int], float]:
         color = (0, 0, 0)
     else:
         color = (int(median[0]), int(median[1]), int(median[2]))
+    if float(np.percentile(diffs, 90)) > FLAT_P90_MAX:
+        solid_ratio = min(solid_ratio, OSB_SOLID_RATIO_THRESHOLD - 0.01)
     return color, solid_ratio
 
 
