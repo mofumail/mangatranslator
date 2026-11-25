@@ -929,14 +929,7 @@ def install_text_dump() -> None:
     if not out_dir:
         return
     Path(out_dir).mkdir(parents=True, exist_ok=True)
-    current = {"page": None}
-    original_tr = pipeline.translate_and_render
-
-    def translate_and_render(image_path, *args, **kwargs):
-        current["page"] = Path(image_path).stem
-        return original_tr(image_path, *args, **kwargs)
-
-    pipeline.translate_and_render = translate_and_render
+    _track_pages()
     original_batch = pipeline.call_translation_api_batch
 
     def call_translation_api_batch(*args, **kwargs):
@@ -948,12 +941,36 @@ def install_text_dump() -> None:
                   "ocr": ocr[i] if i < len(ocr) else None,
                   "tl": texts[i] if i < len(texts) else None}
                  for i, m in enumerate(meta)]
-        if current["page"]:
-            (Path(out_dir) / f"{current['page']}.json").write_text(
+        if _current_page():
+            (Path(out_dir) / f"{_current_page()}.json").write_text(
                 json.dumps(items, ensure_ascii=False, indent=1))
         return texts
 
     pipeline.call_translation_api_batch = call_translation_api_batch
+
+
+_PAGE: dict = {"name": None, "tracking": False}
+
+
+def _track_pages() -> None:
+    """Remember which page is being processed (for text dumps and replay-miss logs)."""
+    import core.pipeline as pipeline
+
+    if _PAGE["tracking"]:
+        return
+    _PAGE["tracking"] = True
+    original = pipeline.translate_and_render
+
+    def translate_and_render(image_path, *args, **kwargs):
+        _PAGE["name"] = Path(image_path).stem
+        _PAGE["label"] = f"{Path(image_path).parent.name}/{Path(image_path).name}"
+        return original(image_path, *args, **kwargs)
+
+    pipeline.translate_and_render = translate_and_render
+
+
+def _current_page() -> str | None:
+    return _PAGE["name"]
 
 
 EMPHASIS_MIN_RATIO = 1.4  # source lettering this much above the page's typical size is emphasis
@@ -1098,7 +1115,11 @@ def install_llm_cache() -> None:
     With MT_LLM_FRESH=1, every request is sent with cache_prompt=false: llama.cpp then evaluates
     the whole prompt anew instead of reusing the previous request's prefix, which makes
     temperature-0 output repeatable (the reused prefix is what changes the floating-point
-    results). Slower prompt processing; for prompt A/B runs."""
+    results). Slower prompt processing; for prompt A/B runs.
+
+    With MT_LLM_REPLAY=1 (regression harness, eval/harness.py), nothing is sent: a request that
+    is not in the cache is appended to MT_LLM_MISSES (a .jsonl file) and fails at once with a
+    non-retryable HTTP error. (Stopgap env switches; #7 replaces them with typed settings.)"""
     import hashlib
     import json
     import types
@@ -1107,6 +1128,12 @@ def install_llm_cache() -> None:
 
     cache_dir = os.environ.get("MT_LLM_CACHE")
     fresh = os.environ.get("MT_LLM_FRESH") == "1"
+    replay = os.environ.get("MT_LLM_REPLAY") == "1"
+    misses = os.environ.get("MT_LLM_MISSES")
+    if replay and not cache_dir:
+        raise RuntimeError("MT_LLM_REPLAY=1 needs MT_LLM_CACHE")
+    if replay:
+        _track_pages()
     if not (cache_dir or fresh):
         return
     if cache_dir:
@@ -1134,6 +1161,13 @@ def install_llm_cache() -> None:
         f = Path(cache_dir) / f"{key}.json"
         if f.exists():
             return _Cached(_json.loads(f.read_text()))
+        if replay:
+            if misses:
+                with open(misses, "a", encoding="utf-8") as fh:
+                    fh.write(_json.dumps({"key": key, "page": _PAGE.get("label"), "request": _strip_images(json)},
+                                         ensure_ascii=False) + "\n")
+            miss = types.SimpleNamespace(status_code=418, text=f"replay miss {key[:12]}")
+            raise real.exceptions.HTTPError(f"replay miss {key[:12]}", response=miss)
         response = real.post(url, headers=headers, json=json, timeout=timeout, **kwargs)
         response.raise_for_status()
         f.write_text(_json.dumps(response.json(), ensure_ascii=False))

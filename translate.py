@@ -349,14 +349,15 @@ def main() -> None:
     else:
         osb = args.osb == "on"
 
-    # LLM endpoint
+    # LLM endpoint. MT_LLM_REPLAY=1 (eval/harness.py): answers come only from MT_LLM_CACHE, no server.
+    replay = os.environ.get("MT_LLM_REPLAY") == "1"
     if args.llm_url:
         llm_url, model_name = args.llm_url, args.llm_model_name or "default"
         if not server_healthy(llm_url):
             log(f"warning: {llm_url} does not answer /health; continuing anyway")
     else:
         llm_url, model_name = f"http://127.0.0.1:{args.port}/v1", model_alias(args.gguf)
-        if server_healthy(llm_url):
+        if not replay and server_healthy(llm_url):
             sys.exit(f"Something is already listening on port {args.port}. "
                      f"Pass --llm-url {llm_url} to reuse it, or --port to pick another.")
 
@@ -453,7 +454,7 @@ def main() -> None:
             print(" ".join(f"'{c}'" if " " in c else c for c in full))
         return
 
-    if not args.llm_url:
+    if not args.llm_url and not replay:
         start_llama_server(args, vision or args.vision != "off")
 
     log(f"{inp} -> {out}  ({args.source} -> {args.target}, LLM: {Path(args.gguf).stem if not args.llm_url else model_name}, "

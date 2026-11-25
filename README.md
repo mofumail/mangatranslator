@@ -161,7 +161,9 @@ assets/symbols/       DejaVu Sans Bold for ♥ ♪ ★ (free license, see LICENS
 fonts/                Comic Neue (dialogue), Bangers (OSB/SFX) — both SIL OFL
                       Add your own as fonts/<Name>/ with -Regular/-Bold/-Italic in the file names
                       (e.g. CC Wild Words, Anime Ace; git-ignored, as their licenses forbid redistribution)
-eval/                 OpenMantra benchmark pages used to check quality; eval/djn/ doujin test runner;
+eval/                 harness.py: regression check of every change against a saved baseline (replays
+                      the LLM answers, diffs pages and text; see eval/README.md);
+                      OpenMantra benchmark pages used to check quality; eval/djn/ doujin test runner;
                       eval/ch6/ a chapter vs its English scanlation (refs.py reads the pro lettering,
                       compare.py / checklist.py side by side); eval/om/ OpenMantra books vs their
                       pro English. Runs set MT_LLM_FRESH=1, which makes temperature-0 output repeatable
