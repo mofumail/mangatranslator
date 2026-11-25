@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -304,6 +305,26 @@ def request_diff(miss: dict, cache: Path, limit: int = 12) -> list[str]:
     return shown or ["(identical text; options such as temperature or max_tokens differ)"]
 
 
+_ERROR_LINE = re.compile(r"error|exception|traceback|failed", re.I)
+_EXPECTED = re.compile(r"replay miss|All bubbles failed|Retry failed|still failed|failed image|Finished in", re.I)
+
+
+def new_errors(base_log: Path, run_log: Path, limit: int = 8) -> list[str]:
+    """Error-looking log lines of this run that the baseline's log doesn't have (numbers and
+    paths normalized). The pipeline catches many errors and carries on, so a broken stage can
+    look like missing regions rather than a crash."""
+    def lines(f: Path) -> dict[str, str]:
+        out = {}
+        for line in f.read_text(errors="replace").splitlines() if f.exists() else []:
+            if _ERROR_LINE.search(line) and not _EXPECTED.search(line):
+                key = re.sub(r"\d+(\.\d+)?", "#", re.sub(r"/\S+", "<path>", line.strip()))
+                out.setdefault(key, line.strip())
+        return out
+    base, run = lines(base_log), lines(run_log)
+    fresh = [run[k] for k in run if k not in base]
+    return [ln[:200] for ln in fresh[:limit]] + ([f"... {len(fresh) - limit} more"] if len(fresh) > limit else [])
+
+
 def report(base: Path, run: Path, tol: int) -> int:
     diffs = run / "diffs"
     shutil.rmtree(diffs, ignore_errors=True)
@@ -326,6 +347,10 @@ def report(base: Path, run: Path, tol: int) -> int:
         if rtimes.get(name, {}).get("rc"):
             unit_lines.append(f"**translate.py exited with code {rtimes[name]['rc']}** (see `{name}/log.txt`)")
         missed = {Path(m.get("page") or "?").stem for m in misses}
+        errs = new_errors(bd / "log.txt", rd / "log.txt")
+        if errs:
+            unit_lines.append("**New error lines in the log** (not in the baseline's):\n```\n"
+                              + "\n".join(errs) + "\n```")
         if misses:
             first = misses[0]
             unit_lines.append(f"**{len(misses)} LLM cache misses** on {len(missed)} page(s), first on "
