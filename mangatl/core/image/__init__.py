@@ -2,7 +2,7 @@
 Image processing and analysis modules for MangaTranslator.
 
 This subpackage contains modules for:
-- Speech bubble detection (YOLO, SAM)
+- Speech bubble detection (YOLO, RT-DETR)
 - OCR text detection outside bubbles
 - Image cleaning and preprocessing
 - Inpainting for text removal
@@ -22,12 +22,12 @@ from .image_utils import (
     upscale_image,
     upscale_image_to_dimension,
 )
-from .inpainting import FluxKontextInpainter
+from .inpainting import LamaInpainter
 from .ocr_detection import OutsideTextDetector
 from .tilt_detection import compute_effective_tilt_angle, detect_crop_tilt_angle
 
 __all__ = [
-    "FluxKontextInpainter",
+    "LamaInpainter",
     "OutsideTextDetector",
     "calculate_centroid_expansion_box",
     "clean_speech_bubbles",

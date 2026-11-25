@@ -24,7 +24,7 @@ from mangatl.utils.logging import log_message
 from .detection import detect_speech_bubbles
 from .glyph_mask import art_in_fill, glyphs_missed_by_fill
 from .image_utils import pil_to_cv2
-from .inpainting import make_flux_inpainter
+from .inpainting import make_inpainter
 from .page_glyph_map import PageGlyphMap
 
 GRAYSCALE_MIDPOINT = 128  # Threshold for determining black vs white bubbles
@@ -73,21 +73,6 @@ def _bubble_inpaint_mask(
     return glyph_map.lama_mask(mask)
 
 
-def _composite_bubble(
-    before: Image.Image,
-    after: Image.Image,
-    mask: np.ndarray,
-    glyph_map: PageGlyphMap | None,
-    inpaint_method: str,
-    preserve_art: bool,
-) -> Image.Image:
-    """Keep the original art between and around the letters of an edit-model redraw,
-    which covers the whole bubble interior."""
-    if glyph_map is None or inpaint_method == "lama_manga" or not preserve_art:
-        return after
-    return glyph_map.composite(before, after, mask)
-
-
 def _inpaint_colored_bubbles_with_coordinator(
     pil_working: Image.Image,
     colored_bubbles: list[dict[str, Any]],
@@ -97,7 +82,6 @@ def _inpaint_colored_bubbles_with_coordinator(
     request_coordinator: Any,
     glyph_map: PageGlyphMap | None,
     inpaint_method: str,
-    preserve_art: bool,
 ) -> Image.Image:
     candidates = []
     for idx, bubble_info in enumerate(colored_bubbles):
@@ -143,14 +127,6 @@ def _inpaint_colored_bubbles_with_coordinator(
                             "type": "colored_bubble",
                             "bbox": candidate["bbox_tuple"],
                         },
-                    )
-                    result_image = _composite_bubble(
-                        base_img,
-                        result_image,
-                        candidate["mask"],
-                        glyph_map,
-                        inpaint_method,
-                        preserve_art,
                     )
                     return {
                         "candidate": candidate,
@@ -690,27 +666,17 @@ def clean_speech_bubbles(
     conjoined_confidence=0.35,
     auto_threshold: bool = False,
     inpaint_colored_bubbles: bool = False,
-    flux_hf_token: str = "",
-    flux_num_inference_steps: int = 4,
-    flux_residual_diff_threshold: float = 0.15,
     flux_seed: int = 1,
     osb_text_verification: bool = False,
     osb_text_hf_token: str = "",
-    inpaint_method: str = "flux_kontext",
-    flux_backend: str = "sdnq",
-    flux_low_vram: bool = True,
-    flux_sdcpp_cache_mode: str = "step-skip",
-    flux_sdcpp_diffusion_quant: str = "Q4_K_M",
-    flux_sdcpp_text_encoder_quant: str = "",
+    inpaint_method: str = "lama_manga",
     flux_luminance_correction: bool = True,
-    flux_upscale_small_crops: bool = True,
     bubble_detector_model: str = "yolo_2",
     request_coordinator: Any | None = None,
-    flux_preserve_art: bool = True,
     glyph_map: PageGlyphMap | None = None,
 ):
     """
-    Clean speech bubbles using YOLO/SAM masks and optional Flux inpainting for colored bubbles.
+    Clean speech bubbles using YOLO masks, with LaMa inpainting for colored bubbles.
 
     Args:
         image_input (str, Path, or PIL.Image.Image): Path to input image or a PIL Image object.
@@ -724,15 +690,10 @@ def clean_speech_bubbles(
         auto_threshold (bool): If True, scale thresholding_value by each bubble's background level
                                (ignored when use_otsu_threshold is set).
         roi_shrink_px (int): Number of pixels to shrink the ROI inwards before identification/fill.
-        inpaint_colored_bubbles (bool): If True, detect non-solid background bubbles and inpaint text with Flux.
-        flux_hf_token (str): Hugging Face token for Flux downloads (shared with outside-text removal).
-        flux_num_inference_steps (int): Flux denoising steps for colored bubble inpainting.
-        flux_residual_diff_threshold (float): Flux residual diff threshold for caching.
-        flux_seed (int): Seed for Flux; -1 enables random per run.
+        inpaint_colored_bubbles (bool): If True, detect non-solid background bubbles and inpaint their text.
+        flux_seed (int): Inpainting seed; -1 enables random per run.
         osb_text_verification (bool): When True, expand bubble boxes to fully cover OSB text detections.
         osb_text_hf_token (str): Optional token for OSB text model downloads.
-        flux_preserve_art (bool): Paste edit-model redraws of colored bubbles only over
-            the letters of `glyph_map`.
         glyph_map: Text map of the original page. Letters the fill leaves uncovered are
             cleaned too, and LaMa inpaints only the letters of colored bubbles.
 
@@ -930,21 +891,14 @@ def clean_speech_bubbles(
                     else max(0, int(flux_seed))
                 )
                 try:
-                    inpainter = make_flux_inpainter(
+                    inpainter = make_inpainter(
                         inpaint_method,
                         device=device,
-                        huggingface_token=flux_hf_token,
-                        num_inference_steps=flux_num_inference_steps,
-                        backend=flux_backend,
-                        low_vram=flux_low_vram,
-                        residual_diff_threshold=flux_residual_diff_threshold,
                         luminance_correction=flux_luminance_correction,
-                        upscale_small_crops=flux_upscale_small_crops,
-                        sdcpp_cache_mode=flux_sdcpp_cache_mode,
-                        sdcpp_diffusion_quant=flux_sdcpp_diffusion_quant,
-                        sdcpp_text_encoder_quant=flux_sdcpp_text_encoder_quant,
                         verbose=verbose,
                     )
+                    if inpainter is None:
+                        raise ValueError(f"no inpainting model for {inpaint_method!r}")
                     if request_coordinator is not None and len(colored_bubbles) > 1:
                         pil_working = _inpaint_colored_bubbles_with_coordinator(
                             pil_working,
@@ -955,7 +909,6 @@ def clean_speech_bubbles(
                             request_coordinator,
                             glyph_map,
                             inpaint_method,
-                            flux_preserve_art,
                         )
                     else:
                         for idx, bubble_info in enumerate(colored_bubbles):
@@ -965,7 +918,6 @@ def clean_speech_bubbles(
                             inpaint_mask = _bubble_inpaint_mask(
                                 mask_bool, glyph_map, inpaint_method
                             )
-                            before = pil_working
                             region_seed = (
                                 base_seed + idx if base_seed > 0 else base_seed
                             )
@@ -993,14 +945,6 @@ def clean_speech_bubbles(
                                         verbose=verbose,
                                         ocr_params=ocr_params,
                                     )
-                                pil_working = _composite_bubble(
-                                    before,
-                                    pil_working,
-                                    mask_bool,
-                                    glyph_map,
-                                    inpaint_method,
-                                    flux_preserve_art,
-                                )
                                 bubble_info["inpainted"] = True
                                 _resample_inpainted_bubble_color(
                                     pil_working, bubble_info, mask_bool

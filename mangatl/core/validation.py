@@ -4,7 +4,6 @@ from typing import Any
 from mangatl.core.config import MangaTranslatorConfig, RenderingConfig, TranslationConfig
 from mangatl.utils.archive import ARCHIVE_SUFFIXES
 from mangatl.utils.exceptions import ValidationError
-from mangatl.utils.model_metadata import flux_method_backends
 
 SETTING_CONSTRAINTS: dict[str, tuple[float, float]] = {
     "confidence": (0.1, 1.0),
@@ -43,8 +42,6 @@ SETTING_CONSTRAINTS: dict[str, tuple[float, float]] = {
     "outside_text_page_filter_margin_threshold": (0.0, 0.3),
     "outside_text_page_filter_min_area_ratio": (0.0, 0.2),
     "outside_text_min_area_ignore_ratio": (0.0, 0.05),
-    "outside_text_flux_num_inference_steps": (1, 30),
-    "outside_text_flux_residual_diff_threshold": (0.0, 1.0),
     "outside_text_osb_max_font_size": (5, 96),
     "outside_text_osb_min_font_size": (5, 96),
     "outside_text_osb_line_spacing": (0.5, 2.0),
@@ -114,12 +111,6 @@ _CONFIG_ATTR_PATHS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("outside_text", "page_filter_min_area_ratio"),
     ),
     "outside_text_min_area_ignore_ratio": (("outside_text", "min_area_ignore_ratio"),),
-    "outside_text_flux_num_inference_steps": (
-        ("outside_text", "flux_num_inference_steps"),
-    ),
-    "outside_text_flux_residual_diff_threshold": (
-        ("outside_text", "flux_residual_diff_threshold"),
-    ),
     "outside_text_osb_max_font_size": (("outside_text", "osb_max_font_size"),),
     "outside_text_osb_min_font_size": (("outside_text", "osb_min_font_size"),),
     "outside_text_osb_line_spacing": (("outside_text", "osb_line_spacing"),),
@@ -319,13 +310,6 @@ def validate_config(config: MangaTranslatorConfig) -> None:
     validate_mutually_exclusive_modes(
         config.cleaning_only, config.upscaling_only, config.test_mode
     )
-    method = config.outside_text.inpainting_method
-    backends = flux_method_backends(method)
-    if backends and config.outside_text.flux_backend not in backends:
-        raise ValidationError(
-            f"The {config.outside_text.flux_backend} backend is not supported with "
-            f"{method}. Choose one of: {', '.join(backends)}."
-        )
 
 
 def validate_zip_file(zip_path: str | Path) -> Path:

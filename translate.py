@@ -215,8 +215,9 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     p.add_argument(
         "--inpaint",
         default="lama_manga",
-        help="Inpainter for text outside bubbles / colored bubbles: lama_manga (default, light), "
-        "flux_klein_4b, flux_klein_9b, opencv, ... (FLUX needs more VRAM than is free next to the LLM)",
+        choices=["lama_manga", "opencv", "none"],
+        help="Inpainter for text outside bubbles / colored bubbles: lama_manga (default), "
+        "opencv (simple fill) or none",
     )
     p.add_argument(
         "--osb",

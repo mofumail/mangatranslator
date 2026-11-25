@@ -91,7 +91,7 @@ the llama-server start adds ~5-10 s per run.
 --glossary vol1_en/glossary.txt      # reuse names/terms from an earlier run (e.g. the previous volume)
 --instructions "Keep honorifics"     # extra instructions for the translator
 --font "Comic Neue"                  # any font pack folder in ./fonts (drop in e.g. CC Wild Words)
---inpaint flux_klein_4b              # diffusion inpainting for text over artwork (needs more VRAM)
+--inpaint opencv|none                # text over artwork: simple fill or leave it (default: LaMa)
 --osb on|off|auto                    # text outside bubbles (narration/SFX) — see below
 --offline                            # hard-forbid network access (all models must be downloaded)
 --skip-existing                      # resume: only translate pages without an output yet

@@ -8,7 +8,6 @@ from PIL import Image
 from mangatl.core.config import MangaTranslatorConfig
 from mangatl.core.image.glyph_mask import (
     UpscaledGlyphMap,
-    composite_glyphs,
     glyph_dilation_radius,
     page_glyph_probability,
     refine_box_mask_to_glyphs,
@@ -124,19 +123,3 @@ class PageGlyphMap:
             return refine_mask_to_glyphs(box_mask, glyph_prob, radius)
         return refine_box_mask_to_glyphs(box_mask, glyph_prob, box, box_prob, radius)
 
-    def composite(
-        self, before: Image.Image, after: Image.Image, box_mask: np.ndarray
-    ) -> Image.Image:
-        """`after` pasted over `before` only on the glyphs of each `box_mask` region;
-        `after` itself without a map."""
-        glyph_prob = self.get()
-        if glyph_prob is None:
-            return after
-        out = composite_glyphs(
-            np.asarray(before),
-            np.asarray(after),
-            box_mask,
-            glyph_prob,
-            glyph_dilation_radius(self.image.size),
-        )
-        return Image.fromarray(out)

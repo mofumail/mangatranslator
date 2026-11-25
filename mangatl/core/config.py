@@ -121,21 +121,9 @@ class OutsideTextConfig:
     huggingface_token: str = ""
     # flux_klein_9b, flux_klein_4b, flux_kontext, flux3_klein, fibo2_edit_turbo,
     # qwen_image_2_1_turbo, lama_manga, opencv, none
-    inpainting_method: str = "flux_klein_4b"
-    flux_backend: str = "sdnq"  # "sdcpp", "sdnq", "nunchaku"; see FLUX_METHOD_BACKENDS
-    flux_low_vram: bool = True  # Use CPU offload for SDNQ
-    flux_sdcpp_cache_mode: str = "step-skip"
-    flux_sdcpp_diffusion_quant: str = "Q4_K_M"
-    flux_sdcpp_text_encoder_quant: str = ""
-    flux_num_inference_steps: int = 4
-    flux_luminance_correction: bool = (
-        True  # Match patch luminance to surrounding context
-    )
-    flux_upscale_small_crops: bool = True
-    flux_group_regions: bool = False
-    # Paste edit-model redraws only over the letters, keeping the art around them
-    flux_preserve_art: bool = True
-    flux_residual_diff_threshold: float = 0.15
+    inpainting_method: str = "lama_manga"  # "lama_manga", "opencv" or "none"
+    # Match inpainted patches' luminance to the surrounding context
+    flux_luminance_correction: bool = True
     osb_confidence: float = 0.5
     osb_text_free_only: bool = False  # Use the RT-DETR text_free class as OSB source
     # Add text the OSB model missed: letters the text segmentation model finds outside
@@ -158,8 +146,6 @@ class OutsideTextConfig:
     osb_render_expansion_aspect_ratio_threshold: float = 0.4
     osb_render_expansion_area_ratio_threshold: float = 0.005
     text_box_proximity_ratio: float = 0.02  # Share of the shorter image side
-    flux_guidance_scale: float = 2.5
-    flux_prompt: str = "Remove all text."
     osb_follow_tilt: bool = True
     osb_max_tilt_deg: float = 20.0
     osb_min_tilt_deg: float = 3.0

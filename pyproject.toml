@@ -5,7 +5,6 @@ description = "Fully local manga translation: detection, OCR, cleaning, LLM tran
 requires-python = ">=3.13,<3.14"
 dependencies = [
     # pipeline (mangatl/, from MangaTranslator's requirements.txt; gradio UI not vendored)
-    "diffusers>=0.42.0",
     "fonttools>=4.56.0",
     "manga-ocr>=0.1.15",
     "numpy>=1.24.0",
@@ -18,7 +17,6 @@ dependencies = [
     "safetensors>=0.4.0",
     "scikit-learn>=1.3.0",
     "scipy>=1.10.0",
-    "sdnq>=0.2.8",
     "skia-python>=87.7",
     "spandrel>=0.3.0",
     "transformers>=5.0.0",

@@ -4,7 +4,6 @@ from typing import NamedTuple
 import cv2
 import numpy as np
 from PIL import Image
-from scipy.ndimage import distance_transform_edt
 
 from mangatl.utils.cancellation import raise_if_cancelled
 
@@ -24,17 +23,11 @@ THRESHOLD = 0.5
 # twice its text scale. Hollow and outlined SFX that the reference scale half-misses
 # come out whole there, but outside text boxes that scale marks hair and hatching
 UPSCALED_FACTOR = 2
-# Composites also take fainter glyph parts connected to confident ones: a missed
-# outline tail would survive the paste, while extra coverage only costs a little art
-COMPOSITE_LOW_THRESHOLD = 0.15
 # Tone matching of edit-model redraws samples flat pixels (level range within the
 # window) where the redraw is within the tolerance of the original, and smooths the
 # offset over a scale in dilation radii
 TONE_FLAT_RANGE = 12
 TONE_FLAT_WINDOW = 7
-TONE_MATCH_TOLERANCE = 24
-TONE_MATCH_MIN_SAMPLES = 16
-TONE_SIGMA_RADII = 3
 # Text the OSB model missed: letters merge into one region when the gap between them
 # is within this share of the larger one's letter size. Wider gaps reach art beside
 # the text, and verifying merged regions as one lets that art through
@@ -303,88 +296,6 @@ def art_in_fill(
     )
     keep[0] = False
     return keep[labels]
-
-
-def _is_flat(image: np.ndarray) -> np.ndarray:
-    kernel = np.ones((TONE_FLAT_WINDOW, TONE_FLAT_WINDOW), np.uint8)
-    spread = (cv2.dilate(image, kernel) - cv2.erode(image, kernel)).reshape(
-        image.shape[0], image.shape[1], -1
-    )
-    return spread.max(axis=2) < TONE_FLAT_RANGE
-
-
-def _match_tone(
-    before: np.ndarray, after: np.ndarray, samples: np.ndarray, sigma: float
-) -> np.ndarray:
-    """`after` shifted by the smoothed before-after offset measured at `samples`.
-
-    Edit models redraw the paper a few levels off, which glyph-shaped composites would
-    show as ghosts on flat areas. Only flat pixels where the redraw agrees with the
-    original are sampled, since redrawn lines and texture sit slightly off and would
-    bias the offset.
-    """
-    flat = samples & _is_flat(before) & _is_flat(after)
-    after = after.astype(np.float32)
-    diff = before.astype(np.float32) - after
-    weight = (flat & (np.abs(diff).max(axis=2) < TONE_MATCH_TOLERANCE)).astype(
-        np.float32
-    )
-    if weight.sum() < TONE_MATCH_MIN_SAMPLES:
-        return after
-    global_offset = (diff * weight[..., None]).sum(axis=(0, 1)) / weight.sum()
-    density = cv2.GaussianBlur(weight, (0, 0), sigma)
-    local = cv2.GaussianBlur(diff * weight[..., None], (0, 0), sigma)
-    local = local / np.maximum(density, 1e-6)[..., None]
-    # Far from any sample the local estimate is noise, so ease to the global offset
-    trust = np.clip(density / 0.05, 0.0, 1.0)[..., None]
-    return after + trust * local + (1 - trust) * global_offset
-
-
-def composite_glyphs(
-    before: np.ndarray,
-    after: np.ndarray,
-    box_mask: np.ndarray,
-    glyph_prob: np.ndarray,
-    radius: int,
-) -> np.ndarray:
-    """Paste the inpainted `after` over `before` only on each box region's glyphs.
-
-    Inside a region, art away from the dilated glyphs keeps its original pixels. The
-    glyph edge fades back to the original over half the dilation, and the redraw is
-    tone-matched to the original art it replaces. A region where the model finds no
-    text takes `after` across its whole box, as before glyph masks.
-    """
-    box_mask = np.asarray(box_mask, dtype=bool)
-    refined = refine_mask_to_glyphs(
-        box_mask, glyph_prob, radius, COMPOSITE_LOW_THRESHOLD
-    )
-    out = before.copy()
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(
-        box_mask.astype(np.uint8), connectivity=8
-    )
-    feather = max(1, radius // 2)
-    for label in range(1, count):
-        x, y, w, h = stats[label, :4]
-        crop = (slice(y, y + h), slice(x, x + w))
-        region = labels[crop] == label
-        glyphs = refined[crop] & region
-        if (glyphs == region).all():
-            alpha = region.astype(np.float32)
-            redraw = after[crop].astype(np.float32)
-        else:
-            # Distance to the kept art inside the region, so glyphs cut by the box
-            # edge stay fully redrawn there
-            inside = distance_transform_edt(glyphs | ~region)
-            alpha = np.clip(inside / feather, 0.0, 1.0) * glyphs
-            redraw = _match_tone(
-                before[crop], after[crop], region & ~glyphs, TONE_SIGMA_RADII * radius
-            )
-        a = alpha[..., None]
-        blended = redraw * a + before[crop].astype(np.float32) * (1 - a)
-        out[crop] = np.where(
-            region[..., None], np.clip(blended, 0, 255).round(), out[crop]
-        ).astype(out.dtype)
-    return out
 
 
 class GlyphGroup(NamedTuple):
