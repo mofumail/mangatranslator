@@ -32,7 +32,8 @@ def main():
     init_file_logging()
 
     from mangatl.ml.model_manager import get_model_manager, migrate_model_dirs
-    from mangatl.pipeline.page import batch_translate_images, translate_and_render
+    from mangatl.pipeline.page import translate_and_render
+    from mangatl.pipeline.batch import batch_translate_images
     from mangatl.settings import Settings
     from mangatl.common import eval_hooks
     from mangatl.common.log import log_message

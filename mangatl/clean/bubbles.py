@@ -17,6 +17,7 @@ from mangatl.clean.glyph_mask import art_in_fill, glyphs_missed_by_fill
 from mangatl.common.image_utils import pil_to_cv2
 from mangatl.clean.inpainting import make_inpainter
 from mangatl.clean.page_glyph_map import PageGlyphMap
+from mangatl.settings import Settings
 
 GRAYSCALE_MIDPOINT = 128  # Threshold for determining black vs white bubbles
 MIN_CONTOUR_AREA = 50
@@ -1120,3 +1121,9 @@ def retry_cleaning_with_otsu(
         "art_mask": art_mask,
         "is_sam": bubble_info.get("is_sam", False),
     }
+
+
+def inpaints_colored_bubbles(config: Settings) -> bool:
+    """Colored bubbles are inpainted with the outside-text inpainting model, so only while
+    outside-text detection is on."""
+    return config.cleaning.inpaint_colored_bubbles and config.detection.outside_text.enabled

@@ -21,6 +21,11 @@ class CancellationManager:
             return self._cancelled
 
 
+def raise_if_manager_cancelled(cancellation_manager: CancellationManager | None) -> None:
+    if cancellation_manager and cancellation_manager.is_cancelled():
+        raise CancellationError("Process cancelled by user.")
+
+
 # The UI runs one job at a time; this is its manager, for code that isn't handed one.
 _active: CancellationManager | None = None
 # Abandoned background calls keep their run's manager after the next run activates one
