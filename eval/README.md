@@ -23,6 +23,7 @@ uv run python eval/harness.py baseline          # live LLM, ~45 pages; ends with
 uv run python eval/harness.py check             # after a change: replay, no LLM server needed
 uv run python eval/harness.py check --live      # same, but cache misses are asked to the LLM
 uv run python eval/harness.py compare A B       # report on two existing runs
+uv run python eval/rebuild_check.py eval/runs/NAME   # every page rebuilt from its project.mtl == its PNG
 ```
 
 - Sets: `om10` (the pages in `in/`, always available), `ch6` and `djn` (local only, skipped when missing).

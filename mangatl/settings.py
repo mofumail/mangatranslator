@@ -252,6 +252,9 @@ class OutputSettings(_Section):
     format: Literal["auto", "png", "jpeg"] = "png"
     jpeg_quality: int = Field(default=95, ge=1, le=100)
     png_compression: int = Field(default=2, ge=0, le=6)
+    # the project file (SQLite) recording every page's state and history, for the editor;
+    # translate.py writes <output>/project.mtl
+    project: Path | None = None
 
 
 class PreprocessingSettings(_Section):

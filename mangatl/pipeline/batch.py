@@ -18,6 +18,7 @@ from mangatl.common.log import log_message
 from mangatl.inputs.archive import copy_comic_info
 from mangatl.inputs.path_list import record_failed_images, resolve_source_path
 from mangatl.pipeline.page import translate_and_render
+from mangatl.project.capture import close_projects
 from mangatl.settings import Settings
 from mangatl.translate.glossary import default_glossary_path, load_terms
 
@@ -124,6 +125,16 @@ def _check_glossary_path(path: Path) -> None:
         raise ValidationError(f"Cannot use glossary file '{path}': {e}") from e
 
 
+def _page_id(img_path: Path, input_dir: Path, prefix: str) -> str:
+    """A page's id in the project file: its path relative to the input folder, after `prefix`
+    (a volume's chapter folder, so that every chapter's 002.jpg is its own page)."""
+    try:
+        rel = img_path.relative_to(input_dir).as_posix()
+    except ValueError:
+        rel = img_path.name
+    return f"{prefix.strip('/')}/{rel}" if prefix.strip("/") else rel
+
+
 def _translate_batch_page(*args, **kwargs) -> None:
     """Translate one batch page, failing it if any bubble was left empty.
 
@@ -157,6 +168,7 @@ def _retry_failed_batch_images(
     progress_callback: Callable[[float, str], None] | None = None,
     cancellation_manager: Optional["CancellationManager"] = None,
     source_path_map: dict[str, str] | None = None,
+    page_prefix: str = "",
 ) -> None:
     """Retry failed batch images once. Mutates *results* in place.
 
@@ -227,6 +239,7 @@ def _retry_failed_batch_images(
                 img_path,
                 config,
                 output_path,
+                project_page=_page_id(img_path, input_dir, page_prefix),
                 cancellation_manager=cancellation_manager,
             )
             results["success_count"] = int(results.get("success_count", 0)) + 1
@@ -288,6 +301,7 @@ async def _batch_translate_pages(
     progress_callback: Callable[[float, str], None] | None,
     cancellation_manager: Optional["CancellationManager"],
     source_path_map: dict[str, str] | None = None,
+    page_prefix: str = "",
 ) -> dict[str, Any]:
     """Process images with up to `config.runtime.parallel_requests` pages in flight.
 
@@ -370,6 +384,7 @@ async def _batch_translate_pages(
                 first_img,
                 config,
                 first_output,
+                project_page=_page_id(first_img, input_dir, page_prefix),
                 cancellation_manager=cancellation_manager,
                 previous_context_texts=first_previous_context_texts,
                 ocr_texts_out=first_ocr_texts,
@@ -441,6 +456,7 @@ async def _batch_translate_pages(
                 img_path,
                 config,
                 output_path,
+                project_page=_page_id(img_path, input_dir, page_prefix),
                 cancellation_manager=cancellation_manager,
                 previous_context_texts_provider=previous_context_texts_provider,
                 ocr_texts_out=captured_ocr_texts,
@@ -530,6 +546,7 @@ def batch_translate_images(
     source_path_map: dict[str, str] | None = None,
     glossary_name: str | None = None,
     glossary_path: str | None = None,
+    page_prefix: str = "",
 ) -> dict[str, Any]:
     """
     Process all images in a directory using a configuration object.
@@ -632,6 +649,7 @@ def batch_translate_images(
                 progress_callback=progress_callback,
                 cancellation_manager=cancellation_manager,
                 source_path_map=source_path_map,
+                page_prefix=page_prefix,
             )
         )
         failed_jobs = results.pop("_failed_jobs", [])
@@ -647,12 +665,15 @@ def batch_translate_images(
                 progress_callback=progress_callback,
                 cancellation_manager=cancellation_manager,
                 source_path_map=source_path_map,
+                page_prefix=page_prefix,
             )
     except (CancellationError, KeyboardInterrupt):
         # Only empty subfolders remain when no page was saved yet.
         if created_output_dir and not any(p.is_file() for p in output_dir.rglob("*")):
             shutil.rmtree(output_dir, ignore_errors=True)
         raise
+    finally:
+        close_projects()
 
     copy_comic_info(input_dir, output_dir, config.translation.target_language, preserve_structure)
 

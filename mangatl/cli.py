@@ -16,6 +16,7 @@ import zipfile
 from pathlib import Path
 
 from mangatl.inputs.archive import ARCHIVE_SUFFIXES, safe_extract_zip
+from mangatl.project.capture import close_projects
 
 
 def main():
@@ -26,6 +27,9 @@ def main():
     )
     parser.add_argument("--output", default=None, help="Output file; with --batch: output directory")
     parser.add_argument("--batch", action="store_true", help="Translate a folder / archive")
+    parser.add_argument(
+        "--page-prefix", default="", help="Prefix of page ids in the project file (a volume's chapter folder)"
+    )
     args = parser.parse_args()
 
     from mangatl.common.log import init_file_logging
@@ -153,6 +157,7 @@ def main():
                 source_path_map=source_path_map,
                 glossary_name=glossary_name,
                 glossary_path=glossary_path,
+                page_prefix=args.page_prefix,
             )
             failed_paths_file = results.get("failed_paths_file")
             if failed_paths_file:
@@ -220,7 +225,12 @@ def main():
 
         try:
             log_message(f"Processing {input_path}...", always_print=True)
-            translate_and_render(input_path, config, output_path)
+            translate_and_render(
+                input_path,
+                config,
+                output_path,
+                project_page=f"{args.page_prefix.strip('/')}/{input_path.name}".lstrip("/"),
+            )
             log_message(
                 f"Translation complete. Result saved to {output_path}",
                 always_print=True,
@@ -228,6 +238,8 @@ def main():
         except Exception as e:
             log_message(f"Error processing {input_path}: {e}", always_print=True)
             raise SystemExit(1) from e
+        finally:
+            close_projects()
 
 
 if __name__ == "__main__":

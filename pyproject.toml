@@ -66,7 +66,7 @@ include = [
     "mangatl/settings.py", "mangatl/presets.py", "mangatl/cli.py", "translate.py", "webui.py",
     "mangatl/common/eval_hooks.py", "mangatl/ocr/line_ocr.py", "mangatl/typeset/narration.py",
     "mangatl/typeset/sfx_labels.py", "mangatl/typeset/symbols.py", "mangatl/translate/vision_pass.py",
-    "mangatl/translate/page.py", "eval/harness.py", "tests",
+    "mangatl/translate/page.py", "mangatl/project", "eval/harness.py", "eval/rebuild_check.py", "tests",
 ]
 typeCheckingMode = "basic"
 pythonVersion = "3.13"

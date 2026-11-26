@@ -16,7 +16,7 @@ jobs:
       - name: Install light dependencies
         run: |
           uv venv --python 3.13 .ci
-          uv pip install --python .ci/bin/python pydantic numpy pillow fonttools requests fastapi uvicorn pytest ruff pyright
+          uv pip install --python .ci/bin/python pydantic numpy pillow pyoxipng fonttools requests fastapi uvicorn pytest ruff pyright
       - name: Ruff
         run: |
           .ci/bin/ruff check .

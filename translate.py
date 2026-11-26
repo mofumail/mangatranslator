@@ -406,6 +406,7 @@ def build_settings(args: argparse.Namespace, out: Path, batch: bool, outside_tex
         verbose=args.verbose,
         log=log,
     )
+    settings.output.project = out / "project.mtl"  # one project file per run (output folder)
     d = settings.debug
     d.llm_cache = Path(args.llm_cache).resolve() if args.llm_cache else None
     d.llm_fresh, d.llm_replay = args.llm_fresh, args.llm_replay
@@ -550,6 +551,8 @@ def main() -> None:
                         (Path(tmp.name) / f.name).symlink_to(f)
                     src = Path(tmp.name)
             full = pipeline + ["--input", str(src), "--output", str(dst)]
+            if src0 != inp:  # a volume's chapter: page ids in the project file start with its folder
+                full += ["--page-prefix", src0.relative_to(inp).as_posix()]
             proc = subprocess.Popen(
                 full,
                 cwd=ROOT,

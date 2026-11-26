@@ -82,7 +82,7 @@ def _osb_fill_box_mask(img_w: int, img_h: int, box: tuple[int, int, int, int], r
 class _PendingOsbFill:
     """A solid fill for one OSB text box, painted once its render angle is known."""
 
-    color: tuple[int, int, int]
+    color: tuple[int, ...]
     box: tuple[int, int, int, int]
     tilt_deg: float  # the detected tilt, for text that is never rendered
     bubble_mask: np.ndarray | None

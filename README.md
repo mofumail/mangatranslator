@@ -29,6 +29,12 @@ order, output mirrors the folder structure), a single image, or a `.zip`/`.cbz`.
 Output pages are written as `<name>_translated.png`, plus a `glossary.txt` of names/terms
 (e.g. `相川仁 -> Jin Aikawa`) that the translator keeps reusing so names stay consistent.
 
+Every run also writes `project.mtl` to the output folder: one file (SQLite) holding each page's
+source, regions (with stable ids), OCR reads, translations, cleaning and typesetting inputs, and
+the history of every change, which the editor will open. Copy it to share or resume a project;
+`--set output.project=null` turns it off. `python eval/rebuild_check.py <output>` renders every
+page from the project alone and compares it with the PNG written (`--export DIR`: each page as JSON).
+
 ## Pipeline
 
 | Stage | Model (local) |
@@ -147,6 +153,7 @@ uv run --group dev pytest                 # unit + static tests (no GPU, no mode
 uv run --group dev ruff check . && uv run --group dev ruff format --check .
 uv run --group dev pyright                # type check (our own modules; see [tool.pyright])
 uv run python eval/harness.py check       # regression check against the saved baseline (GPU)
+uv run python eval/rebuild_check.py eval/runs/<run>   # pages rebuilt from project.mtl == PNGs
 ```
 
 CI (`.github/workflows/ci.yml`) runs ruff, pyright and the tests on CPU with a light set of
@@ -163,6 +170,9 @@ mangatl/              the pipeline (derived from MangaTranslator at e347a09; see
                       <output>/settings.json with every run (secrets excluded)
   presets.py          user-facing options (translate.py, web UI) -> Settings
   cli.py              runs one input with a settings file (translate.py runs `python -m mangatl.cli`)
+  project/            the page document (model.py), operation log with undo / conflicts / staleness
+                      (ops.py), the project file (store.py, SQLite), images as patches and 1-bit
+                      masks (blobs.py), pipeline state in and out (capture.py), rebuild.py
   pipeline/           page flow (page.py), long strips, batches; outside_text.py
   detect/             bubbles, panels / reading order, outside-text detector, text lines, tilt
   ocr/                Hayai OCR and line-by-line reading (line_ocr.py)

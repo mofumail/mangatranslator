@@ -107,10 +107,11 @@ def translate_strip(
     previous_context_texts_provider: Callable[[], list[list[str]]] | None,
     ocr_texts_out: list[str] | None,
     empty_bubbles_out: list | None = None,
+    project_page: str | None = None,
 ) -> Image.Image:
     """Translate a long strip section by section and stitch the results back together."""
     # the page flow translates each section; imported here because it calls back into this module
-    from mangatl.pipeline.page import as_mode, resolve_pre_upscale_factor, translate_and_render
+    from mangatl.pipeline.page import _record_page, as_mode, resolve_pre_upscale_factor, translate_and_render
 
     start_time = time.time()
     width, height = strip.size
@@ -163,6 +164,8 @@ def translate_strip(
                 ocr_texts_out=texts,
                 strip_glyph_size=strip_glyph_size,
                 empty_bubbles_out=empty_bubbles_out,
+                project_page=f"{project_page}#{index + 1}" if project_page else None,
+                project_source=(image_path, strip.mode, (0, top, width, bottom)),
             )
             sections.append(as_mode(section, target_mode))
             if texts:
@@ -176,6 +179,19 @@ def translate_strip(
         stitched.paste(section, (0, offset))
         offset += section.height
 
+    if project_page:
+        from mangatl.project.capture import capture_strip
+
+        _record_page(
+            config,
+            project_page,
+            capture_strip,
+            source_path=image_path,
+            target_mode=target_mode,
+            strip=strip,
+            sections=[f"{project_page}#{i + 1}" for i in range(len(sections))],
+            output_path=output_path,
+        )
     if output_path:
         save_image_with_compression(
             stitched,

@@ -36,6 +36,7 @@ from mangatl.detect.outside_text import prepare_outside_text_work
 from mangatl.detect.reading_order import sort_bubbles_by_reading_order
 from mangatl.ml.model_manager import get_model_manager
 from mangatl.pipeline.strip import detect_strip_text_rows, find_cut_rows, translate_strip
+from mangatl.project import capture as project_capture
 from mangatl.settings import PreprocessingSettings, Settings
 from mangatl.translate.page import attach_ocr_texts, translate_or_error_texts, translate_page
 from mangatl.translate.service import prepare_bubble_images_for_translation
@@ -206,6 +207,17 @@ def _resolve_processing_scale(image: Image.Image, config: Settings) -> float:
     processing_scale = math.sqrt((width * height) / 1_000_000)
     log_message(f"Dynamic processing scale: {processing_scale:.2f}x", verbose=config.verbose)
     return processing_scale
+
+
+def _record_page(config: Settings, project_page: str | None, capture: Callable, **kwargs) -> None:
+    """Record the page in the project file (output.project). A failure is logged, never fatal:
+    the translated page is still written."""
+    if config.output.project is None or project_page is None:
+        return
+    try:
+        capture(project_capture.open_project(config.output.project), project_page, config=config, **kwargs)
+    except Exception as e:
+        log_message(f"Project: could not record {project_page}: {e!r}", always_print=True)
 
 
 def _finish_page(
@@ -430,6 +442,8 @@ def translate_and_render(
     ocr_texts_out: list[str] | None = None,
     strip_glyph_size: list[float] | None = None,
     empty_bubbles_out: list | None = None,
+    project_page: str | None = None,
+    project_source: tuple[Path, str, tuple[int, int, int, int]] | None = None,
 ):
     """
     Main function to translate manga speech bubbles and render translations using a config object.
@@ -451,6 +465,10 @@ def translate_and_render(
             reuse it so auto font size stays the same along the strip.
         empty_bubbles_out: Optional mutable list. The bbox of every bubble that was cleaned
             but left without rendered text is appended, so batch runs can fail the page.
+        project_page: The page's id in the project file (output.project), usually its path
+            relative to the input folder; None: not recorded.
+        project_source: For a strip's section: (the strip's file, the mode it was decoded in, the
+            section's box), so the project stores the strip's file once.
 
     Returns:
         PIL.Image: Final translated image
@@ -492,6 +510,7 @@ def translate_and_render(
                 previous_context_texts_provider,
                 ocr_texts_out,
                 empty_bubbles_out,
+                project_page,
             )
 
     page, _ = _apply_pre_upscale_if_needed(page, config, verbose)
@@ -539,6 +558,19 @@ def translate_and_render(
         )
     # With overlap this is the pre-inpaint page, which the bubble and OSB LLM crops use
     page_cv = pil_to_cv2(page)
+    work_page = page
+    record = partial(
+        _record_page,
+        config,
+        project_page,
+        source_path=project_source[0] if project_source else image_path,
+        source_crop=project_source[1:] if project_source else None,
+        target_mode=target_mode,
+        output_path=output_path,
+    )
+
+    def record_unrendered(result: Image.Image) -> None:
+        record(project_capture.capture_unrendered, work=work_page, result=result)
 
     full_image_b64 = None
     if config.translation.full_page_context:
@@ -547,6 +579,7 @@ def translate_and_render(
 
     if not bubble_data and not outside_text_data:
         log_message("No speech bubbles or outside text detected", always_print=True)
+        record_unrendered(page)
         return _finish_page(page, config, output_path, target_mode, start_time)
     if bubble_data:
         log_message(f"Detected {len(bubble_data)} bubbles", verbose=verbose)
@@ -563,6 +596,7 @@ def translate_and_render(
     if config.runtime.cleaning_only:
         log_message("Cleaning only mode - skipping translation", always_print=True)
         cleaned = paint_pending_osb_fills(cleaned, outside_text_data)
+        record_unrendered(cleaned)
         return _finish_page(cleaned, config, output_path, target_mode, start_time)
 
     sizes = scaled_render_sizes(config, processing_scale)
@@ -583,6 +617,7 @@ def translate_and_render(
         log_message("No valid bubble images or outside text for translation", always_print=True)
         if overlap:
             cleaned, _ = finish_deferred_cleaning()
+        record_unrendered(cleaned)
         return _finish_page(cleaned, config, output_path, target_mode, start_time)
     raise_if_manager_cancelled(cancellation_manager)
 
@@ -651,6 +686,19 @@ def translate_and_render(
             verbose,
             page_glyphs,
         )
+    )
+    record(
+        project_capture.capture,
+        work=work_page,
+        page_cv=page_cv,
+        canvas=cleaned,
+        sorted_bubble_data=sorted_bubble_data,
+        translated_texts=translated_texts,
+        processed_bubbles_info=processed_bubbles_info,
+        outside_text_data=outside_text_data,
+        sizes=sizes,
+        processing_scale=processing_scale,
+        page_glyphs=page_glyphs,
     )
     cleaned = render_translations(
         cleaned,
