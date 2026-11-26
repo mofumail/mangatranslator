@@ -7,6 +7,30 @@ Nothing leaves the machine at inference time; models are downloaded once on firs
 uv run python translate.py --input chapter01/ --output chapter01_en/
 ```
 
+## Examples
+
+Original on the left, this translator's output (default settings) on the right.
+
+**Dialogue.** Bubbles are cleaned and relettered, sized to the source lettering. Text drawn on
+the art (the shout) is erased and relettered in place, its emphasis kept.
+
+![Dialogue: original and translated](docs/examples/dialogue.jpg)
+
+**Sound effects.** The artist's lettering stays, with a small English label beside it, sized to the
+effect (`--sfx redraw` replaces it instead). The あっ cut off at the panel edge is a known miss:
+only its tail gets drawn.
+
+![Sound effects: original and translated](docs/examples/sound_effects.jpg)
+
+**Colour pages.** Same pipeline: dialogue in the bubbles, the asides between them, labels for the
+sound effects.
+
+![Colour page: original and translated](docs/examples/colour.jpg)
+
+Pages from the [OpenMantra dataset](https://github.com/mantra-inc/open-mantra-dataset) (Hinami et
+al., AAAI 2021; CC BY-NC 4.0): *Tojime no Siora* and *Tencho Isoro*, the benchmark pages in
+`eval/in/`.
+
 ## Web UI
 
 ```bash
