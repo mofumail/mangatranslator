@@ -85,6 +85,72 @@ class OutsideTextWork:
             self.glyph_map = PageGlyphMap.for_page(self.pil_image, self.config, self.verbose)
 
 
+def outside_text_crop(
+    original_cv_image: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    raw_bbox: tuple[int, ...],
+    config: Settings,
+    verbose: bool,
+) -> np.ndarray:
+    """The image of one outside-text region read by OCR and sent to the LLM: the detection (raw
+    box, falling back to the expanded box) cut from the page before inpainting, upscaled per
+    config.ocr.upscale."""
+    x1, y1, x2, y2 = bbox
+    rx1, ry1, rx2, ry2 = raw_bbox
+    rx1 = max(0, min(original_cv_image.shape[1], rx1))
+    ry1 = max(0, min(original_cv_image.shape[0], ry1))
+    rx2 = max(0, min(original_cv_image.shape[1], rx2))
+    ry2 = max(0, min(original_cv_image.shape[0], ry2))
+    if rx2 > rx1 and ry2 > ry1:
+        outside_text_image_cv = original_cv_image[ry1:ry2, rx1:rx2].copy()
+    else:
+        outside_text_image_cv = original_cv_image[y1:y2, x1:x2].copy()
+    outside_text_image_pil = cv2_to_pil(outside_text_image_cv)
+    osb_upscale_method = config.ocr.upscale
+
+    if osb_upscale_method == "model":
+        model_manager = get_model_manager()
+        upscale_model = model_manager.load_upscale(verbose=verbose)
+        final_text_pil = process_bubble_image_cached(
+            outside_text_image_pil,
+            upscale_model,
+            config.device,
+            config.ocr.outside_min_side,
+            "min",
+            "model",
+            verbose,
+        )
+        model_manager.clear_cache()
+    elif osb_upscale_method == "model_lite":
+        model_manager = get_model_manager()
+        upscale_model = model_manager.load_upscale_lite(verbose=verbose)
+        final_text_pil = process_bubble_image_cached(
+            outside_text_image_pil,
+            upscale_model,
+            config.device,
+            config.ocr.outside_min_side,
+            "min",
+            "model_lite",
+            verbose,
+        )
+        model_manager.clear_cache()
+    elif osb_upscale_method == "lanczos":
+        w, h = outside_text_image_pil.size
+        min_side = min(w, h)
+        if min_side < config.ocr.outside_min_side:
+            scale_factor = config.ocr.outside_min_side / min_side
+            new_w = int(w * scale_factor)
+            new_h = int(h * scale_factor)
+            resized_text = resize_lanczos_antiring(outside_text_image_pil, (new_w, new_h))
+        else:
+            resized_text = outside_text_image_pil
+        final_text_pil = resized_text
+    else:
+        final_text_pil = outside_text_image_pil
+
+    return pil_to_cv2(final_text_pil)
+
+
 def _build_outside_text_data(
     pil_image: Image.Image,
     outside_text_results,
@@ -114,56 +180,10 @@ def _build_outside_text_data(
         ry1 = max(0, min(original_cv_image.shape[0], ry1))
         rx2 = max(0, min(original_cv_image.shape[1], rx2))
         ry2 = max(0, min(original_cv_image.shape[0], ry2))
-        if rx2 > rx1 and ry2 > ry1:
-            outside_text_image_cv = original_cv_image[ry1:ry2, rx1:rx2].copy()
-        else:
-            outside_text_image_cv = original_cv_image[y1:y2, x1:x2].copy()
-        outside_text_image_pil = cv2_to_pil(outside_text_image_cv)
         original_crop_pil = cv2_to_pil(original_cv_image[y1:y2, x1:x2].copy())
-
-        osb_upscale_method = config.ocr.upscale
-
-        if osb_upscale_method == "model":
-            model_manager = get_model_manager()
-            upscale_model = model_manager.load_upscale(verbose=verbose)
-            final_text_pil = process_bubble_image_cached(
-                outside_text_image_pil,
-                upscale_model,
-                config.device,
-                config.ocr.outside_min_side,
-                "min",
-                "model",
-                verbose,
-            )
-            model_manager.clear_cache()
-        elif osb_upscale_method == "model_lite":
-            model_manager = get_model_manager()
-            upscale_model = model_manager.load_upscale_lite(verbose=verbose)
-            final_text_pil = process_bubble_image_cached(
-                outside_text_image_pil,
-                upscale_model,
-                config.device,
-                config.ocr.outside_min_side,
-                "min",
-                "model_lite",
-                verbose,
-            )
-            model_manager.clear_cache()
-        elif osb_upscale_method == "lanczos":
-            w, h = outside_text_image_pil.size
-            min_side = min(w, h)
-            if min_side < config.ocr.outside_min_side:
-                scale_factor = config.ocr.outside_min_side / min_side
-                new_w = int(w * scale_factor)
-                new_h = int(h * scale_factor)
-                resized_text = resize_lanczos_antiring(outside_text_image_pil, (new_w, new_h))
-            else:
-                resized_text = outside_text_image_pil
-            final_text_pil = resized_text
-        else:
-            final_text_pil = outside_text_image_pil
-
-        outside_text_image_cv = pil_to_cv2(final_text_pil)
+        outside_text_image_cv = outside_text_crop(
+            original_cv_image, bbox_tuple, raw_bbox_tuple, config, verbose
+        )
 
         w = max(1, x2 - x1)
         h = max(1, y2 - y1)

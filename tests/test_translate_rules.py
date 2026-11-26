@@ -42,3 +42,18 @@ def test_short_items():
 def test_words_ignores_restyling():
     assert _words("*Huff*") == _words("**HUFF**")
     assert _words("Huff") != _words("Puff")
+
+
+def test_translation_cache_key_follows_the_ocr_reads():
+    """The in-process translation cache is keyed by the crops; with OCR a stage of its own, a
+    corrected read of the same crops must be a new request, not the old translation."""
+    from mangatl.common.caching import UnifiedCache
+    from mangatl.settings import Settings
+
+    config = Settings().updated(**{"translation.force_cache": True})
+    cache = UnifiedCache()
+    key = cache.get_translation_cache_key
+    a = key(["img1", "img2"], "page", config, ocr_texts=["はい", "いいえ"])
+    assert a is not None
+    assert a == key(["img1", "img2"], "page", config, ocr_texts=["はい", "いいえ"])
+    assert a != key(["img1", "img2"], "page", config, ocr_texts=["はい", "いや"])

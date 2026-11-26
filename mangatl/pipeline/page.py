@@ -1,152 +1,29 @@
 """Translating one page: open, detect, clean, OCR and translate, typeset, save."""
 
-import base64
 import math
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
-import cv2
-import numpy as np
 from PIL import Image
 
-from mangatl.clean.bubbles import clean_speech_bubbles, inpaints_colored_bubbles
-from mangatl.clean.outside_text import finish_outside_text_work, paint_pending_osb_fills, process_outside_text
-from mangatl.clean.page_glyph_map import PageGlyphMap
 from mangatl.common import eval_hooks
 from mangatl.common.caching import get_cache
 from mangatl.common.cancellation import CancellationManager, raise_if_manager_cancelled
-from mangatl.common.exceptions import CancellationError, CleaningError, ImageProcessingError
+from mangatl.common.exceptions import ImageProcessingError
 from mangatl.common.image_utils import (
     convert_image_to_target_mode,
-    cv2_to_pil,
-    pil_to_cv2,
-    resize_to_max_side,
     save_image_with_compression,
     upscale_image,
-    upscale_image_to_dimension,
 )
 from mangatl.common.log import log_message
-from mangatl.common.scaling import scale_length
-from mangatl.detect.bubbles import detect_panels, detect_speech_bubbles
-from mangatl.detect.outside_text import prepare_outside_text_work
-from mangatl.detect.reading_order import sort_bubbles_by_reading_order
 from mangatl.ml.model_manager import get_model_manager
+from mangatl.pipeline import stages
+from mangatl.pipeline.stages import get_image_encoding_params
 from mangatl.pipeline.strip import detect_strip_text_rows, find_cut_rows, translate_strip
 from mangatl.project import capture as project_capture
 from mangatl.settings import PreprocessingSettings, Settings
-from mangatl.translate.page import attach_ocr_texts, translate_or_error_texts, translate_page
-from mangatl.translate.service import prepare_bubble_images_for_translation
-from mangatl.typeset.page import (
-    render_translations,
-    resolve_main_max_font,
-    scaled_render_sizes,
-)
-
-
-def _should_overlap_llm_with_inpaint(config: Settings) -> bool:
-    return config.runtime.overlap_llm_with_inpaint and not config.runtime.cleaning_only
-
-
-def _clean_speech_bubbles_for_page(
-    pil_image_processed: Image.Image,
-    bubble_data: list[dict[str, Any]],
-    config: Settings,
-    device,
-    processing_scale: float,
-    verbose: bool,
-    fallback_cv_image: np.ndarray,
-    glyph_map: PageGlyphMap | None = None,
-) -> tuple[np.ndarray, list[dict[str, Any]]]:
-    """Clean bubbles (colored bubbles are inpainted). Returns (cv_image, info)."""
-    try:
-        use_otsu = config.cleaning.otsu
-        if inpaints_colored_bubbles(config):
-            log_message(
-                "Inpainting enabled for colored bubbles",
-                verbose=verbose,
-            )
-
-        cleaned_image_cv, processed_bubbles_info = clean_speech_bubbles(
-            pil_image_processed,
-            config.yolo_model_path,
-            config.detection.confidence,
-            pre_computed_detections=bubble_data,
-            device=device,
-            thresholding_value=config.cleaning.threshold,
-            use_otsu_threshold=use_otsu,
-            auto_threshold=config.cleaning.auto_threshold,
-            roi_shrink_px=config.cleaning.roi_shrink_px,
-            verbose=verbose,
-            processing_scale=processing_scale,
-            conjoined_confidence=config.detection.conjoined_confidence,
-            inpaint_colored_bubbles=inpaints_colored_bubbles(config),
-            seed=config.cleaning.seed,
-            osb_text_verification=config.detection.outside_text.cover_with_bubbles,
-            osb_text_hf_token=config.runtime.hf_token,
-            inpaint_method=config.cleaning.inpainter,
-            luminance_correction=config.cleaning.luminance_correction,
-            bubble_detector_model=config.detection.bubble_model,
-            request_coordinator=config.request_coordinator,
-            glyph_map=glyph_map,
-        )
-        return cleaned_image_cv, processed_bubbles_info
-    except CleaningError as e:
-        log_message(f"Cleaning failed: {e}", always_print=True)
-        return fallback_cv_image.copy(), []
-    except CancellationError:
-        raise
-    except Exception as e:
-        log_message(f"Error during cleaning: {e}", always_print=True)
-        return fallback_cv_image.copy(), []
-
-
-def get_image_encoding_params(pil_image_format: str | None) -> tuple[str, str]:
-    """Returns (mime_type, cv2_ext) for a given PIL image format."""
-    if pil_image_format and pil_image_format.upper() == "PNG":
-        return "image/png", ".png"
-    return "image/jpeg", ".jpg"
-
-
-def _encode_context_image(image: Image.Image, config: Settings, cv2_ext: str) -> str:
-    """Resize a page for LLM context per the context upscale setting, base64-encoded."""
-    verbose = config.verbose
-    # processing_scale is intentionally not used for context_image_max_side_pixels
-    max_side = scale_length(
-        config.translation.context_image_max_side,
-        None,
-        minimum=512,
-        maximum=4096,
-    )
-    upscale_method = config.ocr.upscale
-
-    if upscale_method in ("model", "model_lite"):
-        model_manager = get_model_manager()
-        if upscale_method == "model":
-            upscale_model = model_manager.load_upscale(verbose=verbose)
-        else:
-            upscale_model = model_manager.load_upscale_lite(verbose=verbose)
-        image = upscale_image_to_dimension(
-            upscale_model,
-            image,
-            max_side,
-            config.device,
-            "max",
-            upscale_method,
-            verbose,
-        )
-        image = resize_to_max_side(image, max_side, verbose=verbose)
-        model_manager.clear_cache()
-    elif upscale_method == "lanczos":
-        image = resize_to_max_side(image, max_side, verbose=verbose, antiring=True)
-
-    is_success, buffer = cv2.imencode(cv2_ext, pil_to_cv2(image))
-    if not is_success:
-        raise ImageProcessingError(f"Context image encoding to {cv2_ext} failed")
-    return base64.b64encode(buffer).decode("utf-8")
 
 
 def resolve_pre_upscale_factor(pre: PreprocessingSettings, verbose: bool = False) -> float:
@@ -173,10 +50,6 @@ def _apply_pre_upscale_if_needed(
     model_type = config.preprocessing.upscale_model
     upscaled = upscale_image(image, factor, model_type=model_type, verbose=verbose)
     return upscaled, factor
-
-
-def as_mode(image: Image.Image, mode: str) -> Image.Image:
-    return image if image.mode == mode else image.convert(mode)
 
 
 def _open_source_image(image_path: Path) -> Image.Image:
@@ -209,13 +82,13 @@ def _resolve_processing_scale(image: Image.Image, config: Settings) -> float:
     return processing_scale
 
 
-def _record_page(config: Settings, project_page: str | None, capture: Callable, **kwargs) -> None:
+def _record_page(config: Settings, project_page: str | None, capture: Callable, /, **kwargs) -> None:
     """Record the page in the project file (output.project). A failure is logged, never fatal:
     the translated page is still written."""
     if config.output.project is None or project_page is None:
         return
     try:
-        capture(project_capture.open_project(config.output.project), project_page, config=config, **kwargs)
+        capture(project_capture.open_project(config.output.project), project_page, **kwargs)
     except Exception as e:
         log_message(f"Project: could not record {project_page}: {e!r}", always_print=True)
 
@@ -247,189 +120,6 @@ def _finish_page(
 
     log_message(f"Processing completed in {time.time() - start_time:.2f}s", always_print=True)
     return image
-
-
-def _detect_page_bubbles(
-    image_path: Path, image: Image.Image, config: Settings
-) -> tuple[list[dict[str, Any]], list]:
-    """Returns (bubbles, text-free boxes), both empty if detection fails."""
-    log_message("Detecting speech bubbles...", verbose=config.verbose)
-    try:
-        return detect_speech_bubbles(
-            image_path,
-            config.yolo_model_path,
-            config.detection.confidence,
-            verbose=config.verbose,
-            device=config.device,
-            conjoined_detection=config.detection.conjoined,
-            conjoined_confidence=config.detection.conjoined_confidence,
-            image_override=image,
-            osb_enabled=config.detection.outside_text.enabled,
-            osb_text_verification=config.detection.outside_text.cover_with_bubbles,
-            osb_text_hf_token=config.runtime.hf_token,
-            bubble_detector_model=config.detection.bubble_model,
-        )
-    except Exception as e:
-        log_message(f"Error during detection: {e}", always_print=True)
-        return [], []
-
-
-def _detect_page_panels(image_path: Path, image: Image.Image, config: Settings) -> list | None:
-    """Panels for reading order, or None when panel sorting is off or detection fails."""
-    if not config.detection.panel_sorting:
-        return None
-
-    verbose = config.verbose
-    try:
-        log_message("Detecting panels...", verbose=verbose)
-        panels = detect_panels(
-            image_path,
-            confidence=config.detection.panel_confidence,
-            device=config.device,
-            verbose=verbose,
-            image_override=image,
-        )
-        if panels:
-            log_message(f"Detected {len(panels)} panels", always_print=True)
-        else:
-            log_message("No panels detected", verbose=verbose)
-    except Exception as e:
-        log_message(f"Panel detection failed: {e}. Using global sorting.", always_print=True)
-        panels = None
-    return panels
-
-
-def _encode_full_page_context(image: Image.Image, config: Settings, cv2_ext: str) -> str | None:
-    try:
-        encoded = _encode_context_image(image, config, cv2_ext)
-    except Exception as e:
-        log_message(f"Warning: Failed to encode full image context: {e}", always_print=True)
-        return None
-    log_message("Encoded full image for context", verbose=config.verbose)
-    return encoded
-
-
-def _clean_page(
-    image: Image.Image,
-    bubble_data: list[dict[str, Any]],
-    config: Settings,
-    processing_scale: float,
-    target_mode: str,
-    glyph_map: PageGlyphMap | None = None,
-) -> tuple[Image.Image, list[dict[str, Any]]]:
-    """Returns (page with bubbles cleaned, in target_mode, per-bubble cleaning info).
-
-    `glyph_map` is the text map of the page before outside text was inpainted, which
-    still holds inside the bubbles.
-    """
-    if not bubble_data:
-        return as_mode(image, target_mode), []
-    log_message("Cleaning speech bubbles...", verbose=config.verbose)
-    cleaned_cv, processed_bubbles_info = _clean_speech_bubbles_for_page(
-        image,
-        bubble_data,
-        config,
-        config.device,
-        processing_scale,
-        config.verbose,
-        pil_to_cv2(image),
-        glyph_map,
-    )
-    return as_mode(cv2_to_pil(cleaned_cv), target_mode), processed_bubbles_info
-
-
-def _finish_deferred_cleaning(
-    outside_work,
-    image: Image.Image,
-    bubble_data: list[dict[str, Any]],
-    config: Settings,
-    processing_scale: float,
-    target_mode: str,
-    glyph_map: PageGlyphMap | None = None,
-) -> tuple[Image.Image, list[dict[str, Any]]]:
-    """Finish the deferred outside text inpainting, then clean the bubbles on top of it."""
-    if outside_work is not None:
-        image, _ = finish_outside_text_work(outside_work)
-    return _clean_page(image, bubble_data, config, processing_scale, target_mode, glyph_map)
-
-
-def _prepare_bubble_crops(
-    bubble_data: list[dict[str, Any]],
-    processed_bubbles_info: list[dict[str, Any]],
-    page_cv: np.ndarray,
-    config: Settings,
-    mime_type: str,
-) -> list[dict[str, Any]]:
-    """Attach the refined cleaning masks to the bubbles and encode their crops for the LLM."""
-    verbose = config.verbose
-    log_message("Preparing bubble images...", verbose=verbose)
-
-    mask_by_bbox: dict[tuple, Any] = {}
-    for info in processed_bubbles_info:
-        bbox_key = tuple(round(v) for v in info.get("bbox", ()))
-        if len(bbox_key) != 4:
-            continue
-        mask = info.get("mask")
-        if mask is None:
-            mask = info.get("base_mask")
-        if mask is not None:
-            mask_by_bbox[bbox_key] = mask
-    for bubble in bubble_data:
-        bbox_key = tuple(round(v) for v in bubble.get("bbox", ()))
-        if bbox_key in mask_by_bbox:
-            bubble["seg_mask"] = mask_by_bbox[bbox_key]
-
-    upscale_method = config.ocr.upscale
-
-    model_manager = get_model_manager()
-    upscale_model = None
-    if upscale_method == "model":
-        upscale_model = model_manager.load_upscale(verbose=verbose)
-    elif upscale_method == "model_lite":
-        upscale_model = model_manager.load_upscale_lite(verbose=verbose)
-
-    bubble_data = prepare_bubble_images_for_translation(
-        bubble_data,
-        page_cv,
-        upscale_model,
-        config.device,
-        mime_type,
-        config.ocr.bubble_min_side,
-        upscale_method,
-        config.ocr.whiteout_neighbors,
-        verbose,
-    )
-    if upscale_model is not None:
-        model_manager.clear_cache()
-
-    action = "Upscaled" if upscale_method != "none" else "Prepared"
-    log_message(
-        f"{action} {len(bubble_data)} bubble images for translation",
-        always_print=True,
-    )
-    return bubble_data
-
-
-def _sort_text_elements(
-    valid_bubble_data: list[dict[str, Any]],
-    outside_text_data: list[dict[str, Any]],
-    config: Settings,
-    panels: list | None,
-) -> list[dict[str, Any]]:
-    """Sort speech bubbles and outside text together into reading order."""
-    reading_direction = config.translation.reading_direction
-    if outside_text_data:
-        log_message(
-            f"Including {len(outside_text_data)} outside text regions in reading order calculation",
-            verbose=config.verbose,
-        )
-    log_message(
-        f"Sorting all text elements ({reading_direction.upper()})",
-        verbose=config.verbose,
-    )
-    return sort_bubbles_by_reading_order(
-        valid_bubble_data + outside_text_data, reading_direction, panels=panels
-    )
 
 
 def translate_and_render(
@@ -514,204 +204,35 @@ def translate_and_render(
             )
 
     page, _ = _apply_pre_upscale_if_needed(page, config, verbose)
-
     processing_scale = _resolve_processing_scale(page, config)
     get_cache().set_current_image(page, verbose)
-    full_page_context_source = page.copy()
-
-    # Detect speech bubbles first so OSB processing can respect bubble regions
-    bubble_data, text_free_boxes = _detect_page_bubbles(image_path, page, config)
-    raise_if_manager_cancelled(cancellation_manager)
-    panels = _detect_page_panels(image_path, page, config)
-    raise_if_manager_cancelled(cancellation_manager)
-    # Built on first use from the original page, then shared by OSB and bubble cleaning
-    glyph_map = PageGlyphMap.for_page(page, config, verbose)
-
-    # Outside text is always detected here, but with overlap its inpainting (and bubble
-    # cleaning) is deferred to run alongside the LLM call
-    overlap = _should_overlap_llm_with_inpaint(config)
-    outside_work = None
-    if overlap:
-        outside_work = prepare_outside_text_work(
-            page,
-            config,
-            image_path,
-            image_format,
-            verbose,
-            bubble_data=bubble_data,
-            text_free_boxes=text_free_boxes,
-            panels=panels,
-            glyph_map=glyph_map,
-        )
-        outside_text_data = outside_work.outside_text_data if outside_work is not None else []
-    else:
-        page, outside_text_data = process_outside_text(
-            page,
-            config,
-            image_path,
-            image_format,
-            verbose,
-            bubble_data=bubble_data,
-            text_free_boxes=text_free_boxes,
-            panels=panels,
-            glyph_map=glyph_map,
-        )
-    # With overlap this is the pre-inpaint page, which the bubble and OSB LLM crops use
-    page_cv = pil_to_cv2(page)
-    work_page = page
-    record = partial(
-        _record_page,
+    work = stages.WorkPage(
+        config=config,
+        image=page,
+        processing_scale=processing_scale,
+        target_mode=target_mode,
+        mime_type=mime_type,
+        cv2_ext=cv2_ext,
+        image_format=image_format,
+        source_path=image_path,
+        context_image=page.copy(),
+        cancel=cancellation_manager,
+    )
+    translated = stages.run(
+        work,
+        previous_context_texts,
+        previous_context_texts_provider,
+        ocr_texts_out,
+        strip_glyph_size,
+        empty_bubbles,
+    )
+    _record_page(
         config,
         project_page,
+        project_capture.capture,
+        work=work,
         source_path=project_source[0] if project_source else image_path,
         source_crop=project_source[1:] if project_source else None,
-        target_mode=target_mode,
         output_path=output_path,
     )
-
-    def record_unrendered(result: Image.Image) -> None:
-        record(project_capture.capture_unrendered, work=work_page, result=result)
-
-    full_image_b64 = None
-    if config.translation.full_page_context:
-        full_image_b64 = _encode_full_page_context(full_page_context_source, config, cv2_ext)
-    raise_if_manager_cancelled(cancellation_manager)
-
-    if not bubble_data and not outside_text_data:
-        log_message("No speech bubbles or outside text detected", always_print=True)
-        record_unrendered(page)
-        return _finish_page(page, config, output_path, target_mode, start_time)
-    if bubble_data:
-        log_message(f"Detected {len(bubble_data)} bubbles", verbose=verbose)
-    if outside_text_data:
-        log_message(f"Detected {len(outside_text_data)} outside text regions", verbose=verbose)
-
-    if overlap:
-        cleaned, processed_bubbles_info = as_mode(page, target_mode), []
-    else:
-        cleaned, processed_bubbles_info = _clean_page(
-            page, bubble_data, config, processing_scale, target_mode, glyph_map
-        )
-
-    if config.runtime.cleaning_only:
-        log_message("Cleaning only mode - skipping translation", always_print=True)
-        cleaned = paint_pending_osb_fills(cleaned, outside_text_data)
-        record_unrendered(cleaned)
-        return _finish_page(cleaned, config, output_path, target_mode, start_time)
-
-    sizes = scaled_render_sizes(config, processing_scale)
-    page_glyphs: dict = {}  # this page's lettering sizes, for bigger text in shouted bubbles
-    bubble_data = _prepare_bubble_crops(bubble_data, processed_bubbles_info, page_cv, config, mime_type)
-    finish_deferred_cleaning = partial(
-        _finish_deferred_cleaning,
-        outside_work,
-        page,
-        bubble_data,
-        config,
-        processing_scale,
-        target_mode,
-        glyph_map,
-    )
-    valid_bubble_data = [b for b in bubble_data if b.get("image_b64")]
-    if not valid_bubble_data and not outside_text_data:
-        log_message("No valid bubble images or outside text for translation", always_print=True)
-        if overlap:
-            cleaned, _ = finish_deferred_cleaning()
-        record_unrendered(cleaned)
-        return _finish_page(cleaned, config, output_path, target_mode, start_time)
-    raise_if_manager_cancelled(cancellation_manager)
-
-    sorted_bubble_data = _sort_text_elements(valid_bubble_data, outside_text_data, config, panels)
-
-    bubble_images_b64 = [bubble["image_b64"] for bubble in sorted_bubble_data if "image_b64" in bubble]
-    bubble_mime_types = [
-        bubble["mime_type"]
-        for bubble in sorted_bubble_data
-        if "image_b64" in bubble and "mime_type" in bubble
-    ]
-    translated_texts: list[str] = []
-    current_ocr_texts: list[str] = []
-    if not bubble_images_b64:
-        log_message("No valid bubbles after sorting", always_print=True)
-        if overlap:
-            cleaned, processed_bubbles_info = finish_deferred_cleaning()
-    else:
-        call_api = partial(
-            translate_page,
-            config,
-            sorted_bubble_data,
-            bubble_images_b64,
-            bubble_mime_types,
-            full_image_b64,
-            mime_type,
-            previous_context_texts,
-            previous_context_texts_provider,
-        )
-        translate = partial(
-            translate_or_error_texts,
-            sorted_bubble_data=sorted_bubble_data,
-            image_count=len(bubble_images_b64),
-            config=config,
-            ocr_texts_out=ocr_texts_out,
-        )
-        if overlap:
-            log_message(
-                "Running LLM translation concurrently with inpainting",
-                always_print=True,
-            )
-            with ThreadPoolExecutor(max_workers=2) as overlap_executor:
-                inpaint_future = overlap_executor.submit(finish_deferred_cleaning)
-                translate_future = overlap_executor.submit(call_api)
-                try:
-                    cleaned, processed_bubbles_info = inpaint_future.result()
-                except Exception:
-                    translate_future.cancel()
-                    raise
-                translated_texts, current_ocr_texts = translate(translate_future.result)
-        else:
-            translated_texts, current_ocr_texts = translate(call_api)
-
-    if current_ocr_texts:
-        attach_ocr_texts(sorted_bubble_data, current_ocr_texts, verbose)
-
-    sizes = sizes._replace(
-        main_max_font=resolve_main_max_font(
-            config,
-            page_cv,
-            processed_bubbles_info,
-            sizes.main_min_font,
-            sizes.main_max_font,
-            processing_scale,
-            strip_glyph_size,
-            verbose,
-            page_glyphs,
-        )
-    )
-    record(
-        project_capture.capture,
-        work=work_page,
-        page_cv=page_cv,
-        canvas=cleaned,
-        sorted_bubble_data=sorted_bubble_data,
-        translated_texts=translated_texts,
-        processed_bubbles_info=processed_bubbles_info,
-        outside_text_data=outside_text_data,
-        sizes=sizes,
-        processing_scale=processing_scale,
-        page_glyphs=page_glyphs,
-    )
-    cleaned = render_translations(
-        cleaned,
-        sorted_bubble_data,
-        translated_texts,
-        processed_bubbles_info,
-        page_cv,
-        config,
-        sizes,
-        processing_scale,
-        empty_bubbles,
-        cancellation_manager,
-        page_glyphs,
-    )
-    cleaned = paint_pending_osb_fills(cleaned, outside_text_data)
-    return _finish_page(cleaned, config, output_path, target_mode, start_time)
+    return _finish_page(translated, config, output_path, target_mode, start_time)

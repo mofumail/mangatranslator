@@ -40,9 +40,19 @@ def translate_page(
     full_image_mime_type: str,
     previous_context_texts: list[list[str]],
     previous_context_texts_provider: Callable[[], list[list[str]]] | None,
+    reads: list[str] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Returns (translations, OCR transcripts) for the sorted page elements."""
+    """Returns (translations, OCR transcripts) for the sorted page elements. `reads`: the
+    elements' OCR reads; None: read them first (mangatl.ocr.page.run_ocr)."""
     ocr_texts: list[str] = []
+    if reads is None:
+        from mangatl.ocr.page import run_ocr  # heavy (OCR models)
+
+        try:
+            reads = run_ocr(config, images_b64, sorted_bubble_data, config.verbose)
+        except (ValueError, RuntimeError) as e:
+            log_message(f"Translation error: {e}", always_print=True)
+            return [f"[Translation Error: {e}]"] * len(images_b64), []
     if previous_context_texts_provider is not None:
         previous_context_texts = previous_context_texts_provider() or []
 
@@ -74,6 +84,7 @@ def translate_page(
             mime_types=mime_types,
             full_image_mime_type=page_mime,
             bubble_metadata=sorted_bubble_data,
+            extracted_texts=reads,
             previous_context_texts=previous_context_texts,
             ocr_texts_output=ocr_out,
             debug=config.verbose,

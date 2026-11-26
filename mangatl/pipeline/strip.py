@@ -111,7 +111,8 @@ def translate_strip(
 ) -> Image.Image:
     """Translate a long strip section by section and stitch the results back together."""
     # the page flow translates each section; imported here because it calls back into this module
-    from mangatl.pipeline.page import _record_page, as_mode, resolve_pre_upscale_factor, translate_and_render
+    from mangatl.pipeline.page import _record_page, resolve_pre_upscale_factor, translate_and_render
+    from mangatl.pipeline.stages import as_mode
 
     start_time = time.time()
     width, height = strip.size
@@ -190,6 +191,7 @@ def translate_strip(
             target_mode=target_mode,
             strip=strip,
             sections=[f"{project_page}#{i + 1}" for i in range(len(sections))],
+            config=config,
             output_path=output_path,
         )
     if output_path:

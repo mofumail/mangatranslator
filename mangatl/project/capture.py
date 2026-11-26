@@ -18,7 +18,7 @@ import io
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from PIL import Image
@@ -39,6 +39,9 @@ from mangatl.project.model import (
 )
 from mangatl.project.store import Project
 from mangatl.settings import Settings
+
+if TYPE_CHECKING:
+    from mangatl.pipeline.stages import WorkPage
 
 _projects: dict[Path, Project] = {}
 _projects_lock = threading.Lock()
@@ -181,6 +184,7 @@ def _region(
     detect_index: int | None,
     cleaning: dict | None,
     page_cv: np.ndarray,
+    typeset: bool,
 ) -> Region:
     outside = None
     if item.get("is_outside_text"):
@@ -216,7 +220,9 @@ def _region(
             original.image = blobs.put_image(project, crop)
     seg = item.get("seg_mask")
     neighbors = item.get("conjoined_neighbor_bboxes")
-    stages = ["detect", "ocr", "translate"] + (["clean"] if cleaning is not None or fill is not None else [])
+    stages = ["detect"] + (["ocr", "translate"] if order is not None else [])
+    stages += ["clean"] if cleaning is not None or fill is not None else []
+    stages += ["typeset"] if typeset and order is not None else []
     return Region(
         id=region_id,
         order=order,
@@ -234,7 +240,7 @@ def _region(
         cleaning=_cleaning(project, cleaning) if cleaning is not None else None,
         pending_fill=fill,
         original=original,
-        status={s: "done" for s in stages + (["typeset"] if order is not None else [])},  # type: ignore[misc]
+        status={s: "done" for s in stages},  # type: ignore[misc]
     )
 
 
@@ -242,128 +248,123 @@ def capture(
     project: Project,
     page_id: str,
     *,
+    work: WorkPage,
     source_path: Path,
-    target_mode: str,
-    work: Image.Image,
-    page_cv: np.ndarray,
     source_crop: SourceCrop | None = None,
-    canvas: Image.Image,
-    sorted_bubble_data: list[dict],
-    translated_texts: list[str],
-    processed_bubbles_info: list[dict],
-    outside_text_data: list[dict],
-    sizes: Any,
-    processing_scale: float,
-    page_glyphs: dict,
-    config: Settings,
     output_path: str | Path | None,
 ) -> Page:
-    """Record a page as typesetting is about to draw it. Call before render_translations,
-    which changes the region dicts (it pops pending fills and adds labels)."""
-    if not np.array_equal(pil_to_cv2(work), page_cv):
-        raise RuntimeError(f"{page_id}: page_cv is not the work image")
-    if len(translated_texts) != len(sorted_bubble_data):
-        raise RuntimeError(
-            f"{page_id}: {len(translated_texts)} translations for {len(sorted_bubble_data)} regions"
-        )
-    if set(page_glyphs) - {"page", "own"}:
-        raise RuntimeError(f"{page_id}: unknown glyph keys {sorted(page_glyphs)}")
-    fields = _store_images(project, page_id, _Images(source_path, source_crop, work, canvas))
-
-    detect_index = {id(item): i for i, item in enumerate(outside_text_data)}
-    info_by_bbox = {
-        tuple(info["bbox"]): info
-        for info in processed_bubbles_info
-        if "bbox" in info and "color" in info and "mask" in info
-    }  # what typesetting looks bubbles up in (the last of equal boxes wins)
-    regions: list[Region] = []
-    in_order = set()
-    for order, (item, text) in enumerate(zip(sorted_bubble_data, translated_texts, strict=True)):
-        outside = bool(item.get("is_outside_text"))
-        if outside and id(item) not in detect_index:
-            raise RuntimeError(f"{page_id}: outside text in reading order but not among the detections")
-        in_order.add(id(item))
-        cleaning = None if outside else info_by_bbox.get(tuple(item["bbox"]))
-        regions.append(
-            _region(
-                project,
-                item,
-                f"r{len(regions) + 1}",
-                order,
-                text,
-                detect_index.get(id(item)),
-                cleaning,
-                page_cv,
-            )
-        )
-    for item in outside_text_data:  # outside text left out of the reading order (fills still paint)
-        if id(item) not in in_order:
-            regions.append(
-                _region(
-                    project, item, f"r{len(regions) + 1}", None, None, detect_index[id(item)], None, page_cv
-                )
-            )
-
-    glyphs = None
-    if page_glyphs:
-        glyphs = Glyphs(
-            page=_num(page_glyphs["page"]) if page_glyphs.get("page") is not None else None,
-            bubbles=[
-                GlyphSize(bbox=_ints(b), size=_num(est[0]), parts=_int(est[1]))  # type: ignore[arg-type]
-                for b, est in (page_glyphs.get("own") or {}).items()
-            ],
-        )
-    render = RenderState(
-        processing_scale=_num(processing_scale),
-        **{name: _num(getattr(sizes, name)) for name in sizes._fields},
-        glyphs=glyphs,
+    """Record a page after the pipeline (the whole page, as one pipeline action)."""
+    page = page_document(
+        project, page_id, work=work, source_path=source_path, source_crop=source_crop, output_path=output_path
     )
+    project.save_page(page)
+    return page
+
+
+def page_document(
+    project: Project,
+    page_id: str,
+    *,
+    work: WorkPage,
+    source_path: Path,
+    source_crop: SourceCrop | None = None,
+    output_path: str | Path | None,
+) -> Page:
+    """A working page as a page document (its images stored as blobs): every detected region
+    (those in reading order with their reads and translations), and, when it was typeset, what
+    rendering needs."""
+    w = work
+    config = w.config
+    if w.page_cv is not None and not np.array_equal(pil_to_cv2(w.image), w.page_cv):
+        raise RuntimeError(f"{page_id}: page_cv is not the work image")
+    if w.typeset_done and len(w.translations) != len(w.ordered):
+        raise RuntimeError(f"{page_id}: {len(w.translations)} translations for {len(w.ordered)} regions")
+    if set(w.glyphs) - {"page", "own"}:
+        raise RuntimeError(f"{page_id}: unknown glyph keys {sorted(w.glyphs)}")
+    canvas = w.canvas if w.canvas is not None else w.image
+    fields = _store_images(project, page_id, _Images(source_path, source_crop, w.image, canvas))
+    page_cv = w.page_cv if w.page_cv is not None else pil_to_cv2(w.image)
+
+    detect_index = {item["region_id"]: i for i, item in enumerate(w.outside)}
+    info_by_bbox = _cleaning_by_bbox(w.cleaning)
+    texts: list[str | None] = list(w.translations) if w.typeset_done else [None] * len(w.ordered)
+    regions: list[Region] = []
+    for order, (item, text) in enumerate(zip(w.ordered, texts, strict=True)):
+        if item.get("is_outside_text") and item["region_id"] not in detect_index:
+            raise RuntimeError(f"{page_id}: outside text in reading order but not among the detections")
+        regions.append(_capture_region(project, item, order, text, detect_index, info_by_bbox, page_cv, w))
+    in_order = {item["region_id"] for item in w.ordered}
+    for item in [*w.bubbles, *w.outside]:  # regions not in reading order (nothing to read; fills still paint)
+        if item["region_id"] not in in_order:
+            regions.append(_capture_region(project, item, None, None, detect_index, info_by_bbox, page_cv, w))
+
+    render = None
+    if w.typeset_done:
+        glyphs = None
+        if w.glyphs:
+            glyphs = Glyphs(
+                page=_num(w.glyphs["page"]) if w.glyphs.get("page") is not None else None,
+                bubbles=[
+                    GlyphSize(bbox=_ints(b), size=_num(est[0]), parts=_int(est[1]))  # type: ignore[arg-type]
+                    for b, est in (w.glyphs.get("own") or {}).items()
+                ],
+            )
+        render = RenderState(
+            processing_scale=_num(w.processing_scale),
+            **{name: _num(getattr(w.sizes, name)) for name in w.sizes._fields},
+            glyphs=glyphs,
+        )
     page = Page(
         id=page_id,
         **fields,
-        target_mode=target_mode,
+        target_mode=w.target_mode,
         regions=regions,
-        next_region=len(regions) + 1,
+        next_region=w.next_region,
+        panels=[_ints(b) for b in w.panels] if w.panels is not None else None,  # type: ignore[misc]
         render=render,
         settings=_settings_id(project, config),
         output=str(output_path) if output_path else None,
     )
-    _check_round_trip(
-        project,
-        page,
-        sorted_bubble_data,
-        translated_texts,
-        processed_bubbles_info,
-        sizes,
-        processing_scale,
-        page_glyphs,
-    )
-    project.save_page(page)
+    if w.typeset_done:
+        _check_round_trip(project, page, w)
     return page
 
 
-def capture_unrendered(
+def _cleaning_by_bbox(cleaning: list[dict]) -> dict[tuple, dict]:
+    """What typesetting looks bubbles up in (the last of equal boxes wins)."""
+    return {
+        tuple(info["bbox"]): info
+        for info in cleaning
+        if "bbox" in info and "color" in info and "mask" in info
+    }
+
+
+def _capture_region(
     project: Project,
-    page_id: str,
-    *,
-    source_path: Path,
-    target_mode: str,
-    work: Image.Image,
-    result: Image.Image,
-    source_crop: SourceCrop | None = None,
-    config: Settings,
-    output_path: str | Path | None,
-) -> Page:
-    """Record a page with nothing typeset (no text found, cleaning only): its result is its canvas."""
-    page = Page(
-        id=page_id,
-        **_store_images(project, page_id, _Images(source_path, source_crop, work, result)),
-        target_mode=target_mode,
-        settings=_settings_id(project, config),
-        output=str(output_path) if output_path else None,
+    item: dict,
+    order: int | None,
+    text: str | None,
+    detect_index: dict[str, int],
+    info_by_bbox: dict[tuple, dict],
+    page_cv: np.ndarray,
+    w: WorkPage,
+) -> Region:
+    outside = bool(item.get("is_outside_text"))
+    cleaning = None if outside else info_by_bbox.get(tuple(item["bbox"]))
+    region = _region(
+        project,
+        item,
+        item["region_id"],
+        order,
+        text,
+        detect_index.get(item["region_id"]),
+        cleaning,
+        page_cv,
+        w.typeset_done,
     )
-    project.save_page(page)
-    return page
+    region.locked = item["region_id"] in w.locked
+    region.flag = item.get("region_flag")
+    return region
 
 
 def capture_strip(
@@ -484,7 +485,19 @@ def _processed(project: Project, c: BubbleCleaning) -> dict:
         "is_colored": c.is_colored,
         "text_bbox": c.text_bbox,
         "text_color_bgr": c.text_color_bgr,
+        "art_mask": mask(c.art_mask),
+        "inpainted": c.inpainted,
     }
+
+
+def _outside_regions(page: Page) -> list[Region]:
+    """The outside-text regions in detection order (the order their fills are painted in)."""
+    return sorted((r for r in page.regions if r.outside is not None), key=lambda r: r.outside.detect_index)  # type: ignore[union-attr]
+
+
+def outside_items(project: Project, page: Page, page_cv: np.ndarray) -> list[dict]:
+    """The outside-text regions as the pipeline's dicts, in detection order."""
+    return [_item(project, r, page_cv) for r in _outside_regions(page)]
 
 
 def render_inputs(project: Project, page: Page) -> RenderInputs:
@@ -498,7 +511,7 @@ def render_inputs(project: Project, page: Page) -> RenderInputs:
     ordered = sorted((r for r in page.regions if r.order is not None), key=lambda r: r.order or 0)
     items = {r.id: _item(project, r, page_cv) for r in page.regions}
     processed = [_processed(project, r.cleaning) for r in ordered if r.cleaning is not None]
-    outside = sorted((r for r in page.regions if r.outside is not None), key=lambda r: r.outside.detect_index)  # type: ignore[union-attr]
+    outside = _outside_regions(page)
     rs = page.render
     glyphs: dict = {}
     if rs.glyphs is not None:
@@ -518,26 +531,19 @@ def render_inputs(project: Project, page: Page) -> RenderInputs:
     )
 
 
-def _check_round_trip(
-    project: Project,
-    page: Page,
-    sorted_bubble_data: list[dict],
-    translated_texts: list[str],
-    processed_bubbles_info: list[dict],
-    sizes: Any,
-    processing_scale: float,
-    page_glyphs: dict,
-) -> None:
+def _check_round_trip(project: Project, page: Page, w: WorkPage) -> None:
     """The rebuilt arguments must equal the live ones in what typesetting reads (and in type:
     boxes are looked up as tuple keys)."""
     back = render_inputs(project, page)
-    if back.translated_texts != list(translated_texts):
+    sorted_bubble_data, processed_bubbles_info = w.ordered, w.cleaning
+    if back.translated_texts != list(w.translations):
         raise RuntimeError(f"{page.id}: translations don't round-trip")
+    sizes = w.sizes
     if tuple(back.sizes) != tuple(sizes) or [type(v) for v in back.sizes] != [type(v) for v in sizes]:
         raise RuntimeError(f"{page.id}: sizes don't round-trip: {tuple(sizes)} -> {tuple(back.sizes)}")
-    if back.processing_scale != processing_scale:
+    if back.processing_scale != w.processing_scale:
         raise RuntimeError(f"{page.id}: processing scale doesn't round-trip")
-    if back.page_glyphs != page_glyphs:
+    if back.page_glyphs != w.glyphs:
         raise RuntimeError(f"{page.id}: glyph sizes don't round-trip")
     for live, rebuilt in zip(sorted_bubble_data, back.sorted_bubble_data, strict=True):
         for key in READ_KEYS:

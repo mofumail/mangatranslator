@@ -5,7 +5,8 @@ from __future__ import annotations
 
 from PIL import Image
 
-from mangatl.project.capture import canvas_image, render_inputs
+from mangatl.common.image_utils import pil_to_cv2
+from mangatl.project.capture import canvas_image, outside_items, render_inputs, work_image
 from mangatl.project.store import Project
 
 
@@ -27,8 +28,11 @@ def rebuild_page(project: Project, page_id: str) -> Image.Image:
             image.paste(part, (0, top))
             top += part.height
         return image
-    if page.render is None:
-        image = canvas_image(project, page)
+    if page.render is None:  # nothing typeset: the cleaned page with the outside-text fills
+        work = work_image(project, page)
+        image = paint_pending_osb_fills(
+            canvas_image(project, page, work), outside_items(project, page, pil_to_cv2(work))
+        )
     else:
         x = render_inputs(project, page)
         image = render_translations(

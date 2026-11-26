@@ -115,21 +115,72 @@ def put(doc: dict, path: Path, value: Any) -> None:
         parent[key] = copy.deepcopy(value)
 
 
-def set_op(doc: dict, path: Path, value: Any) -> list[Op]:
-    """The operations that set `path` to `value`: the change itself, plus marking later stages
-    stale when it changes a region's stage result. Empty when nothing would change."""
+def _stage_status(author: str) -> str:
+    """The status a stage result gets from its author: a person's edit is kept apart ("user")
+    from what the pipeline or the agent computed ("done")."""
+    return "user" if author == "user" else "done"
+
+
+def set_op(doc: dict, path: Path, value: Any, author: str = "user") -> list[Op]:
+    """The operations that set `path` to `value`: the change itself, plus the region's status:
+    the changed stage marked by its author, later stages stale. Empty when nothing would change."""
     old = get(doc, path)
     if old == value:
         return []
     ops = [Op(path, copy.deepcopy(old), copy.deepcopy(value))]
     if len(path) >= 3 and path[0] == "regions" and path[2] in FIELD_STAGE:
-        region_id, stage = path[1], FIELD_STAGE[path[2]]
+        region_id = path[1]
         status = get(doc, ("regions", region_id, "status")) or {}
+        ops += _status_ops(region_id, status, {FIELD_STAGE[path[2]]}, set(), author)
+    return ops
+
+
+def _status_ops(region_id: str, status: dict, changed: set[str], ran: set[str], author: str) -> list[Op]:
+    """Status changes for a region whose `changed` stages got new results and whose `ran`
+    stages were (re)computed: those are marked by the author, every later stage not recomputed
+    goes stale."""
+    new = dict(status)
+    for stage in changed | ran:
+        new[stage] = _stage_status(author)
+    for stage in changed:
         for later in DOWNSTREAM[stage]:
-            if status.get(later) in ("done", "user"):
-                ops.append(Op(("regions", region_id, "status", later), status[later], "stale"))
-        if status.get(stage) != "user":
-            ops.append(Op(("regions", region_id, "status", stage), status.get(stage), "user"))
+            if later not in changed | ran and new.get(later) in ("done", "user"):
+                new[later] = "stale"
+    return [
+        Op(("regions", region_id, "status", k), status.get(k), new.get(k))
+        for k in sorted(set(status) | set(new))
+        if status.get(k) != new.get(k)
+    ]
+
+
+def diff(old: dict, new: dict, author: str = "pipeline", ran: dict[str, set[str]] | None = None) -> list[Op]:
+    """The operations that turn page document `old` into `new`, regions addressed by id: page
+    fields, regions added or removed whole, and per region every changed field plus its status
+    (see _status_ops; `ran` maps a region id to the stages recomputed for it). Statuses in
+    `new` are ignored: they follow from what changed."""
+    ran = ran or {}
+    ops = [
+        Op((key,), copy.deepcopy(old.get(key)), copy.deepcopy(new.get(key)))
+        for key in sorted((set(old) | set(new)) - {"regions"})
+        if old.get(key) != new.get(key)
+    ]
+    old_regions = {r["id"]: r for r in old.get("regions", [])}
+    new_regions = {r["id"]: r for r in new.get("regions", [])}
+    for rid in old_regions.keys() - new_regions.keys():
+        ops.append(Op(("regions", rid), copy.deepcopy(old_regions[rid]), None))
+    for rid in [r["id"] for r in new.get("regions", []) if r["id"] not in old_regions]:
+        ops.append(Op(("regions", rid), None, copy.deepcopy(new_regions[rid])))
+    for rid in [r["id"] for r in old.get("regions", []) if r["id"] in new_regions]:
+        a, b = old_regions[rid], new_regions[rid]
+        changed = set()
+        for field in sorted((set(a) | set(b)) - {"status"}):
+            if a.get(field) != b.get(field):
+                ops.append(
+                    Op(("regions", rid, field), copy.deepcopy(a.get(field)), copy.deepcopy(b.get(field)))
+                )
+                if field in FIELD_STAGE:
+                    changed.add(FIELD_STAGE[field])
+        ops += _status_ops(rid, a.get("status") or {}, changed, ran.get(rid, set()), author)
     return ops
 
 

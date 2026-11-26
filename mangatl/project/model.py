@@ -127,6 +127,7 @@ class Region(_Doc):
     original: OriginalCrop | None = None
     status: dict[str, Status] = Field(default_factory=dict)
     locked: bool = False  # the pipeline never changes a locked region
+    flag: str | None = None  # "vanished": re-detection no longer finds it (kept for its edits)
 
 
 class GlyphSize(_Doc):
@@ -179,6 +180,7 @@ class Page(_Doc):
     target_mode: str  # mode of the saved result
     regions: list[Region] = Field(default_factory=list)
     next_region: int = 1
+    panels: list[Box] | None = None  # comic panels (reading order); None: not detected
     render: RenderState | None = None  # None: nothing typeset; the canvas is the result
     sections: list[str] = Field(default_factory=list)  # a long strip: the pages of its sections
     settings: str  # id of the settings document the page was made with

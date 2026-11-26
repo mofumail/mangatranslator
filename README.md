@@ -149,7 +149,8 @@ once the model is accessible/downloaded.
 ## Development
 
 ```bash
-uv run --group dev pytest                 # unit + static tests (no GPU, no models)
+uv run --group dev pytest                 # unit + static tests; with models and a harness run of
+                                          # om10, also the stage API on a stored page (GPU)
 uv run --group dev ruff check . && uv run --group dev ruff format --check .
 uv run --group dev pyright                # type check (our own modules; see [tool.pyright])
 uv run python eval/harness.py check       # regression check against the saved baseline (GPU)
@@ -172,8 +173,12 @@ mangatl/              the pipeline (derived from MangaTranslator at e347a09; see
   cli.py              runs one input with a settings file (translate.py runs `python -m mangatl.cli`)
   project/            the page document (model.py), operation log with undo / conflicts / staleness
                       (ops.py), the project file (store.py, SQLite), images as patches and 1-bit
-                      masks (blobs.py), pipeline state in and out (capture.py), rebuild.py
-  pipeline/           page flow (page.py), long strips, batches; outside_text.py
+                      masks (blobs.py), pipeline state in and out (capture.py), rebuild.py,
+                      region matching for re-detection (match.py)
+  pipeline/           stages.py: the stage API (detect, redetect, clean, prepare, ocr, translate,
+                      typeset, render; run() composes them), page.py (load a page, run, save),
+                      stored.py (stages on a stored page: load, save as operations, story context),
+                      long strips, batches
   detect/             bubbles, panels / reading order, outside-text detector, text lines, tilt
   ocr/                Hayai OCR and line-by-line reading (line_ocr.py)
   clean/              bubble cleaning, glyph masks, LaMa inpainting
@@ -189,7 +194,8 @@ assets/symbols/       DejaVu Sans Bold for ♥ ♪ ★ (free license, see LICENS
 fonts/                Comic Neue (dialogue), Bangers (OSB/SFX) — both SIL OFL
                       Add your own as fonts/<Name>/ with -Regular/-Bold/-Italic in the file names
                       (e.g. CC Wild Words, Anime Ace; git-ignored, as their licenses forbid redistribution)
-tests/                unit tests and static checks (imports resolve, Settings reads exist)
+tests/                unit tests and static checks (imports resolve, Settings reads exist);
+                      test_stages_gpu.py: region-scoped stages on a stored page
 eval/                 harness.py: regression check of every change against a saved baseline (replays
                       the LLM answers, diffs pages and text; see eval/README.md);
                       OpenMantra benchmark pages used to check quality; eval/djn/ doujin test runner;

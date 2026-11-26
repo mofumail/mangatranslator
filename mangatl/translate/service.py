@@ -19,7 +19,6 @@ from mangatl.common.image_utils import (
     resize_lanczos_antiring,
 )
 from mangatl.common.log import log_message
-from mangatl.ocr.page import run_ocr
 from mangatl.settings import PROVIDER, Settings
 from mangatl.translate.glossary import (
     NEW_TERMS_MARKER,
@@ -585,6 +584,7 @@ def call_translation_api_batch(
     mime_types: list[str],
     full_image_mime_type: str,
     bubble_metadata: list[dict[str, Any]],
+    extracted_texts: list[str],
     previous_context_texts: list[list[str]] | None = None,
     ocr_texts_output: list[str] | None = None,
     debug: bool = False,
@@ -602,6 +602,7 @@ def call_translation_api_batch(
         mime_types (List[str]): List of MIME types for each text element image.
         full_image_mime_type (str): MIME type of the full page image.
         bubble_metadata (List[Dict]): List of metadata dicts with 'is_outside_text' flags for each image.
+        extracted_texts: The OCR reads of the items (mangatl.ocr.page.run_ocr), in reading order.
         previous_context_texts: Per-previous-page OCR transcripts (oldest-to-newest) included as
             narrative reference only. Each inner list contains the OCR strings for that page in reading order.
         ocr_texts_output: Optional mutable list. When provided, OCR transcripts (source-language text) for
@@ -639,6 +640,7 @@ def call_translation_api_batch(
         full_image_b64,
         config,
         previous_context_texts=cleaned_previous_texts,
+        ocr_texts=extracted_texts,
     )
     cached_translation, cached_ocr_texts = cache.get_translation(cache_key)
     if cached_translation is not None:
@@ -659,8 +661,6 @@ def call_translation_api_batch(
     has_previous_context = bool(previous_context_text_count)
 
     try:
-        extracted_texts = run_ocr(config, images_b64, bubble_metadata, debug)
-
         log_message("Starting translation step", verbose=debug)
 
         formatted_texts, ocr_failed_indices = _mark_ocr_failures(extracted_texts, provider)

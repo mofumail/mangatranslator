@@ -141,6 +141,7 @@ class UnifiedCache:
         full_image_b64: str,
         config,
         previous_context_texts: list[list[str]] | None = None,
+        ocr_texts: list[str] | None = None,
     ) -> str | None:
         """Compute cache key for LLM translation.
 
@@ -194,6 +195,10 @@ class UnifiedCache:
             ).hexdigest()[:16]
             cache_params["previous_context_text_count"] = len(previous_context_texts)
             cache_params["previous_context_text_hash"] = previous_texts_hash
+        if ocr_texts is not None:  # what is translated: a corrected read is a new request
+            cache_params["ocr_texts_hash"] = hashlib.sha256("\u241f".join(ocr_texts).encode()).hexdigest()[
+                :16
+            ]
         glossary_path = config.translation.glossary_path
         if config.translation.glossary and glossary_path:
             cache_params["glossary"] = sorted(load_terms(glossary_path).items())

@@ -1,5 +1,6 @@
 """Page documents: the operation log, undo, conflicts, staleness, proposals, blobs."""
 
+import copy
 import threading
 
 import numpy as np
@@ -204,3 +205,68 @@ def test_capture_checks_every_region_key_typesetting_reads():
         used |= {a or b for a, b in pattern.findall(text)}
     written_by_render = {"translation", "_sfx_label"}
     assert used - written_by_render <= set(read_keys), used - written_by_render - set(read_keys)
+
+
+def test_status_follows_author_and_what_ran():
+    doc = _page().model_dump(mode="json")
+    # a person's edit: their stage "user", later stages stale
+    ops = oplog.set_op(doc, ("regions", "r1", "translation"), "Hi", author="user")
+    oplog.apply(doc, ops)
+    assert oplog.get(doc, ("regions", "r1", "status")) == {
+        "detect": "done",
+        "ocr": "done",
+        "translate": "user",
+        "typeset": "stale",
+    }
+    # the pipeline recomputing it: "done"
+    oplog.apply(doc, oplog.set_op(doc, ("regions", "r1", "translation"), "Hello", author="pipeline"))
+    assert oplog.get(doc, ("regions", "r1", "status", "translate")) == "done"
+
+
+def test_diff_records_changes_by_region_with_statuses():
+    old = _page(3).model_dump(mode="json")
+    new = copy.deepcopy(old)
+    regions = {r["id"]: r for r in new["regions"]}
+    regions["r1"]["ocr"] = "better read"  # re-read: translate and typeset go stale...
+    regions["r2"]["translation"] = "retranslated"  # ...re-translated and re-typeset: all done
+    new["regions"] = [r for r in new["regions"] if r["id"] != "r3"]  # removed
+    new["regions"].append({**regions["r1"], "id": "r4", "order": 2, "ocr": "new"})  # added
+    new["next_region"] = 5
+    ops = oplog.diff(old, new, "pipeline", {"r1": {"ocr"}, "r2": {"translate", "typeset"}})
+    doc = copy.deepcopy(old)
+    oplog.apply(doc, ops)
+    got = {r["id"]: r for r in doc["regions"]}
+    assert set(got) == {"r1", "r2", "r4"} and doc["next_region"] == 5
+    assert got["r1"]["ocr"] == "better read"
+    assert got["r1"]["status"] == {"detect": "done", "ocr": "done", "translate": "stale", "typeset": "stale"}
+    assert got["r2"]["status"]["translate"] == "done" and got["r2"]["status"]["typeset"] == "done"
+    # the whole thing undoes as a group
+    oplog.undo(doc, ops)
+    assert doc == old
+    assert oplog.diff(old, copy.deepcopy(old)) == []
+
+
+def test_matching_keeps_ids_by_overlap():
+    from mangatl.project.match import match, overlaps
+
+    old = [
+        ("r1", "bubble", (0, 0, 100, 100)),
+        ("r2", "bubble", (200, 0, 300, 100)),
+        ("r3", "outside", (0, 200, 50, 260)),
+        ("r4", "bubble", (400, 400, 450, 450)),
+    ]
+    new = [
+        ("bubble", (205, 2, 302, 98)),  # r2, moved a little
+        ("bubble", (5, 5, 100, 104)),  # r1
+        ("bubble", (0, 200, 50, 260)),  # where r3 was, but a bubble now: different text
+        ("outside", (600, 0, 650, 40)),  # new
+    ]
+    m = match(old, new)
+    assert {i: rid for i, (rid, _) in m.matched.items()} == {0: "r2", 1: "r1"}
+    assert m.added == [2, 3] and sorted(m.vanished) == ["r3", "r4"]
+    # each old region matches at most once, the best overlap first
+    m = match(
+        [("r1", "bubble", (0, 0, 100, 100))], [("bubble", (0, 0, 60, 100)), ("bubble", (0, 0, 98, 100))]
+    )
+    assert m.matched == {1: ("r1", 0.98)} and m.added == [0]
+    assert overlaps((10, 10, 30, 30), (0, 0, 25, 100)) and not overlaps((10, 10, 30, 30), (0, 0, 15, 100))
