@@ -61,7 +61,7 @@ testpaths = ["tests"]
 
 [tool.pyright]
 # Our own modules. The code derived from MangaTranslator still has ~180 basic-mode findings
-# (missing stubs for skia / cv2 / harfbuzz, unchecked Optionals); see the follow-up issue.
+# (missing stubs for skia / cv2 / harfbuzz, unchecked Optionals); see #25.
 include = [
     "mangatl/settings.py", "mangatl/presets.py", "mangatl/cli.py", "translate.py", "webui.py",
     "mangatl/common/eval_hooks.py", "mangatl/ocr/line_ocr.py", "mangatl/typeset/narration.py",
