@@ -428,7 +428,8 @@ class StudioProject:
             if w is not None:
                 self._work.move_to_end(page_id)
                 return w
-        w = stored.load(self.store, page_id, self.engine.models(Priority.INTERACTIVE))
+        # the studio only edits text and lettering after drafting: no OCR / LLM crops needed
+        w = stored.load(self.store, page_id, self.engine.models(Priority.INTERACTIVE), crops=False)
         # the project's style sheet is the one every page follows (pages keep the settings they
         # were drafted with otherwise)
         ts = self.config.typesetting

@@ -78,9 +78,11 @@ def _region_dict(project: Project, region: Region, page_cv: np.ndarray) -> dict:
     return item
 
 
-def load(project: Project, page_id: str, models: Models) -> WorkPage:
+def load(project: Project, page_id: str, models: Models, crops: bool = True) -> WorkPage:
     """A stored page as a WorkPage, ready for any stage after detection; its stages call
-    `models` (an engine at a priority: Priority.INTERACTIVE for a person waiting)."""
+    `models` (an engine at a priority: Priority.INTERACTIVE for a person waiting). Without
+    `crops`, the regions' OCR / LLM crops aren't rebuilt (an upscale per bubble): enough to edit
+    text and lettering and render, not to read or translate again."""
     page = project.load_page(page_id)
     settings = Settings.model_validate_json(project.get_settings(page.settings)).resolve_secrets()
     config = settings.with_models(models)
@@ -121,17 +123,21 @@ def load(project: Project, page_id: str, models: Models) -> WorkPage:
         page_lines = line_ocr.PageLines(detected)
         for r in outside:
             assert r.outside is not None
-            crop = outside_text_crop(original_cv, r.bbox, r.outside.original_bbox, config, config.verbose)
-            ok, buffer = cv2.imencode(osb_ext, crop)
             item = items[r.id]
             item.update(confidence=r.confidence, mime_type=osb_mime, mt_page=page_lines)
+            if not crops:
+                continue
+            crop = outside_text_crop(original_cv, r.bbox, r.outside.original_bbox, config, config.verbose)
+            ok, buffer = cv2.imencode(osb_ext, crop)
             if ok:
                 item["image_b64"] = base64.b64encode(buffer).decode("utf-8")
     w.outside = [items[r.id] for r in outside]
 
     # bubbles: crops cut together (each whites out its conjoined neighbours)
     bubbles = [items[r.id] for r in by_id if r.outside is None]
-    w.bubbles = _prepare_bubble_crops(bubbles, [], page_cv, config, mime_type) if bubbles else []
+    w.bubbles = (
+        _prepare_bubble_crops(bubbles, [], page_cv, config, mime_type) if bubbles and crops else bubbles
+    )
     prepared = {item["region_id"]: item for item in w.bubbles}
     items.update(prepared)
 
