@@ -204,7 +204,14 @@ def test_capture_checks_every_region_key_typesetting_reads():
             text = text[text.index("def paint_pending_osb_fill(") : text.index("def _osb_fill_boxes(")]
         used |= {a or b for a, b in pattern.findall(text)}
     # translation, the SFX label mark, and how each region came out (stages.render outcomes)
-    written_by_render = {"translation", "_sfx_label", "mt_outcome", "mt_font_size", "mt_max_font"}
+    written_by_render = {
+        "translation",
+        "_sfx_label",
+        "mt_outcome",
+        "mt_font_size",
+        "mt_max_font",
+        "mt_layout",
+    }
     assert used - written_by_render <= set(read_keys), used - written_by_render - set(read_keys)
 
 

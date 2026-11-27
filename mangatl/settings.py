@@ -19,6 +19,8 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
+from mangatl.typeset.style import LetterStyle
+
 ROOT = Path(__file__).resolve().parent.parent
 FONTS_DIR = ROOT / "fonts"
 
@@ -249,6 +251,12 @@ class TypesettingSettings(_Section):
     detach_trailing_punctuation: bool = True
     # Sound effects: keep the artist's lettering with an English label beside it, or redraw
     sfx: Literal["label", "redraw"] = "label"
+    # The chapter's style sheet: named lettering that regions refer to (Region.style). "dialogue"
+    # applies to bubbles and "outside" to text on the art unless a region names another preset.
+    presets: dict[str, LetterStyle] = Field(default_factory=dict)
+    base_size: float | None = Field(default=None, gt=0)  # the chapter's dialogue size (px); None: per page
+    synthetic_styles: bool = False  # bold / italic drawn from the regular font when a pack lacks them
+    em_dash: bool = False  # "--" becomes an em dash and dashes are drawn as such (else as hyphens)
 
 
 class OutputSettings(_Section):

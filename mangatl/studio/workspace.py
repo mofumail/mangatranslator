@@ -32,13 +32,25 @@ from PIL import Image, ImageDraw, ImageFont
 from mangatl.common.log import log_message
 from mangatl.engine import Engine, Priority
 from mangatl.engine.models import Model
-from mangatl.settings import Settings
+from mangatl.settings import FONTS_DIR, Settings
+from mangatl.typeset.style import LetterStyle, font_packs, resolve
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 WORK_CACHE = 8  # stored pages kept loaded (a page's working data: masks, crops, canvas)
 CLAIM_TTL_S = 15 * 60  # a claim nobody renews lapses
 ACTIVITY_KEPT = 5000  # in memory, for the UI (all of it stays in activity.jsonl)
-SMALL_TEXT = 0.6  # font size under this share of the region's size cap reads as crowded
+SMALL_TEXT = 0.75  # font size under this share of the region's size cap reads as crowded
+UNDERFILLED = 0.2  # text at its size cap covering less of the bubble than this: a hint to go bigger
+MAX_PREVIEWS = 4
+
+# The style sheet new projects start with: lettering in capitals, as in English manga
+DEFAULT_PRESETS = {
+    "dialogue": {"font": "CC Wild Words", "caps": True},
+    "shout": {"font": "CC Wild Words", "caps": True, "bold": True, "scale": 1.3},
+    "thought": {"font": "CC Wild Words", "caps": True, "italic": True},
+    "whisper": {"font": "CC Wild Words", "caps": True, "scale": 0.85},
+    "narration": {"font": "Anime Ace", "caps": True},
+}
 
 # How a region's text came out (stages.render outcomes); the ones that need work
 PROBLEMS = {
@@ -92,6 +104,9 @@ class Studio:
                 "runtime.verbose": False,
                 "preprocessing.split_long_strips": False,
                 "translation.full_page_context": False,
+                "typesetting.presets": {k: LetterStyle.model_validate(v) for k, v in DEFAULT_PRESETS.items()},
+                "typesetting.synthetic_styles": True,
+                "typesetting.em_dash": True,
             }
         )
         return presets.apply_overrides(settings, self.overrides) if self.overrides else settings
@@ -153,7 +168,7 @@ class StudioProject:
             self.activity = [
                 json.loads(line) for line in log.read_text().splitlines()[-ACTIVITY_KEPT:] if line
             ]
-        self.config = studio.settings(directory)
+        self.config = self._with_sheet(studio.settings(directory))
         self.store = capture.open_project(directory / "project.mtl")
         self.refresh_pages()
 
@@ -373,47 +388,219 @@ class StudioProject:
                 self._work.move_to_end(page_id)
                 return w
         w = stored.load(self.store, page_id, self.engine.models(Priority.INTERACTIVE))
-        w.config = w.config.updated(**{"runtime.verbose": False})
+        # the project's style sheet is the one every page follows (pages keep the settings they
+        # were drafted with otherwise)
+        ts = self.config.typesetting
+        drafted_base = w.config.typesetting.base_size
+        w.config = w.config.updated(
+            **{
+                "runtime.verbose": False,
+                "typesetting.presets": ts.presets,
+                "typesetting.base_size": ts.base_size,
+                "typesetting.synthetic_styles": ts.synthetic_styles,
+                "typesetting.em_dash": ts.em_dash,
+            }
+        )
+        if w.typeset_done and drafted_base != ts.base_size:
+            from mangatl.pipeline import stages
+
+            stages.typeset(w)
         with self._work_lock:
             self._work[page_id] = w
             while len(self._work) > WORK_CACHE:
                 self._work.popitem(last=False)
         return w
 
-    def set_translations(self, page_id: str, translations: dict[str, str], worker: str) -> dict:
-        from mangatl.pipeline import stages, stored
-
+    def set_translations(
+        self, page_id: str, translations: dict[str, str], worker: str, styles: dict | None = None
+    ) -> dict:
+        """Set translations (and styles, as set_style) and re-render the page."""
         self._drafted(page_id)
         self.claim(page_id, worker)
         with self._page_locks[page_id]:
             w = self.work(page_id)
             ids = [item["region_id"] for item in w.ordered]
-            unknown = [r for r in translations if r not in ids]
+            unknown = [r for r in [*translations, *(styles or {})] if r not in ids]
             if unknown:
                 raise StudioError(f"no translatable region {unknown} on {page_id}; its regions: {ids}")
+            new_styles = {
+                rid: self._merged_style(w.ordered[ids.index(rid)], st) for rid, st in (styles or {}).items()
+            }
             if len(w.translations) != len(ids):
                 w.translations = [""] * len(ids)
             for rid, text in translations.items():
                 w.translations[ids.index(rid)] = text.strip()
-            if not w.typeset_done:
-                stages.typeset(w)
-            outcomes: dict = {}
-            image = stages.render(w, outcomes=outcomes)
-            stored.save(
-                self.store,
+            for rid, st in new_styles.items():
+                _set_style(w.ordered[ids.index(rid)], st)
+            changed = list(dict.fromkeys([*translations, *new_styles]))
+            ran = {"translate", "typeset"} if translations else {"typeset"}
+            self._commit(
                 page_id,
                 w,
-                author="agent",
-                label=f"translations by {worker}",
-                ran={"translate", "typeset"},
-                region_ids=list(translations),
+                worker,
+                f"{'translations' if translations else 'styles'} by {worker}",
+                ran,
+                changed,
             )
-            self._write(self.output_path(page_id), image, w.target_mode)
-            with self.lock:
-                page = self.page(page_id)
-                page.update(outcomes=outcomes, version=page.get("version", 0) + 1, rendered=time.time())
-                self._save_meta()
-        return self.page_info(page_id, only=list(translations))
+        return self.page_info(page_id, only=changed)
+
+    def set_style(self, page_id: str, styles: dict, worker: str) -> dict:
+        return self.set_translations(page_id, {}, worker, styles)
+
+    def _merged_style(self, item: dict, change: dict | None) -> dict | None:
+        """A region's own style with `change` merged in (a field set to None is cleared; None for
+        the whole change clears the style); validated against the fonts and the sheet."""
+        if change is None:
+            return None
+        style = {**(item.get("style") or {}), **change}
+        style = {k: v for k, v in style.items() if v is not None}
+        try:
+            checked = LetterStyle.model_validate(style)
+        except ValueError as e:
+            raise StudioError(f"bad style for {item['region_id']}: {e}") from e
+        self._check_style(checked, item["region_id"])
+        return checked.model_dump(exclude_none=True) or None
+
+    def _check_style(self, style: LetterStyle, where: str) -> None:
+        if style.font and style.font not in font_packs(FONTS_DIR):
+            raise StudioError(f"{where}: no font {style.font!r}; fonts: {sorted(font_packs(FONTS_DIR))}")
+        presets = self.config.typesetting.presets
+        if style.preset and style.preset not in presets:
+            raise StudioError(f"{where}: no preset {style.preset!r}; the sheet has {sorted(presets)}")
+
+    def _commit(
+        self, page_id: str, w, worker: str, label: str, ran: set[str], regions: list[str] | None
+    ) -> None:
+        """Render the working page, record its changes, write the output (the page lock is held)."""
+        from mangatl.pipeline import stages, stored
+
+        if not w.typeset_done:
+            stages.typeset(w)
+        outcomes: dict = {}
+        image = stages.render(w, outcomes=outcomes)
+        stored.save(self.store, page_id, w, author="agent", label=label, ran=ran, region_ids=regions)
+        self._write(self.output_path(page_id), image, w.target_mode)
+        with self.lock:
+            page = self.page(page_id)
+            page.update(outcomes=outcomes, version=page.get("version", 0) + 1, rendered=time.time())
+            self._save_meta()
+
+    def preview(self, page_id: str, region_id: str, variants: list[dict]) -> tuple[Image.Image, list[dict]]:
+        """Render up to MAX_PREVIEWS variants ({"text", "style"}: the style merges into the region's
+        own) of one region without keeping any; returns them side by side, and their outcomes."""
+        from mangatl.pipeline import stages
+
+        self._drafted(page_id)
+        if not variants:
+            raise StudioError("give at least one variant ({text, style})")
+        variants = variants[:MAX_PREVIEWS]
+        with self._page_locks[page_id]:
+            w = self.work(page_id)
+            ids = [item["region_id"] for item in w.ordered]
+            if region_id not in ids:
+                raise StudioError(f"no translatable region {region_id} on {page_id}; its regions: {ids}")
+            idx = ids.index(region_id)
+            item = w.ordered[idx]
+            if len(w.translations) != len(ids):
+                w.translations = [""] * len(ids)
+            if not w.typeset_done:
+                stages.typeset(w)
+            text0, style0 = w.translations[idx], item.get("style")
+            crops, results = [], []
+            try:
+                for v in variants:
+                    w.translations[idx] = str(v.get("text", text0)).strip()
+                    _set_style(
+                        item, self._merged_style(item, v.get("style") or {}) if "style" in v else style0
+                    )
+                    outcomes: dict = {}
+                    image = stages.render(w, outcomes=outcomes)
+                    o = outcomes.get(region_id, {})
+                    results.append(
+                        {
+                            "variant": len(results) + 1,
+                            **o,
+                            "problem": _problem({"translation": w.translations[idx], **o}),
+                        }
+                    )
+                    crops.append(
+                        _crop_around(
+                            image, item["bbox"], o.get("text_box"), (item.get("style") or {}).get("box")
+                        )
+                    )
+            finally:
+                w.translations[idx] = text0
+                _set_style(item, style0)
+        return _side_by_side(crops, [str(r["variant"]) for r in results]), results
+
+    # ------------------------------------------------------------------ style sheet
+    def _with_sheet(self, config: Settings) -> Settings:
+        sheet = self.meta.get("style_sheet") or {}
+        changes: dict[str, Any] = {}
+        if "presets" in sheet:
+            changes["typesetting.presets"] = {
+                k: LetterStyle.model_validate(v) for k, v in sheet["presets"].items()
+            }
+        if "base_size" in sheet:
+            changes["typesetting.base_size"] = sheet["base_size"]
+        return config.updated(**changes) if changes else config
+
+    def style_sheet(self) -> dict:
+        ts = self.config.typesetting
+        return {
+            "base_size": ts.base_size,
+            "presets": {k: v.model_dump(exclude_none=True) for k, v in ts.presets.items()},
+            "fonts": font_packs(FONTS_DIR),
+            "note": "bubbles use the 'dialogue' preset and text on the art 'outside' (if the sheet has it) "
+            "unless a region names another; base_size None: each page's dialogue size from its lettering",
+        }
+
+    def set_style_sheet(
+        self, presets: dict | None, base_size: float | None, replace: bool, worker: str
+    ) -> dict:
+        """Change the chapter's presets (merged, a preset set to None is removed; replace: these
+        only) and base size (0: back to each page's own), then re-render every drafted page."""
+        from mangatl.pipeline import stages
+
+        ts = self.config.typesetting
+        current = {} if replace else {k: v.model_dump(exclude_none=True) for k, v in ts.presets.items()}
+        for name, value in (presets or {}).items():
+            if value is None:
+                current.pop(name, None)
+                continue
+            try:
+                style = LetterStyle.model_validate(value)
+            except ValueError as e:
+                raise StudioError(f"bad preset {name!r}: {e}") from e
+            if style.preset or style.box or style.offset:
+                raise StudioError(f"preset {name!r}: presets can't name a preset or place text (box, offset)")
+            if style.font and style.font not in font_packs(FONTS_DIR):
+                raise StudioError(
+                    f"preset {name!r}: no font {style.font!r}; fonts: {sorted(font_packs(FONTS_DIR))}"
+                )
+            current[name] = style.model_dump(exclude_none=True)
+        base = ts.base_size if base_size is None else (base_size or None)
+        with self.lock:
+            self.meta["style_sheet"] = {"presets": current, "base_size": base}
+            self._save_meta()
+            self.config = self._with_sheet(self.config)
+        typeset_again = base != ts.base_size
+        changes = {
+            "typesetting.presets": {k: LetterStyle.model_validate(v) for k, v in current.items()},
+            "typesetting.base_size": base,
+        }
+        pages = {}
+        for page_id in self.pages:
+            if self.page(page_id).get("draft") != "drafted":
+                continue
+            with self._page_locks[page_id]:
+                w = self.work(page_id)
+                w.config = w.config.updated(**changes)
+                if typeset_again and w.typeset_done:
+                    stages.typeset(w)
+                self._commit(page_id, w, worker, f"style sheet by {worker}", {"typeset"}, None)
+            pages[page_id] = len(self.page_info(page_id)["problems"])
+        return {**self.style_sheet(), "problems_per_page": pages}
 
     # ------------------------------------------------------------------ reading
     def page_info(self, page_id: str, only: list[str] | None = None) -> dict:
@@ -429,6 +616,7 @@ class StudioProject:
             ocr = list(w.ocr_texts) if len(w.ocr_texts) == len(ordered) else [""] * len(ordered)
             size = w.image.size
             dialogue = getattr(w.sizes, "main_max_font", None)
+            presets = w.config.typesetting.presets
         outcomes = page.get("outcomes") or {}
         regions, problems = [], []
         for n, (item, text, read) in enumerate(zip(ordered, translations, ocr, strict=True), 1):
@@ -445,10 +633,23 @@ class StudioProject:
                 "font_size": o.get("font_size"),
                 "max_font": o.get("max_font"),
             }
+            for key in ("fill", "margin", "lines"):
+                if o.get(key) is not None:
+                    region[key] = o[key]
+            own = item.get("style")
+            style = resolve(own, presets, region["kind"])
+            if style is not None:
+                region["preset"] = style.preset or ("outside" if region["kind"] == "outside" else "dialogue")
+            if own:
+                region["style"] = own
             problem = _problem(region)
             if problem:
                 region["problem"] = problem
                 problems.append(f"{rid}: {problem}")
+            else:
+                hint = _hint(region)
+                if hint:
+                    region["hint"] = hint
             if only is None or rid in only:
                 regions.append(region)
         info = {
@@ -517,6 +718,83 @@ class StudioProject:
     def regions_for_overlay(self, page_id: str) -> tuple[tuple[int, int], list[dict]]:
         info = self.page_info(page_id)
         return tuple(info["size"]), info["regions"]  # type: ignore[return-value]
+
+
+def _set_style(item: dict, style: dict | None) -> None:
+    if style:
+        item["style"] = style
+    else:
+        item.pop("style", None)
+
+
+def _hint(region: dict) -> str | None:
+    """Not a problem, but worth a look: short text left small in a big bubble."""
+    fill, size, cap = region.get("fill"), region.get("font_size"), region.get("max_font")
+    if (
+        region["outcome"] == "fit"
+        and fill is not None
+        and size
+        and cap
+        and fill < UNDERFILLED
+        and size >= cap - 0.5
+    ):
+        return f"the text covers {fill:.0%} of the bubble at its size cap; a bigger scale may suit it"
+    return None
+
+
+def _crop_around(image: Image.Image, bbox, text_box=None, box=None, pad: int = 16) -> Image.Image:
+    xs, ys = [bbox[0], bbox[2]], [bbox[1], bbox[3]]
+    for b in (text_box, box):
+        if b:
+            xs += [b[0], b[2]]
+            ys += [b[1], b[3]]
+    return image.crop(
+        (
+            max(0, min(xs) - pad),
+            max(0, min(ys) - pad),
+            min(image.width, max(xs) + pad),
+            min(image.height, max(ys) + pad),
+        )
+    ).convert("RGB")
+
+
+def _side_by_side(images: list[Image.Image], labels: list[str], max_side: int = 900) -> Image.Image:
+    gap, label_h = 10, 22
+    h = max(im.height for im in images)
+    out = Image.new(
+        "RGB", (sum(im.width for im in images) + gap * (len(images) - 1), h + label_h), (128, 128, 128)
+    )
+    draw = ImageDraw.Draw(out)
+    x = 0
+    for im, label in zip(images, labels, strict=True):
+        out.paste(im, (x, label_h))
+        draw.text((x + 4, 2), label, fill=(255, 255, 255), font=_font(16))
+        x += im.width + gap
+    scale = min(1.0, max_side / max(out.size)) if max(out.size) > max_side else min(2.0, 320 / max(out.size))
+    if scale != 1:
+        out = out.resize((round(out.width * scale), round(out.height * scale)), Image.Resampling.LANCZOS)
+    return out
+
+
+def font_samples(max_width: int = 900) -> Image.Image:
+    """One line of sample lettering per font pack, with the styles it has."""
+    from PIL import ImageFont as F
+
+    from mangatl.typeset.fonts import find_font_variants
+
+    rows = []
+    for name, styles in font_packs(FONTS_DIR).items():
+        regular = find_font_variants(str(FONTS_DIR / name), verbose=False)["regular"]
+        font = F.truetype(str(regular), 34)
+        row = Image.new("RGB", (max_width, 76), "white")
+        d = ImageDraw.Draw(row)
+        d.text((10, 4), f"{name}  ({', '.join(styles)})", fill=(110, 110, 110), font=_font(14))
+        d.text((10, 26), "WHAT?! I'm not going... Hey, wait!", fill=(0, 0, 0), font=font)
+        rows.append(row)
+    out = Image.new("RGB", (max_width, sum(r.height for r in rows)), "white")
+    for k, r in enumerate(rows):
+        out.paste(r, (0, k * 76))
+    return out
 
 
 def _problem(region: dict) -> str | None:

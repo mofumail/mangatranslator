@@ -160,6 +160,24 @@ def skia_surface_to_pil(surface: skia.Surface) -> Image.Image:
         raise RenderingError("Skia to PIL conversion failed") from e
 
 
+SYNTHETIC_ITALIC_SKEW = -0.2  # a font without an italic: the regular, slanted ~11 degrees
+
+
+def _synthetic(style_name: str, loaded: dict) -> tuple[bool, bool]:
+    """(embolden, slant) needed to draw `style_name` from the faces a pack has."""
+    if style_name == "bold":
+        return not loaded.get("bold"), False
+    if style_name == "italic":
+        return False, not loaded.get("italic")
+    if style_name == "bold_italic" and not loaded.get("bold_italic"):
+        if loaded.get("bold"):
+            return False, True
+        if loaded.get("italic"):
+            return True, False
+        return True, True
+    return False, False
+
+
 def draw_layout(
     surface: skia.Surface,
     layout_data: dict,
@@ -212,6 +230,8 @@ def draw_layout(
             line_data["segments"] = parse_styled_segments(line_data["text_with_markers"])
 
         paint = skia.Paint(AntiAlias=True, Color=text_color)
+        look = layout_data.get("look") or {}  # a region's style (renderer.RenderingConfig)
+        align = look.get("align", "center")
 
         outline_paint = None
         if outline_width > 0:
@@ -220,6 +240,8 @@ def draw_layout(
             b = skia.ColorGetB(text_color)
             lum = 0.299 * r + 0.587 * g + 0.114 * b
             outline_color = skia.ColorBLACK if lum >= 80 else skia.ColorWHITE
+            if look.get("outline_color") is not None:
+                outline_color = look["outline_color"]
 
             outline_paint = skia.Paint(
                 AntiAlias=True,
@@ -371,7 +393,8 @@ def draw_layout(
                 for i, line_data in enumerate(final_lines_data):
                     line_width_measured = line_data["width"]
 
-                    line_start_x = block_start_x + (final_max_line_width - line_width_measured) / 2.0
+                    spare = final_max_line_width - line_width_measured
+                    line_start_x = block_start_x + {"left": 0.0, "right": spare}.get(align, spare / 2.0)
                     cursor_x = line_start_x
 
                     if bg_paint is not None:
@@ -404,6 +427,11 @@ def draw_layout(
                         skia_font_segment = skia.Font(typeface_to_use, final_font_size)
                         skia_font_segment.setSubpixel(True)
                         skia_font_segment.setHinting(skia.FontHinting.kNone)
+                        if look.get("synthetic"):
+                            embolden, skew = _synthetic(style_name, loaded_typefaces)
+                            skia_font_segment.setEmbolden(embolden)
+                            if skew:
+                                skia_font_segment.setSkewX(SYNTHETIC_ITALIC_SKEW)
 
                         hb_font_segment = hb.Font(hb_face_to_use)
                         hb_font_segment.ptem = float(final_font_size)

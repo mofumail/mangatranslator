@@ -207,7 +207,7 @@ def sanitize_text_for_font(text: str, font_path: str, verbose: bool = False) -> 
             text = re.sub(r"[~〜]+", lambda m: "∼" * min(len(m.group()), 2) if symbols_on else "", text)
         out = []
         for ch in text:
-            if ord(ch) in supported or ch.isspace():
+            if ord(ch) in supported or ch.isspace() or (ch == "—" and symbols_on):  # "—": symbol font
                 out.append(ch)
                 continue
             options = GLYPH_SUBSTITUTES.get(ch, [])

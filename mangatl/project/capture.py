@@ -39,6 +39,7 @@ from mangatl.project.model import (
 )
 from mangatl.project.store import Project
 from mangatl.settings import Settings
+from mangatl.typeset.style import LetterStyle
 
 if TYPE_CHECKING:
     from mangatl.pipeline.stages import WorkPage
@@ -241,6 +242,7 @@ def _region(
         pending_fill=fill,
         original=original,
         status={s: "done" for s in stages},  # type: ignore[misc]
+        style=LetterStyle.model_validate(item["style"]) if item.get("style") else None,
     )
 
 
@@ -440,6 +442,8 @@ def _item(project: Project, region: Region, page_cv: np.ndarray) -> dict:
         item["ocr_text"] = region.ocr
     if region.skip:
         item["mt_skip"] = True
+    if region.style is not None:
+        item["style"] = region.style.model_dump(exclude_none=True)
     if region.original is not None:
         o = region.original
         item["original_crop_pil"] = (
@@ -567,6 +571,7 @@ def _check_round_trip(project: Project, page: Page, w: WorkPage) -> None:
 # clean.outside_text's fills); test_project checks this list against the code.
 READ_KEYS = (
     "bbox",
+    "style",
     "is_outside_text",
     "mt_skip",
     "ocr_text",

@@ -564,8 +564,8 @@ def prepare(w: WorkPage, refine_masks: bool = False) -> WorkPage:
 
 
 # Region fields set by reading and translating (OCR: the read and the other-language skip;
-# translation: narration on the art)
-TEXT_STAGE_KEYS = ("ocr_text", "mt_skip", "mt_narration", "mt_text")
+# translation: narration on the art), and the lettering a person or agent chose
+TEXT_STAGE_KEYS = ("ocr_text", "mt_skip", "mt_narration", "mt_text", "style")
 
 
 def _crops(w: WorkPage) -> tuple[list[str], list[str]]:
@@ -672,23 +672,24 @@ def translate(
 
 
 def typeset(w: WorkPage, strip_glyph_size: list[float] | None = None) -> WorkPage:
-    """The page's font sizes: scaled to the page, the dialogue size matched to its lettering."""
+    """The page's font sizes: scaled to the page, the dialogue size matched to its lettering
+    (or the chapter's, typesetting.base_size; the lettering is still measured, for emphasis)."""
     assert w.page_cv is not None
     sizes = scaled_render_sizes(w.config, w.processing_scale)
     w.glyphs = {}
-    w.sizes = sizes._replace(
-        main_max_font=resolve_main_max_font(
-            w.config,
-            w.page_cv,
-            w.cleaning,
-            sizes.main_min_font,
-            sizes.main_max_font,
-            w.processing_scale,
-            strip_glyph_size,
-            w.config.verbose,
-            w.glyphs,
-        )
+    measured = resolve_main_max_font(
+        w.config,
+        w.page_cv,
+        w.cleaning,
+        sizes.main_min_font,
+        sizes.main_max_font,
+        w.processing_scale,
+        strip_glyph_size,
+        w.config.verbose,
+        w.glyphs,
     )
+    base = w.config.typesetting.base_size
+    w.sizes = sizes._replace(main_max_font=round(base) if base else measured)
     w.typeset_done = True
     return w
 
@@ -721,6 +722,7 @@ def render(w: WorkPage, empty_bubbles: list | None = None, outcomes: dict | None
                 "outcome": done.get("mt_outcome", "empty"),
                 "font_size": done.get("mt_font_size"),
                 "max_font": done.get("mt_max_font"),
+                **(done.get("mt_layout") or {}),
             }
     return paint_pending_osb_fills(image, [copies[id(item)] for item in w.outside])
 

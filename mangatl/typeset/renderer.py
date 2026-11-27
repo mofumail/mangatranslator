@@ -43,6 +43,12 @@ class RenderingConfig:
     auto_vertical_text: bool = True
     vertical_line_spacing_mult: float = 1.0
     vertical_font_size_mult: float = 1.0
+    # lettering beyond the automatic fit (a region's style, mangatl.typeset.style)
+    align: str = "center"  # lines within the block: center, left, right
+    outline_px: float | None = None  # outline width; None: outline_ratio of the font size
+    outline_color_rgb: tuple[int, int, int] | None = None  # None: black or white by contrast
+    synthetic_styles: bool = False  # bold / italic drawn from the regular font when missing
+    em_dash: bool = False  # draw em dashes (else they become hyphens, which wrap better)
 
 
 GRAYSCALE_MIDPOINT = 128  # Threshold for determining text color
@@ -259,14 +265,16 @@ def _render_supersampled(
     outline_width: float,
     verbose: bool,
     text_background_color,
+    margin: int = 0,
 ) -> Image.Image:
-    """Draw at `factor`x on an upscaled crop of the bbox, then downscale and paste back."""
+    """Draw at `factor`x on an upscaled crop of the bbox (grown by `margin`), then downscale and
+    paste back."""
     x1, y1, x2, y2 = bbox
-    # Crop the bbox region (plus room for tilted text), within image bounds
+    # Crop the bbox region (plus room for tilted or moved text), within image bounds
     img_width, img_height = pil_image.size
-    tilt_margin = 0
+    tilt_margin = margin
     if rotation_deg and abs(rotation_deg) > 0.01:
-        tilt_margin = (
+        tilt_margin += (
             math.ceil(max(x2 - x1, y2 - y1) * math.sin(math.radians(abs(rotation_deg))) / 2)
             + OSB_TILT_SUPERSAMPLE_MARGIN
         )
@@ -418,6 +426,7 @@ def render_text_skia(
     fallback_padding_pixels: float | None = None,
     layout_dimensions: tuple[float, float] | None = None,
     oriented_dimensions: tuple[float, float] | None = None,
+    offset: tuple[float, float] | None = None,
 ) -> Image.Image:
     """
     Fits and renders text within a bounding box using Skia and HarfBuzz.
@@ -449,7 +458,9 @@ def render_text_skia(
         verbose: Whether to print detailed logs.
 
     Returns:
-        Modified PIL Image object with rendered text.
+        Modified PIL Image object with rendered text; its info carries "font_size" and "layout"
+        (the text block's box on the page, line count, how much of the area it fills, its
+        smallest margin to the area's edge: _measure).
 
     Raises:
         RenderingError: If rendering fails due to invalid inputs, font issues, or layout problems
@@ -463,8 +474,11 @@ def render_text_skia(
         log_message(f"Invalid bbox dimensions: {bbox}", always_print=True)
         raise RenderingError(f"Invalid bounding box dimensions: {bbox}")
 
+    if config is None:
+        config = RenderingConfig()
+
     # em dash can break wrapping
-    normalized_text = text.replace("—", "-")
+    normalized_text = text if config.em_dash else text.replace("—", "-")
 
     # collapse whitespace within lines but keep explicit line breaks (the layout honours them:
     # narration and lists are set one utterance / entry per line)
@@ -473,9 +487,6 @@ def render_text_skia(
         return pil_image
 
     layout_text = clean_text
-
-    if config is None:
-        config = RenderingConfig()
 
     (
         layout_box_top_left,
@@ -616,6 +627,17 @@ def render_text_skia(
     )
 
     text_color = _resolve_text_color(text_color_rgb, bubble_color_bgr)
+    if offset is not None:
+        target_center_x += offset[0]
+        target_center_y += offset[1]
+    layout_data["look"] = {
+        "align": config.align,
+        "outline_color": skia.Color(*config.outline_color_rgb) if config.outline_color_rgb else None,
+        "synthetic": config.synthetic_styles,
+    }
+    measured = _measure(
+        layout_data, (target_center_x, target_center_y), bbox, cleaned_mask, pil_image.size, config.align
+    )
 
     skia_bg_color = None
     if text_background_color is not None:
@@ -625,7 +647,11 @@ def render_text_skia(
             text_background_color[2],
         )
 
-    outline_px = resolve_outline_width(layout_data["font_size"], config.outline_ratio)
+    outline_px = (
+        config.outline_px
+        if config.outline_px is not None
+        else resolve_outline_width(layout_data["font_size"], config.outline_ratio)
+    )
     factor = config.supersampling_factor
     if factor > 1:
         log_message(f"Using supersampling factor {factor}", verbose=verbose)
@@ -641,6 +667,7 @@ def render_text_skia(
             outline_px,
             verbose,
             skia_bg_color,
+            math.ceil(max(abs(v) for v in offset)) if offset else 0,
         )
         log_message(
             f"Rendered at size {layout_data['font_size']} with {factor}x supersampling",
@@ -672,4 +699,67 @@ def render_text_skia(
         log_message(f"Rendered at size {layout_data['font_size']}", verbose=verbose)
 
     final_pil_image.info["font_size"] = layout_data["font_size"]
+    final_pil_image.info["layout"] = measured
     return final_pil_image
+
+
+def _measure(
+    layout_data: dict,
+    center: tuple[float, float],
+    bbox: tuple[int, int, int, int],
+    mask: np.ndarray | None,
+    page_size: tuple[int, int],
+    align: str = "center",
+) -> dict:
+    """Where the text block landed and how it sits in its area (the bubble's mask, else the box):
+    the block's box on the page, its line count, the share of the area it covers, and the
+    smallest margin of its lines to the area's edge (0: one touches or crosses it). Rotation is
+    ignored."""
+    import cv2
+
+    lines = layout_data["lines"]
+    width = float(layout_data["max_line_width"])
+    if layout_data.get("orientation") == "vertical":
+        height = float(layout_data.get("block_height") or 0.0)
+    else:
+        m = layout_data["metrics"]
+        height = (len(lines) - 1) * layout_data["line_height"] - m.fAscent + m.fDescent
+    cx, cy = center
+    tx1, ty1, tx2, ty2 = cx - width / 2, cy - height / 2, cx + width / 2, cy + height / 2
+    out = {"text_box": [round(tx1), round(ty1), round(tx2), round(ty2)], "lines": len(lines)}
+    x1, y1, x2, y2 = (int(v) for v in bbox)
+    pw, ph = page_size
+    if mask is not None and mask.shape[:2] == (ph, pw):
+        pad = 2
+        ox, oy = max(0, x1 - pad), max(0, y1 - pad)
+        inside = (mask[oy : min(ph, y2 + pad), ox : min(pw, x2 + pad)] > 0).astype(np.uint8)
+    else:  # the box itself
+        ox, oy = x1 - 1, y1 - 1
+        inside = np.zeros((y2 - y1 + 2, x2 - x1 + 2), np.uint8)
+        inside[1:-1, 1:-1] = 1
+    area = int(inside.sum())
+    if area == 0:
+        return out
+    dist = cv2.distanceTransform(inside, cv2.DIST_L2, 3)
+    h, w = inside.shape
+    boxes = [(tx1, ty1, tx2, ty2)]  # each line's box: a block in a round bubble has spare corners
+    if layout_data.get("orientation") != "vertical" and lines:
+        m, step = layout_data["metrics"], layout_data["line_height"]
+        boxes = []
+        for i, line in enumerate(lines):
+            baseline = ty1 - m.fAscent + i * step
+            spare = width - float(line["width"])
+            lx = tx1 + {"left": 0.0, "right": spare}.get(align, spare / 2)
+            boxes.append((lx, baseline + m.fAscent, lx + float(line["width"]), baseline + m.fDescent))
+    margin = float("inf")
+    for bx1, by1, bx2, by2 in boxes:
+        if bx1 - ox < 0 or by1 - oy < 0 or bx2 - ox > w - 1 or by2 - oy > h - 1:
+            margin = 0.0
+            break
+        xs = np.round(np.linspace(bx1, bx2, 8) - ox).astype(int)
+        ys = np.round(np.linspace(by1, by2, 4) - oy).astype(int)
+        edge = np.concatenate([dist[ys[0], xs], dist[ys[-1], xs], dist[ys, xs[0]], dist[ys, xs[-1]]])
+        margin = min(margin, float(edge.min()))
+    out["fill"] = round(width * height / area, 2)
+    out["margin"] = round(margin, 1)
+    return out

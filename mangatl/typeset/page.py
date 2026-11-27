@@ -18,11 +18,12 @@ from mangatl.common.log import log_message
 from mangatl.common.scaling import scale_font_size, scale_scalar
 from mangatl.detect.tilt import compute_effective_tilt_angle
 from mangatl.ocr.line_ocr import script_ratios
-from mangatl.settings import PROVIDER, Settings
+from mangatl.settings import FONTS_DIR, PROVIDER, Settings
 from mangatl.translate.page import INVALID_TRANSLATION_VALUES
 from mangatl.typeset import sfx_labels
 from mangatl.typeset.fonts import find_font_variants, get_cap_height_ratio
 from mangatl.typeset.renderer import RenderingConfig, render_text_skia
+from mangatl.typeset.style import LetterStyle, resolve, rgb, styled_text
 from mangatl.typeset.text import supports_long_word_breaking
 
 if TYPE_CHECKING:
@@ -217,7 +218,42 @@ def _text_render_config(config: Settings, sizes: _RenderSizes, is_outside_text: 
         auto_vertical_text=style.auto_vertical,
         vertical_line_spacing_mult=style.vertical_line_spacing,
         vertical_font_size_mult=style.vertical_font_size,
+        synthetic_styles=ts.synthetic_styles,
+        em_dash=ts.em_dash,
     )
+
+
+# --- a region's style (mangatl.typeset.style) -------------------------------------------------------
+def _style_of(bubble: dict[str, Any], config: Settings, kind: str) -> LetterStyle | None:
+    return resolve(bubble.get("style"), config.typesetting.presets, kind)
+
+
+def _styled_sizes(sizes: _RenderSizes, style: LetterStyle | None, outside: bool) -> _RenderSizes:
+    """The size range with the style's size (or scale of the page's size) as its top."""
+    if style is None or not (style.size or style.scale):
+        return sizes
+    base = sizes.osb_max_font if outside else sizes.main_max_font
+    top = max(1, round(style.size or base * (style.scale or 1.0)))
+    if outside:
+        return sizes._replace(osb_max_font=top, osb_min_font=min(sizes.osb_min_font, top))
+    return sizes._replace(main_max_font=top, main_min_font=min(sizes.main_min_font, top))
+
+
+def _styled_config(rc: RenderingConfig, style: LetterStyle | None) -> RenderingConfig:
+    if style is None:
+        return rc
+    return dataclasses.replace(
+        rc,
+        line_spacing_mult=style.line_spacing or rc.line_spacing_mult,
+        padding_pixels=rc.padding_pixels if style.padding is None else style.padding,
+        outline_px=style.outline if style.outline is not None else rc.outline_px,
+        outline_color_rgb=rgb(style.outline_color) or rc.outline_color_rgb,
+        align=style.align or rc.align,
+    )
+
+
+def _styled_font(style: LetterStyle | None, default_dir: str) -> str:
+    return str(FONTS_DIR / style.font) if style is not None and style.font else default_dir
 
 
 _OsbAttempt = tuple[float, bool, tuple[float, float] | None]
@@ -280,8 +316,15 @@ def _render_osb_attempt(
         text = bubble.get("mt_text", text)
         config = config.updated(**{"typesetting.outside.font": config.typesetting.bubbles.font})
     rotation_deg, vertical_stack, layout_dims = attempt
+    style = _style_of(bubble, config, "outside")
+    sizes = _styled_sizes(sizes, style, outside=True)
+    text = styled_text(text, style, config.typesetting.em_dash)
+    if style is not None and style.rotation is not None:
+        rotation_deg = style.rotation
     is_dark_text = bubble.get("is_dark_text", True)
     text_color_rgb = bubble.get("text_color_rgb", None)
+    if style is not None and style.color:
+        text_color_rgb = rgb(style.color)
     text_bg_rgb = None
     if bubble.get("needs_text_background"):
         if text_color_rgb:
@@ -293,12 +336,14 @@ def _render_osb_attempt(
     return render_text_skia(
         pil_image=image,
         text=text,
-        bbox=bubble["bbox"],
-        font_dir=config.typesetting.outside.font_dir or config.typesetting.bubbles.font_dir,
+        bbox=style.box if style is not None and style.box else bubble["bbox"],
+        font_dir=_styled_font(
+            style, config.typesetting.outside.font_dir or config.typesetting.bubbles.font_dir
+        ),
         # Outside text was inpainted, no mask needed
         cleaned_mask=None,
         bubble_color_bgr=(50, 50, 50) if is_dark_text else (255, 255, 255),
-        config=_text_render_config(config, sizes, is_outside_text=True),
+        config=_styled_config(_text_render_config(config, sizes, is_outside_text=True), style),
         verbose=config.verbose,
         bubble_id=bubble_id,
         rotation_deg=rotation_deg,
@@ -309,6 +354,7 @@ def _render_osb_attempt(
         fallback_padding_pixels=sizes.osb_padding_pixels,
         layout_dimensions=layout_dims,
         layout_only=layout_only,
+        offset=style.offset if style is not None else None,
     )
 
 
@@ -348,11 +394,12 @@ def _render_outside_text(
     verbose = config.verbose
     bbox = bubble["bbox"]
     log_message(f"Rendering outside text {bbox}: '{text[:30]}...'", verbose=verbose)
-    bubble["mt_max_font"] = sizes.osb_max_font
+    bubble["mt_max_font"] = _styled_sizes(sizes, _style_of(bubble, config, "outside"), True).osb_max_font
     for attempt in attempts:
         try:
             rendered = _render_osb_attempt(image, bubble, text, bubble_id, config, sizes, attempt)
             bubble["mt_outcome"], bubble["mt_font_size"] = "fit", rendered.info.get("font_size")
+            bubble["mt_layout"] = rendered.info.get("layout")
             return rendered
         except Exception as e:
             log_message(
@@ -438,18 +485,33 @@ def _render_bubble(
     (outline-only bubbles over the art, common in doujin CG) are inpainted, not filled, so
     their text gets an outline like text on the art.
     """
-    sizes = _emphasis_sizes(bubble, bubble_id, sizes, page_glyphs, config)
+    style = _style_of(bubble, config, "bubble")
+    if style is not None and (style.size or style.scale):
+        sizes = _styled_sizes(sizes, style, outside=False)
+    else:
+        sizes = _emphasis_sizes(bubble, bubble_id, sizes, page_glyphs, config)
+    text = styled_text(text, style, config.typesetting.em_dash)
     bubble["mt_max_font"] = sizes.main_max_font
     outlined = bool(render_info and render_info.get("is_colored"))
     rendered = _render_bubble_once(
-        image, bubble, text, bubble_id, render_info, page_cv, config, sizes, processing_scale, outlined
+        image, bubble, text, bubble_id, render_info, page_cv, config, sizes, processing_scale, outlined, style
     )
     if rendered is not None:
         bubble["mt_outcome"] = "fit"
         return rendered
     smaller = sizes._replace(main_min_font=max(4, sizes.main_min_font // 2))
     rendered = _render_bubble_once(
-        image, bubble, text, bubble_id, render_info, page_cv, config, smaller, processing_scale, outlined
+        image,
+        bubble,
+        text,
+        bubble_id,
+        render_info,
+        page_cv,
+        config,
+        smaller,
+        processing_scale,
+        outlined,
+        style,
     )
     if rendered is not None:
         log_message(f"Bubble {bubble_id}: fitted below the minimum font size", always_print=True)
@@ -477,6 +539,7 @@ def _render_bubble_once(
     sizes: _RenderSizes,
     processing_scale: float,
     outlined: bool = False,
+    style: LetterStyle | None = None,
 ) -> Image.Image | None:
     """Render one speech bubble translation, or None if it could not be placed.
 
@@ -504,24 +567,31 @@ def _render_bubble_once(
     render_config = _text_render_config(config, sizes, is_outside_text=False)
     if outlined:
         render_config = dataclasses.replace(render_config, outline_ratio=sizes.osb_outline_ratio)
+    render_config = _styled_config(render_config, style)
+    box = style.box if style is not None and style.box else None  # the text area, instead of the bubble
+    if style is not None and style.color:
+        text_color_rgb = rgb(style.color)
 
     def render(mask, color, raise_on_safe_error: bool) -> Image.Image:
         out = render_text_skia(
             pil_image=image,
             text=text,
-            bbox=bbox,
-            font_dir=config.typesetting.bubbles.font_dir,
-            cleaned_mask=mask,
+            bbox=box or bbox,
+            font_dir=_styled_font(style, config.typesetting.bubbles.font_dir),
+            cleaned_mask=None if box else mask,
             bubble_color_bgr=color,
             config=render_config,
             verbose=verbose,
             bubble_id=bubble_id,
-            rotation_deg=0.0,
+            rotation_deg=style.rotation or 0.0 if style is not None else 0.0,
             vertical_stack=False,
             text_color_rgb=text_color_rgb,
-            raise_on_safe_error=raise_on_safe_error,
+            raise_on_safe_error=raise_on_safe_error and not box,
+            fallback_padding_pixels=render_config.padding_pixels if box else None,
+            offset=style.offset if style is not None else None,
         )
-        bubble["mt_font_size"] = out.info.get("font_size")  # set by this call (a pasted crop's info isn't)
+        # set by this call (a pasted crop's info isn't)
+        bubble["mt_font_size"], bubble["mt_layout"] = out.info.get("font_size"), out.info.get("layout")
         return out
 
     try:

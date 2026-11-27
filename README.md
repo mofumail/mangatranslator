@@ -64,7 +64,14 @@ The UI shows the work live: pages with their progress, original / cleaned / rend
 overlays coloured by outcome, each region's source and translation, worker reports, the chapter
 notes and every tool call. Projects are kept in `studio_data/<name>-<hash>/` (project file,
 rendered pages in `out/`, notes, reports, activity log). No LLM runs in the studio; the agent is
-the translator. Not yet: moving text, fonts and sizes, fixing OCR or detection, editing in the UI.
+the translator.
+
+Lettering: each project has a style sheet of presets (by default dialogue in CC Wild Words capitals,
+plus shout, thought, whisper and narration) and every region can carry its own style on top (preset,
+font, size or scale, capitals, bold / italic, alignment, line spacing, rotation, colour, outline,
+text box or offset, padding), saved in the page document. Each render reports how the text sits in
+its bubble (size, fill, margin, lines), and `preview_region` compares variants without saving. Not
+yet: fixing OCR or detection, curved text, editing in the UI.
 
 ## Command line
 

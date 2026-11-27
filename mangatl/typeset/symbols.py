@@ -12,7 +12,9 @@ import itertools
 from mangatl.settings import ROOT
 
 SYMBOL_FONT = ROOT / "assets" / "symbols" / "DejaVuSans-Bold.ttf"
-SYMBOL_CHARS = set("♡♥❤♪♫☆★♂♀→←↑↓⇒■□▶◀▲▼△▽●○◆◇※✓∼")
+# "—": lettering fonts often lack the em dash; it only reaches here with typesetting.em_dash on
+# (otherwise dashes are drawn as hyphens)
+SYMBOL_CHARS = set("♡♥❤♪♫☆★♂♀→←↑↓⇒■□▶◀▲▼△▽●○◆◇※✓∼—")
 
 
 def active() -> bool:

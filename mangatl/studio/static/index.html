@@ -58,6 +58,8 @@
   .rg .ocr { color: var(--dim); font-size: 13px; }
   .rg .tl { white-space: pre-wrap; margin-top: 4px; }
   .rg .prob { color: #ff9a8a; font-size: 12px; margin-top: 4px; }
+  .rg .hint { color: #f0c674; font-size: 12px; margin-top: 4px; }
+  .rg .meta { color: var(--dim); font-size: 11.5px; margin-top: 4px; font-family: ui-monospace, monospace; }
   .act { padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12.5px; }
   .act .w { color: #f0c674; font-weight: 600; }
   .act .err { color: #ff9a8a; }
@@ -208,6 +210,16 @@ function highlight(rid, scroll) {
   });
 }
 
+function metaLine(r) {
+  const parts = [];
+  if (r.preset) parts.push(r.preset);
+  if (r.style) parts.push(Object.entries(r.style).filter(([k]) => k !== "preset").map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(",") : v}`).join(" "));
+  if (r.fill != null) parts.push(`fill ${Math.round(r.fill * 100)}%`);
+  if (r.margin != null) parts.push(`margin ${r.margin}px`);
+  if (r.lines != null) parts.push(`${r.lines} line${r.lines > 1 ? "s" : ""}`);
+  return parts.length ? `<div class="meta">${esc(parts.filter(Boolean).join(" · "))}</div>` : "";
+}
+
 function renderPanel() {
   document.querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === st.tab));
   const d = st.pageData; const panel = $("#panel");
@@ -224,7 +236,9 @@ function renderPanel() {
           <div class="top"><b>${r.order}</b><span class="dim">${r.id} · ${r.kind}</span><span class="grow"></span>
           <span class="dim">${size}</span><span class="b ${k}">${esc(label)}</span></div>
           <div class="ocr">${esc(r.ocr)}</div><div class="tl">${esc(r.translation)}</div>
-          ${r.problem ? `<div class="prob">${esc(r.problem)}</div>` : ""}</div>`;
+          ${metaLine(r)}
+          ${r.problem ? `<div class="prob">${esc(r.problem)}</div>` : ""}
+          ${r.hint ? `<div class="hint">${esc(r.hint)}</div>` : ""}</div>`;
       }).join("");
     document.querySelectorAll(".rg").forEach((el) => el.addEventListener("click", () => highlight(el.dataset.rid, false)));
   } else if (st.tab === "report") {

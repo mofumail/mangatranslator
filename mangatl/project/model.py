@@ -17,6 +17,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from mangatl.typeset.style import LetterStyle
+
 Box = tuple[int, int, int, int]
 Color = tuple[int, ...]  # RGB / BGR, sometimes with alpha (cleaning works on BGRA pages)
 STAGES = ("detect", "ocr", "translate", "clean", "typeset")
@@ -127,6 +129,7 @@ class Region(_Doc):
     original: OriginalCrop | None = None
     status: dict[str, Status] = Field(default_factory=dict)
     locked: bool = False  # the pipeline never changes a locked region
+    style: LetterStyle | None = None  # lettering beyond the automatic fit (mangatl.typeset.style)
     flag: str | None = None  # "vanished": re-detection no longer finds it (kept for its edits)
 
 
