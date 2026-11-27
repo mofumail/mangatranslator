@@ -20,9 +20,10 @@ Then, in Claude Code: `/mcp__mangatl-studio__translate_folder /path/to/chapter`,
 
 ## Examples
 
-Japanese original on the left. On the right, the studio's output, with every line translated and
+Japanese original on the left, with the studio's output on the right. Each line is translated and
 lettered by Claude Code through the MCP tools. The coordinator wrote the chapter notes first
-(characters, terms, lettering conventions), then ran one sub-agent per page. No human edits.
+(characters, terms, lettering conventions), and then ran one sub-agent per page. No human edits were made.
+Opus 5.5 on High effort was used for the below example.
 
 **Dialogue.** Siora is polite and flustered and the thug is crude, as the chapter notes said.
 閉じ眼 ("closed-eye", the series' word for a blind person) is kept as the fixed term the notes
