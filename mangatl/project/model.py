@@ -130,6 +130,9 @@ class Region(_Doc):
     status: dict[str, Status] = Field(default_factory=dict)
     locked: bool = False  # the pipeline never changes a locked region
     style: LetterStyle | None = None  # lettering beyond the automatic fit (mangatl.typeset.style)
+    speaker: str | None = None  # who says it
+    dismissed: str | None = None  # why it isn't text (a false detection): drawn as the original art
+    link: str | None = None  # regions sharing a link are one sentence split across bubbles
     flag: str | None = None  # "vanished": re-detection no longer finds it (kept for its edits)
 
 

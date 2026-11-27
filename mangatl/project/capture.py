@@ -243,6 +243,9 @@ def _region(
         original=original,
         status={s: "done" for s in stages},  # type: ignore[misc]
         style=LetterStyle.model_validate(item["style"]) if item.get("style") else None,
+        speaker=item.get("speaker"),
+        dismissed=item.get("dismissed"),
+        link=item.get("link"),
     )
 
 
@@ -444,6 +447,9 @@ def _item(project: Project, region: Region, page_cv: np.ndarray) -> dict:
         item["mt_skip"] = True
     if region.style is not None:
         item["style"] = region.style.model_dump(exclude_none=True)
+    for key in ("speaker", "dismissed", "link"):
+        if getattr(region, key) is not None:
+            item[key] = getattr(region, key)
     if region.original is not None:
         o = region.original
         item["original_crop_pil"] = (
@@ -572,6 +578,7 @@ def _check_round_trip(project: Project, page: Page, w: WorkPage) -> None:
 READ_KEYS = (
     "bbox",
     "style",
+    "dismissed",
     "is_outside_text",
     "mt_skip",
     "ocr_text",

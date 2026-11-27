@@ -193,6 +193,31 @@ class Project:
         )
         return [dict(id=r[0], label=r[1], author=r[2], status=r[3], created=r[4]) for r in rows]
 
+    def region_history(self, page_id: str, region_id: str) -> list[dict]:
+        """Every applied change to one region, oldest first: when, by whom, the group's label,
+        the field (None: the whole region, added or removed), the value before and after."""
+        rows = self._db().execute(
+            "select o.path, o.old, o.new, g.author, g.label, g.created from ops o join groups g on g.id = o.grp"
+            " where o.page = ? and o.state = 'applied' order by o.seq",
+            (page_id,),
+        )
+        out = []
+        for path, old, new, author, label, created in rows:
+            p = json.loads(path)
+            if len(p) >= 2 and p[0] == "regions" and p[1] == region_id:
+                field = ".".join(p[2:]) or None
+                out.append(
+                    dict(
+                        t=created,
+                        author=author,
+                        label=label,
+                        field=field,
+                        old=json.loads(old),
+                        new=json.loads(new),
+                    )
+                )
+        return out
+
     def undo_group(self, group_id: int) -> None:
         """Undo every applied operation of a group (atomically; Conflict if a later change
         touched the same fields)."""

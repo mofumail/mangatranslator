@@ -564,8 +564,8 @@ def prepare(w: WorkPage, refine_masks: bool = False) -> WorkPage:
 
 
 # Region fields set by reading and translating (OCR: the read and the other-language skip;
-# translation: narration on the art), and the lettering a person or agent chose
-TEXT_STAGE_KEYS = ("ocr_text", "mt_skip", "mt_narration", "mt_text", "style")
+# translation: narration on the art), and what a person or agent decided about the region
+TEXT_STAGE_KEYS = ("ocr_text", "mt_skip", "mt_narration", "mt_text", "style", "speaker", "dismissed", "link")
 
 
 def _crops(w: WorkPage) -> tuple[list[str], list[str]]:

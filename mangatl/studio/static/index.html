@@ -39,6 +39,11 @@
   .b.kept { color: #fff; background: var(--kept); border-color: transparent; }
   .b.empty { color: #fff; background: var(--empty); border-color: transparent; }
   .b.claim { color: #0b1020; background: #f0c674; border-color: transparent; }
+  .b.dismissed { color: var(--dim); background: transparent; border-style: dashed; }
+  .rg.dis { opacity: .55; }
+  .rg .who { color: #8fc7ff; font-weight: 600; margin-right: 4px; }
+  .rv { border-left: 3px solid var(--line); padding: 4px 8px; margin: 8px 0; }
+  .rv.approved { border-color: var(--fit); } .rv.changes_requested { border-color: var(--small); }
   #view { display: flex; flex-direction: column; min-width: 0; }
   #toolbar { display: flex; gap: 6px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); }
   #stage { flex: 1; overflow: auto; display: flex; justify-content: center; align-items: flex-start; padding: 12px; }
@@ -97,6 +102,7 @@
       <button data-tab="regions">Regions</button>
       <button data-tab="report">Report</button>
       <button data-tab="notes">Notes</button>
+      <button data-tab="script">Script</button>
       <button data-tab="activity">Activity</button>
     </div>
     <div id="panel"></div>
@@ -106,8 +112,10 @@
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const OUT = { fit: ["fit", "fit"], below_min_font: ["small", "too long"], kept_original_no_fit: ["bad", "no fit"],
-  failed: ["bad", "failed"], kept_original: ["kept", "original kept"], empty: ["empty", "untranslated"] };
-const COLOR = { fit: "var(--fit)", small: "var(--small)", bad: "var(--bad)", kept: "var(--kept)", empty: "var(--empty)" };
+  failed: ["bad", "failed"], kept_original: ["kept", "original kept"], empty: ["empty", "untranslated"],
+  dismissed: ["dismissed", "dismissed"] };
+const STATE = { approved: "fit", changes_requested: "small", translated: "", in_progress: "claim", drafted: "" };
+const COLOR = { fit: "var(--fit)", small: "var(--small)", bad: "var(--bad)", kept: "var(--kept)", empty: "var(--empty)", dismissed: "#777" };
 
 const st = { project: null, page: null, layer: "rendered", boxes: true, tab: "regions", status: null,
   pageData: null, activity: [], lastSeq: 0, hi: null, comparing: false };
@@ -118,7 +126,7 @@ async function api(path, opts) {
   return r.json();
 }
 function saveHash() { location.hash = st.project ? `${encodeURIComponent(st.project)}/${encodeURIComponent(st.page || "")}` : ""; }
-function regionClass(r) { return r.translation ? (OUT[r.outcome] || ["", r.outcome])[0] : "empty"; }
+function regionClass(r) { return r.dismissed ? "dismissed" : r.translation ? (OUT[r.outcome] || ["", r.outcome])[0] : "empty"; }
 
 async function loadState() {
   const s = await api("/api/state");
@@ -146,7 +154,8 @@ async function loadProject() {
   else if (st.page) {
     const now = s.pages.find((p) => p.page === st.page);
     const before = prev && prev.pages.find((p) => p.page === st.page);
-    if (now && (!before || now.version !== before.version || now.draft !== before.draft || now.report_by !== before.report_by)) loadPage();
+    if (now && (!before || now.version !== before.version || now.draft !== before.draft || now.state !== before.state ||
+      (now.reports || []).length !== (before.reports || []).length)) loadPage();
   }
   if (st.tab === "notes") renderPanel();
 }
@@ -157,11 +166,12 @@ function renderPages() {
     const b = [];
     if (p.draft !== "drafted") b.push(`<span class="b ${p.draft === "error" ? "bad" : ""}">${esc(p.draft)}</span>`);
     else {
-      b.push(`<span class="b ${p.translated === p.regions && p.regions ? "fit" : ""}">${p.translated}/${p.regions}</span>`);
+      b.push(`<span class="b ${p.translated === p.regions_total && p.regions_total ? "fit" : ""}">${p.translated}/${p.regions_total}</span>`);
+      if (p.state && p.state !== "drafted") b.push(`<span class="b ${STATE[p.state] || ""}">${esc(p.state.replace("_", " "))}</span>`);
       if (p.problems) b.push(`<span class="b small">${p.problems} problem${p.problems > 1 ? "s" : ""}</span>`);
     }
     if (p.claimed_by) b.push(`<span class="b claim">${esc(p.claimed_by)}</span>`);
-    if (p.report_by) b.push(`<span class="b">report</span>`);
+    if (p.reports && p.reports.length) b.push(`<span class="b">${p.reports.length} report${p.reports.length > 1 ? "s" : ""}</span>`);
     const thumb = p.draft === "drafted" ? "rendered" : "original";
     return `<div class="pg ${p.page === st.page ? "sel" : ""}" data-page="${esc(p.page)}">
       <img loading="lazy" src="/api/projects/${encodeURIComponent(st.project)}/image?page=${encodeURIComponent(p.page)}&layer=${thumb}&v=${p.version}">
@@ -230,23 +240,32 @@ function renderPanel() {
     panel.innerHTML = `<div class="sum">${Object.entries(counts).map(([k, n]) => `<span class="b ${k}">${n} ${esc(({ fit: "fit", small: "too long", bad: "no fit", kept: "kept", empty: "untranslated" })[k] || k)}</span>`).join("")}
       ${d.dialogue_font_size ? `<span class="b">dialogue ${Math.round(d.dialogue_font_size)}px</span>` : ""}</div>` +
       d.regions.map((r) => {
-        const k = regionClass(r); const label = r.translation ? (OUT[r.outcome] || ["", r.outcome])[1] : "untranslated";
+        const k = regionClass(r); const label = r.dismissed ? "dismissed" : r.translation ? (OUT[r.outcome] || ["", r.outcome])[1] : "untranslated";
         const size = r.font_size ? `${Math.round(r.font_size)}/${Math.round(r.max_font)}px` : "";
-        return `<div class="rg ${r.id === st.hi ? "hi" : ""}" data-rid="${r.id}">
+        return `<div class="rg ${r.id === st.hi ? "hi" : ""} ${r.dismissed ? "dis" : ""}" data-rid="${r.id}">
           <div class="top"><b>${r.order}</b><span class="dim">${r.id} · ${r.kind}</span><span class="grow"></span>
           <span class="dim">${size}</span><span class="b ${k}">${esc(label)}</span></div>
-          <div class="ocr">${esc(r.ocr)}</div><div class="tl">${esc(r.translation)}</div>
+          <div class="ocr">${esc(r.ocr)}</div>
+          ${r.dismissed ? `<div class="dim">dismissed: ${esc(r.dismissed)}</div>` : `<div class="tl">${r.speaker ? `<span class="who">${esc(r.speaker)}</span>` : ""}${esc(r.translation)}</div>`}
+          ${r.linked_with ? `<div class="meta">linked with ${esc(r.linked_with.join(", "))}</div>` : ""}
           ${metaLine(r)}
           ${r.problem ? `<div class="prob">${esc(r.problem)}</div>` : ""}
           ${r.hint ? `<div class="hint">${esc(r.hint)}</div>` : ""}</div>`;
       }).join("");
     document.querySelectorAll(".rg").forEach((el) => el.addEventListener("click", () => highlight(el.dataset.rid, false)));
   } else if (st.tab === "report") {
-    const r = d && d.report;
-    panel.innerHTML = r ? `<div class="dim">${esc(r.worker)} · ${new Date(r.t * 1000).toLocaleString()}</div><pre class="notes">${esc(r.text)}</pre>` : `<div class="empty-state">No report for this page yet.</div>`;
+    const items = [...((d && d.reports) || []).map((r) => ({ ...r, kind: "report" })), ...((d && d.reviews) || []).map((r) => ({ ...r, kind: "review" }))]
+      .sort((a, b) => a.t - b.t);
+    panel.innerHTML = items.length ? `<div class="dim">state: ${esc((d.state || "").replace("_", " "))}</div>` + items.map((r) => `<div class="rv ${r.verdict || ""}">
+      <div class="dim">${r.kind === "review" ? `review (${esc(r.verdict.replace("_", " "))})` : "report"} · ${esc(r.worker)} · ${new Date(r.t * 1000).toLocaleString()}</div>
+      <pre class="notes">${esc(r.text || r.notes)}</pre></div>`).join("") : `<div class="empty-state">No reports or reviews for this page yet.</div>`;
   } else if (st.tab === "notes") {
-    const n = st.status && st.status.notes;
-    panel.innerHTML = n ? `<pre class="notes">${esc(n)}</pre>` : `<div class="empty-state">No chapter notes yet.</div>`;
+    const n = st.status && st.status.notes; const g = (st.status && st.status.glossary) || [];
+    panel.innerHTML = (n ? `<pre class="notes">${esc(n)}</pre>` : `<div class="empty-state">No chapter notes yet.</div>`) +
+      (g.length ? `<h4>Glossary</h4>` + g.map((e) => `<div class="act"><b>${esc(e.source)}</b> → ${esc(e.english)} <span class="dim">${esc(e.kind || "")} ${esc(e.note || "")}</span></div>`).join("") : "");
+  } else if (st.tab === "script") {
+    panel.innerHTML = `<div class="empty-state">loading…</div>`;
+    api(`/api/projects/${encodeURIComponent(st.project)}/script`).then((r) => { if (st.tab === "script") panel.innerHTML = `<pre class="notes">${esc(r.script)}</pre>`; });
   } else {
     const items = st.activity.slice().reverse();
     panel.innerHTML = items.length ? items.map((a) => `<div class="act"><span class="dim">${new Date(a.t * 1000).toLocaleTimeString()}</span>

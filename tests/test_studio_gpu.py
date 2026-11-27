@@ -114,7 +114,79 @@ def test_an_agent_translates_a_page_over_mcp(tmp_path):
                 "align": "left",
             }
             await call("release_page", project=pid, page=PAGE, worker="page-002", report="done")
+            await workflow(call, pid, list(translations))
             return {**info, "same_as_harness": same}
+
+    async def workflow(call, pid: str, ids: list[str]) -> None:
+        """The coordinator's and workers' bookkeeping (#31)."""
+        a, b, c = ids[1], ids[2], ids[3]
+        # a touch-up doesn't claim; reports accumulate; reviews set the page's state
+        _, text = await call(
+            "set_translations", project=pid, page=PAGE, translations={a: "Fixed."}, worker="coordinator"
+        )
+        assert json.loads(text)["claimed_by"] is None
+        await call(
+            "review_page", project=pid, page=PAGE, verdict="changes_requested", notes="Make it rougher."
+        )
+        await call("claim_page", project=pid, page=PAGE, worker="page-002b")
+        _, text = await call("get_page", project=pid, page=PAGE)
+        page = json.loads(text)
+        assert page["state"] == "in_progress" and page["reviews"][-1]["notes"] == "Make it rougher."
+        await call("release_page", project=pid, page=PAGE, worker="page-002b", report="rougher now")
+        _, text = await call("get_page", project=pid, page=PAGE)
+        assert [r["text"] for r in json.loads(text)["reports"]] == ["done", "rougher now"]
+
+        # speaker, source, dismissal, link; counts agree between get_page and project_status
+        await call("set_translations", project=pid, page=PAGE, translations={c: ""}, worker="coordinator")
+        _, text = await call(
+            "annotate_regions",
+            project=pid,
+            page=PAGE,
+            regions={
+                a: {"speaker": "Thug", "link": "s1"},
+                b: {"source": "直した", "link": "s1"},
+                c: {"dismissed": "speed lines"},
+            },
+            worker="coordinator",
+        )
+        got = {r["id"]: r for r in json.loads(text)["regions"]}
+        assert got[a]["speaker"] == "Thug" and got[a]["linked_with"] == [b] and got[b]["ocr"] == "直した"
+        assert got[c]["outcome"] == "dismissed" and "problem" not in got[c]
+        _, text = await call("get_page", project=pid, page=PAGE)
+        page = json.loads(text)
+        _, text = await call("project_status", project=pid)
+        entry = next(e for e in json.loads(text)["pages"] if e["page"] == PAGE)
+        assert entry["problems"] == len(page["problems"]) and entry["dismissed"] == 1
+
+        # reading order, script, glossary, history, export
+        order = [r["id"] for r in page["regions"]]
+        _, text = await call("set_order", project=pid, page=PAGE, order=order[::-1], worker="coordinator")
+        assert [r["id"] for r in json.loads(text)["regions"]] == order[::-1]
+        _, text = await call("get_script", project=pid, speaker="thug")
+        assert "[Thug]" in text and text.count("\n") == 1  # the page heading and one line
+        await call(
+            "set_translations",
+            project=pid,
+            page=PAGE,
+            translations={a: "The Tortiyanos!"},
+            worker="coordinator",
+        )
+        await call(
+            "set_glossary",
+            project=pid,
+            entries=[{"source": "トルティヤーノ", "english": "Tortiyano", "kind": "name"}],
+        )
+        _, text = await call("check_consistency", project=pid)
+        assert any("Tortiyanos" in v for v in json.loads(text)["variants"]["Tortiyano"])
+        _, text = await call("region_history", project=pid, page=PAGE, region=a)
+        assert [h["new"] for h in json.loads(text) if h["field"] == "translation"][-2:] == [
+            "Fixed.",
+            "The Tortiyanos!",
+        ]
+        _, text = await call("export_project", project=pid, cbz=True)
+        out = json.loads(text)
+        assert Path(out["script"]).exists() and Path(out["cbz"]).exists()
+        assert any("not approved" in u for u in out["unresolved"])
 
     try:
         info = asyncio.run(run())
@@ -123,6 +195,6 @@ def test_an_agent_translates_a_page_over_mcp(tmp_path):
     assert info["translated"] == info["regions_total"] == len(translations)
     assert all(r["outcome"] in ("fit", "kept_original") for r in info["regions"]), info["regions"]
     project = next(iter(studio.projects.values()))
-    assert project.meta["pages"][PAGE]["report"]["text"] == "done"
+    assert [r["text"] for r in project.meta["pages"][PAGE]["reports"]] == ["done", "rougher now"]
     assert [a["tool"] for a in project.activity][:2] == ["open_project", "get_page"]
     assert info["same_as_harness"]

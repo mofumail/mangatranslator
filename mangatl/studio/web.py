@@ -67,19 +67,18 @@ def build_app(studio: Studio) -> Starlette:
         status = p.status()
         for entry in status["pages"]:
             entry["version"] = p.meta["pages"][entry["page"]].get("version", 0)
-        return {**status, "notes": p.notes()}
+        return {**status, "notes": p.notes(), "glossary": p.glossary()}
 
     @ui.get("/api/projects/{pid}/page")
     def page(pid: str, page: str = Query(...)):
         p = project(pid)
         meta = p.page(page)
         info = p.page_info(page) if meta.get("draft") == "drafted" else {"page": page, "regions": []}
-        return {
-            **info,
-            "draft": meta.get("draft"),
-            "report": meta.get("report"),
-            "version": meta.get("version", 0),
-        }
+        return {**info, "draft": meta.get("draft"), "version": meta.get("version", 0)}
+
+    @ui.get("/api/projects/{pid}/script")
+    def script(pid: str):
+        return {"script": project(pid).script()}
 
     @ui.get("/api/projects/{pid}/image")
     def image(pid: str, page: str = Query(...), layer: str = "rendered", regions: bool = False):

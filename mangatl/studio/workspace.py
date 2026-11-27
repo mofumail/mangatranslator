@@ -148,7 +148,7 @@ class StudioProject:
         self.out = directory / "out"
         self.out.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()  # meta, claims, activity, notes
-        self._page_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
+        self._page_locks: dict[str, threading.RLock] = defaultdict(threading.RLock)
         self._work: OrderedDict[str, Any] = OrderedDict()  # page id -> WorkPage
         self._work_lock = threading.Lock()  # the cache (a page's own use is under its page lock)
         self.claims: dict[str, tuple[str, float]] = {}
@@ -159,9 +159,11 @@ class StudioProject:
             if meta_path.exists()
             else {"folder": str(folder), "created": time.time(), "pages": {}}
         )
-        for page in self.meta["pages"].values():  # a draft the last studio didn't finish
-            if page.get("draft") in ("queued", "drafting"):
+        for page in self.meta["pages"].values():
+            if page.get("draft") in ("queued", "drafting"):  # a draft the last studio didn't finish
                 page["draft"] = "pending"
+            if "report" in page:  # one report per page, before reports accumulated
+                page.setdefault("reports", []).append(page.pop("report"))
         self.activity: list[dict] = []
         log = directory / "activity.jsonl"
         if log.exists():
@@ -243,15 +245,52 @@ class StudioProject:
                     "claim_page with take_over=true once that worker has finished)"
                 )
             self.claims[page_id] = (worker, time.time())
+            page = self.page(page_id)
+            if page.get("state") in (None, "drafted", "changes_requested"):
+                page["state"] = "in_progress"
+                self._save_meta()
             return holder if holder != worker else None
+
+    def _may_edit(self, page_id: str, worker: str) -> None:
+        """Anyone may change a page nobody holds (a coordinator's touch-up doesn't claim it);
+        a page held by another worker is theirs until released or taken over."""
+        if not worker:
+            raise StudioError("say who you are: pass worker (e.g. 'page-3')")
+        holder = self.claimed_by(page_id)
+        if holder and holder != worker:
+            raise StudioError(
+                f"page {page_id} is claimed by {holder}; claim_page with take_over=true once that worker has finished"
+            )
+        if holder == worker:
+            with self.lock:
+                self.claims[page_id] = (worker, time.time())  # renewed by use
 
     def release(self, page_id: str, worker: str, report: str) -> None:
         self.claim(page_id, worker)  # only the holder releases
         with self.lock:
             del self.claims[page_id]
+            page = self.page(page_id)
             if report:
-                self.page(page_id)["report"] = {"worker": worker, "text": report, "t": time.time()}
-                self._save_meta()
+                page.setdefault("reports", []).append({"worker": worker, "text": report, "t": time.time()})
+            if page.get("state") in (None, "drafted", "in_progress", "changes_requested"):
+                page["state"] = "translated"
+            self._save_meta()
+
+    def review(self, page_id: str, worker: str, verdict: str, notes: str) -> dict:
+        """approved, or changes_requested with notes the next worker on the page reads."""
+        if verdict not in ("approved", "changes_requested"):
+            raise StudioError("verdict is 'approved' or 'changes_requested'")
+        if verdict == "changes_requested" and not notes.strip():
+            raise StudioError("say what to change: notes")
+        self._drafted(page_id)
+        with self.lock:
+            page = self.page(page_id)
+            page.setdefault("reviews", []).append(
+                {"worker": worker, "verdict": verdict, "notes": notes, "t": time.time()}
+            )
+            page["state"] = verdict
+            self._save_meta()
+            return {"page": page_id, "state": verdict}
 
     def notes(self) -> str:
         path = self.dir / "notes.md"
@@ -352,8 +391,10 @@ class StudioProject:
                 error=None,
                 outcomes=outcomes,
                 version=self.page(page_id).get("version", 0) + 1,
+                state="drafted",
             )
             self._save_meta()
+        self._summarize(page_id)
         return len(w.ordered)
 
     def _write(self, out: Path, image: Image.Image, mode: str) -> None:
@@ -412,17 +453,24 @@ class StudioProject:
         return w
 
     def set_translations(
-        self, page_id: str, translations: dict[str, str], worker: str, styles: dict | None = None
+        self,
+        page_id: str,
+        translations: dict[str, str],
+        worker: str,
+        styles: dict | None = None,
+        speakers: dict[str, str] | None = None,
     ) -> dict:
-        """Set translations (and styles, as set_style) and re-render the page."""
+        """Set translations (and styles, as set_style; speakers, as annotate) and re-render."""
         self._drafted(page_id)
-        self.claim(page_id, worker)
+        self._may_edit(page_id, worker)
         with self._page_locks[page_id]:
             w = self.work(page_id)
             ids = [item["region_id"] for item in w.ordered]
-            unknown = [r for r in [*translations, *(styles or {})] if r not in ids]
+            unknown = [r for r in [*translations, *(styles or {}), *(speakers or {})] if r not in ids]
             if unknown:
                 raise StudioError(f"no translatable region {unknown} on {page_id}; its regions: {ids}")
+            for rid, name in (speakers or {}).items():
+                _set_field(w.ordered[ids.index(rid)], "speaker", name)
             new_styles = {
                 rid: self._merged_style(w.ordered[ids.index(rid)], st) for rid, st in (styles or {}).items()
             }
@@ -432,7 +480,7 @@ class StudioProject:
                 w.translations[ids.index(rid)] = text.strip()
             for rid, st in new_styles.items():
                 _set_style(w.ordered[ids.index(rid)], st)
-            changed = list(dict.fromkeys([*translations, *new_styles]))
+            changed: list[str] = list(dict.fromkeys([*translations, *new_styles, *(speakers or {})]))
             ran = {"translate", "typeset"} if translations else {"typeset"}
             self._commit(
                 page_id,
@@ -484,6 +532,83 @@ class StudioProject:
             page = self.page(page_id)
             page.update(outcomes=outcomes, version=page.get("version", 0) + 1, rendered=time.time())
             self._save_meta()
+        self._summarize(page_id)
+
+    def _summarize(self, page_id: str) -> None:
+        """The page's counts as get_page computes them, for project_status (one source of truth)."""
+        info = self.page_info(page_id)
+        with self.lock:
+            self.page(page_id)["summary"] = {
+                k: info[k] if k != "problems" else len(info[k])
+                for k in ("regions_total", "translated", "dismissed", "problems")
+            }
+            self._save_meta()
+
+    def annotate(self, page_id: str, regions: dict[str, dict], worker: str) -> dict:
+        """Per region, any of: speaker, source (the corrected Japanese), dismissed (why it isn't
+        text; "" or None restores it), link (a name shared by the bubbles of one sentence; None
+        unlinks). Re-renders the page."""
+        self._drafted(page_id)
+        self._may_edit(page_id, worker)
+        allowed = {"speaker", "source", "dismissed", "link"}
+        with self._page_locks[page_id]:
+            w = self.work(page_id)
+            ids = [item["region_id"] for item in w.ordered]
+            for rid, fields in regions.items():
+                if rid not in ids:
+                    raise StudioError(f"no translatable region {rid} on {page_id}; its regions: {ids}")
+                extra = set(fields) - allowed
+                if extra:
+                    raise StudioError(f"{rid}: unknown fields {sorted(extra)}; allowed: {sorted(allowed)}")
+            if len(w.ocr_texts) != len(ids):
+                w.ocr_texts = [item.get("ocr_text") or "" for item in w.ordered]
+            ran: set[str] = {"typeset"}
+            for rid, fields in regions.items():
+                item = w.ordered[ids.index(rid)]
+                for key in ("speaker", "dismissed", "link"):
+                    if key in fields:
+                        _set_field(item, key, fields[key])
+                if "source" in fields:
+                    text = (fields["source"] or "").strip()
+                    w.ocr_texts[ids.index(rid)] = text
+                    item["ocr_text"] = text
+                    ran.add("ocr")
+            self._commit(page_id, w, worker, f"regions annotated by {worker}", ran, list(regions))
+        return self.page_info(page_id, only=list(regions))
+
+    def set_order(self, page_id: str, order: list[str], worker: str) -> dict:
+        """Put the page's regions in this reading order (every translatable region, once)."""
+        self._drafted(page_id)
+        self._may_edit(page_id, worker)
+        with self._page_locks[page_id]:
+            w = self.work(page_id)
+            ids = [item["region_id"] for item in w.ordered]
+            if sorted(order) != sorted(ids):
+                missing, extra = set(ids) - set(order), set(order) - set(ids)
+                raise StudioError(
+                    f"give every region once; missing {sorted(missing)}, unknown {sorted(extra)}"
+                )
+            n = len(ids)
+            if len(w.translations) != n:
+                w.translations = [""] * n
+            if len(w.ocr_texts) != n:
+                w.ocr_texts = [item.get("ocr_text") or "" for item in w.ordered]
+            pick = [ids.index(r) for r in order]
+            w.ordered = [w.ordered[i] for i in pick]
+            w.translations = [w.translations[i] for i in pick]
+            w.ocr_texts = [w.ocr_texts[i] for i in pick]
+            self._commit(page_id, w, worker, f"reading order by {worker}", {"typeset"}, None)
+        return self.page_info(page_id)
+
+    def history(self, page_id: str, region_id: str) -> list[dict]:
+        """A region's past translations, source reads, speakers, styles and dismissals."""
+        self._drafted(page_id)
+        keep = {"translation", "ocr", "speaker", "style", "dismissed", "link"}
+        return [
+            {"t": round(h["t"]), "by": h["label"], "field": h["field"], "old": h["old"], "new": h["new"]}
+            for h in self.store.region_history(page_id, region_id)
+            if h["field"] in keep
+        ]
 
     def preview(self, page_id: str, region_id: str, variants: list[dict]) -> tuple[Image.Image, list[dict]]:
         """Render up to MAX_PREVIEWS variants ({"text", "style"}: the style merges into the region's
@@ -617,7 +742,12 @@ class StudioProject:
             size = w.image.size
             dialogue = getattr(w.sizes, "main_max_font", None)
             presets = w.config.typesetting.presets
+            glyphs = dict(w.glyphs or {})
         outcomes = page.get("outcomes") or {}
+        links: dict[str, list[str]] = defaultdict(list)
+        for item in ordered:
+            if item.get("link"):
+                links[item["link"]].append(item["region_id"])
         regions, problems = [], []
         for n, (item, text, read) in enumerate(zip(ordered, translations, ocr, strict=True), 1):
             rid = item["region_id"]
@@ -629,10 +759,22 @@ class StudioProject:
                 "bbox": [int(v) for v in item["bbox"]],
                 "ocr": read,
                 "translation": text,
-                "outcome": o.get("outcome", "empty"),
+                "outcome": "dismissed" if item.get("dismissed") else o.get("outcome", "empty"),
                 "font_size": o.get("font_size"),
                 "max_font": o.get("max_font"),
             }
+            if item.get("panel_id") is not None:
+                region["panel"] = int(item["panel_id"])
+            if item.get("class"):
+                region["detected_as"] = item["class"]
+            source_size = _source_size(glyphs, item["bbox"])
+            if source_size:
+                region["source_size"] = source_size
+            for key in ("speaker", "dismissed"):
+                if item.get(key):
+                    region[key] = item[key]
+            if item.get("link"):
+                region["linked_with"] = [r for r in links[item["link"]] if r != rid]
             for key in ("fill", "margin", "lines"):
                 if o.get(key) is not None:
                     region[key] = o[key]
@@ -642,28 +784,37 @@ class StudioProject:
                 region["preset"] = style.preset or ("outside" if region["kind"] == "outside" else "dialogue")
             if own:
                 region["style"] = own
-            problem = _problem(region)
+            problem = None if item.get("dismissed") else _problem(region)
             if problem:
                 region["problem"] = problem
                 problems.append(f"{rid}: {problem}")
-            else:
+            elif not item.get("dismissed"):
                 hint = _hint(region)
                 if hint:
                     region["hint"] = hint
             if only is None or rid in only:
                 regions.append(region)
+        dismissed = sum(1 for item in ordered if item.get("dismissed"))
         info = {
             "project": self.id,
             "page": page_id,
+            "state": page.get("state", "drafted"),
             "size": list(size),
             "dialogue_font_size": dialogue,
             "claimed_by": self.claimed_by(page_id),
-            "translated": sum(1 for t in translations if t),
-            "regions_total": len(ordered),
+            "translated": sum(
+                1 for t, item in zip(translations, ordered, strict=True) if t and not item.get("dismissed")
+            ),
+            "regions_total": len(ordered) - dismissed,
+            "dismissed": dismissed,
             "problems": problems,
             "regions": regions,
             "output": str(self.output_path(page_id)),
         }
+        if page.get("reviews"):
+            info["reviews"] = page["reviews"]
+        if page.get("reports"):
+            info["reports"] = page["reports"]
         if only is not None:
             info["note"] = "only the regions just changed are listed; get_page shows all"
         return info
@@ -677,14 +828,18 @@ class StudioProject:
             if page.get("error"):
                 entry["error"] = page["error"]
             if page.get("draft") == "drafted":
-                entry["regions"] = len(outcomes)
-                entry["translated"] = sum(1 for o in outcomes.values() if o.get("outcome") != "empty")
-                entry["problems"] = sum(1 for o in outcomes.values() if o.get("outcome") in PROBLEMS)
+                entry["state"] = page.get("state", "drafted")
+                summary = page.get("summary") or {
+                    "regions_total": len(outcomes),
+                    "translated": sum(1 for o in outcomes.values() if o.get("outcome") != "empty"),
+                    "problems": sum(1 for o in outcomes.values() if o.get("outcome") in PROBLEMS),
+                }
+                entry.update(summary)
             holder = self.claimed_by(pid)
             if holder:
                 entry["claimed_by"] = holder
-            if page.get("report"):
-                entry["report_by"] = page["report"]["worker"]
+            if page.get("reports"):
+                entry["reports"] = [r["worker"] for r in page["reports"]]
             pages.append(entry)
         job = self.job.info() if self.job is not None else None
         return {
@@ -695,6 +850,152 @@ class StudioProject:
             "pages": pages,
             "notes_chars": len(self.notes()),
         }
+
+    # ------------------------------------------------------------------ the chapter as text
+    def script(self, pages: list[str] | None = None, speaker: str | None = None) -> str:
+        """The chapter as a script: per page, each region in reading order on one line:
+        number, id, [speaker], source → translation, and what's wrong with it."""
+        lines = []
+        for page_id in pages or self.pages:
+            if self.page(page_id).get("draft") != "drafted":
+                if speaker is None:
+                    lines.append(f"## {page_id} (not drafted)")
+                continue
+            info = self.page_info(page_id)
+            rows = [
+                r
+                for r in info["regions"]
+                if speaker is None or (r.get("speaker") or "").lower() == speaker.lower()
+            ]
+            if speaker is not None and not rows:
+                continue
+            lines.append(
+                f"## {page_id} ({info['state']}, {info['translated']}/{info['regions_total']} translated)"
+            )
+            for r in rows:
+                who = f"[{r['speaker']}] " if r.get("speaker") else ""
+                kind = " (art)" if r["kind"] == "outside" else ""
+                link = f" (+{','.join(r['linked_with'])})" if r.get("linked_with") else ""
+                if r.get("dismissed"):
+                    lines.append(f"{r['order']}. {r['id']}{kind}: dismissed ({r['dismissed']})")
+                    continue
+                tail = f"   !! {r['problem']}" if r.get("problem") else ""
+                lines.append(
+                    f"{r['order']}. {r['id']}{kind}{link} {who}{r['ocr']} → {r['translation'] or '—'}{tail}"
+                )
+        return "\n".join(lines)
+
+    def context(self, page_id: str) -> str:
+        """The pages either side of this one, as script (their latest translations, or the source)."""
+        i = self.pages.index(page_id) if page_id in self.pages else -1
+        if i < 0:
+            self.page(page_id)  # raises
+        around = [
+            p
+            for p in (
+                self.pages[i - 1] if i > 0 else None,
+                self.pages[i + 1] if i + 1 < len(self.pages) else None,
+            )
+            if p
+        ]
+        return self.script(around) if around else "(no other pages)"
+
+    # ------------------------------------------------------------------ glossary
+    def glossary(self) -> list[dict]:
+        return list(self.meta.get("glossary") or [])
+
+    def set_glossary(self, entries: list[dict], replace: bool) -> list[dict]:
+        """Entries {source, english, kind?, note?} by source term; english None removes one."""
+        current = {} if replace else {e["source"]: e for e in self.glossary()}
+        for e in entries:
+            if not isinstance(e, dict) or not e.get("source"):
+                raise StudioError("each entry needs 'source' (the Japanese) and 'english'")
+            if e.get("english") in (None, ""):
+                current.pop(e["source"], None)
+                continue
+            extra = set(e) - {"source", "english", "kind", "note"}
+            if extra:
+                raise StudioError(f"unknown entry fields {sorted(extra)}")
+            current[e["source"]] = {k: e[k] for k in ("source", "english", "kind", "note") if e.get(k)}
+        with self.lock:
+            self.meta["glossary"] = list(current.values())
+            self._save_meta()
+        return self.glossary()
+
+    def check_consistency(self) -> dict:
+        """What a consistency pass looks for: glossary terms whose chosen English is missing where
+        the source has them, variants of a chosen English (Tortiyanos vs Tortiyano), honorifics
+        left in, lines without a speaker, and the open problems."""
+        import re
+
+        regions = []
+        for page_id in self.pages:
+            if self.page(page_id).get("draft") == "drafted":
+                regions += [
+                    (page_id, r) for r in self.page_info(page_id)["regions"] if not r.get("dismissed")
+                ]
+        missing, variants, honorifics, problems = [], defaultdict(set), [], []
+        no_speaker = [f"{p} {r['id']}" for p, r in regions if r["kind"] == "bubble" and not r.get("speaker")]
+        for e in self.glossary():
+            english = e["english"]
+            word = re.compile(rf"\b{re.escape(english)}\b", re.I)
+            variant = re.compile(rf"\b{re.escape(english)}(\w+)\b", re.I)
+            for p, r in regions:
+                if e["source"] in (r["ocr"] or "") and r["translation"] and not word.search(r["translation"]):
+                    missing.append(
+                        f"{p} {r['id']}: source has {e['source']} but not '{english}': {r['translation']}"
+                    )
+                for m in variant.finditer(r["translation"] or ""):
+                    variants[english].add(f"{m.group(0)} ({p} {r['id']})")
+        hon = re.compile(r"\b\w+-(san|kun|chan|sama|senpai|sensei|dono|tan)\b", re.I)
+        for p, r in regions:
+            for m in hon.finditer(r["translation"] or ""):
+                honorifics.append(f"{p} {r['id']}: {m.group(0)}")
+            if r.get("problem"):
+                problems.append(f"{p} {r['id']}: {r['problem']}")
+        speakers: dict[str, int] = defaultdict(int)
+        for _, r in regions:
+            if r.get("speaker"):
+                speakers[r["speaker"]] += 1
+        return {
+            "glossary_missing": missing,
+            "variants": {k: sorted(v) for k, v in variants.items()},
+            "honorifics": honorifics,
+            "speakers": dict(sorted(speakers.items(), key=lambda kv: -kv[1])),
+            "bubbles_without_speaker": no_speaker,
+            "problems": problems,
+        }
+
+    # ------------------------------------------------------------------ finishing
+    def export(self, cbz: bool) -> dict:
+        """The script (script.md beside the pages) and optionally a .cbz of the rendered pages,
+        and what is still unresolved."""
+        import zipfile
+
+        script = self.dir / "script.md"
+        script.write_text(f"# {self.folder.name}\n\n{self.script()}\n")
+        out: dict[str, Any] = {"pages": str(self.out), "script": str(script)}
+        if cbz:
+            archive = self.dir / f"{self.folder.name}.cbz"
+            with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED) as z:
+                for n, page_id in enumerate(self.pages, 1):
+                    path = self.output_path(page_id)
+                    if path.exists():
+                        z.write(path, f"{n:04d}_{Path(page_id).stem}.png")
+            out["cbz"] = str(archive)
+        unresolved = []
+        for entry in self.status()["pages"]:
+            if entry["draft"] != "drafted":
+                unresolved.append(f"{entry['page']}: not drafted ({entry['draft']})")
+                continue
+            if entry.get("problems"):
+                unresolved.append(f"{entry['page']}: {entry['problems']} problems")
+            if entry.get("state") != "approved":
+                unresolved.append(f"{entry['page']}: {entry.get('state')}, not approved")
+            if entry.get("claimed_by"):
+                unresolved.append(f"{entry['page']}: still claimed by {entry['claimed_by']}")
+        out["unresolved"] = unresolved
+        return out
 
     def image(self, page_id: str, layer: str) -> Image.Image:
         """original: the source; cleaned: text removed, nothing drawn; rendered: the latest render."""
@@ -720,11 +1021,29 @@ class StudioProject:
         return tuple(info["size"]), info["regions"]  # type: ignore[return-value]
 
 
+def _set_field(item: dict, key: str, value) -> None:
+    if value in (None, ""):
+        item.pop(key, None)
+    else:
+        item[key] = str(value).strip()
+
+
 def _set_style(item: dict, style: dict | None) -> None:
     if style:
         item["style"] = style
     else:
         item.pop("style", None)
+
+
+def _source_size(glyphs: dict, bbox) -> float | None:
+    """The source lettering's size in this region relative to the page's typical size."""
+    from mangatl.typeset.page import _lookup_bubble_glyph
+
+    page, own = glyphs.get("page"), glyphs.get("own")
+    if not page or not own:
+        return None
+    est = _lookup_bubble_glyph(own, bbox)
+    return round(est[0] / page, 2) if est and est[1] >= 3 else None
 
 
 def _hint(region: dict) -> str | None:
@@ -770,7 +1089,7 @@ def _side_by_side(images: list[Image.Image], labels: list[str], max_side: int = 
         out.paste(im, (x, label_h))
         draw.text((x + 4, 2), label, fill=(255, 255, 255), font=_font(16))
         x += im.width + gap
-    scale = min(1.0, max_side / max(out.size)) if max(out.size) > max_side else min(2.0, 320 / max(out.size))
+    scale = min(max_side / max(out.size), 3.0)  # small regions are enlarged, up to 3x
     if scale != 1:
         out = out.resize((round(out.width * scale), round(out.height * scale)), Image.Resampling.LANCZOS)
     return out
@@ -861,20 +1180,30 @@ def encode(image: Image.Image, fmt: str = "JPEG", quality: int = 88) -> bytes:
 
 
 def region_view(
-    project: StudioProject, page_id: str, region_id: str, max_side: int = 640
+    project: StudioProject,
+    page_id: str,
+    region_id: str,
+    layers: tuple[str, ...] = ("original", "rendered"),
+    zoom: float = 1.0,
+    boxes: bool = False,
 ) -> tuple[Image.Image, dict]:
-    """The region before (source) and after (rendered), side by side, with some context around it."""
+    """The region in each layer side by side, with some context around it; `boxes` draws the
+    region's box (blue) and where its text landed (green)."""
     info = project.page_info(page_id)
     region = next((r for r in info["regions"] if r["id"] == region_id), None)
     if region is None:
         raise StudioError(
             f"no region {region_id} on {page_id}; regions: {[r['id'] for r in info['regions']]}"
         )
+    bad = [layer for layer in layers if layer not in ("original", "cleaned", "rendered")]
+    if bad or not layers:
+        raise StudioError("layers are 'original', 'cleaned', 'rendered'")
     work_w, work_h = info["size"]
     x1, y1, x2, y2 = region["bbox"]
     pad = max(16, round(0.15 * max(x2 - x1, y2 - y1)))
+    text_box = (project.page(page_id).get("outcomes") or {}).get(region_id, {}).get("text_box")
     crops = []
-    for layer in ("original", "rendered"):
+    for layer in layers:
         im = project.image(page_id, layer)
         sx, sy = im.width / work_w, im.height / work_h
         box = (
@@ -883,13 +1212,20 @@ def region_view(
             min(im.width, round((x2 + pad) * sx)),
             min(im.height, round((y2 + pad) * sy)),
         )
-        crops.append(im.crop(box))
-    h = max(c.height for c in crops)
-    gap = 12
-    side = Image.new("RGB", (sum(c.width for c in crops) + gap, h), (128, 128, 128))
-    side.paste(crops[0], (0, 0))
-    side.paste(crops[1], (crops[0].width + gap, 0))
-    scale = min(max_side / side.width, 2.0 if max(side.size) < 320 else 1.0)
-    if scale != 1:
-        side = side.resize((round(side.width * scale), round(side.height * scale)), Image.Resampling.LANCZOS)
-    return side, region
+        crop = im.crop(box)
+        if boxes:
+            d = ImageDraw.Draw(crop)
+
+            def rect(b, color):
+                d.rectangle(
+                    (b[0] * sx - box[0], b[1] * sy - box[1], b[2] * sx - box[0], b[3] * sy - box[1]),
+                    outline=color,
+                    width=1,
+                )
+
+            rect(region["bbox"], (60, 120, 255))
+            if text_box and layer == "rendered":
+                rect(text_box, (40, 180, 70))
+        crops.append(crop)
+    image = _side_by_side(crops, list(layers), max_side=round(640 * max(0.5, min(zoom, 3.0))))
+    return image, region

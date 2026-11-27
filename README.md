@@ -70,8 +70,15 @@ Lettering: each project has a style sheet of presets (by default dialogue in CC 
 plus shout, thought, whisper and narration) and every region can carry its own style on top (preset,
 font, size or scale, capitals, bold / italic, alignment, line spacing, rotation, colour, outline,
 text box or offset, padding), saved in the page document. Each render reports how the text sits in
-its bubble (size, fill, margin, lines), and `preview_region` compares variants without saving. Not
-yet: fixing OCR or detection, curved text, editing in the UI.
+its bubble (size, fill, margin, lines), and `preview_region` compares variants without saving.
+
+Bookkeeping: regions carry a speaker, a corrected source, a dismissal (false detections are drawn as
+the original art) and links between the bubbles of one sentence; the reading order can be fixed.
+The coordinator reads the chapter as a script (`get_script`, also per speaker), keeps a glossary
+that `check_consistency` checks against (missing terms, name variants, honorifics, lines without a
+speaker), reviews pages (approve / request changes, notes the next worker reads), sees each region's
+history, and finishes with `export_project` (script, optional CBZ, what is unresolved). Not yet:
+adding or splitting regions, curved text, editing in the UI.
 
 ## Command line
 

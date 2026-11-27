@@ -729,6 +729,9 @@ def _paint_osb_fills(
     for i, (bubble, text) in enumerate(zip(sorted_bubble_data, translated_texts, strict=True)):
         if not bubble.get("is_outside_text", False):
             continue
+        if bubble.get("dismissed"):  # its art goes back as it was: nothing to fill
+            bubble.pop("pending_fill", None)
+            continue
         action = _render_action(bubble, text, provider_tag)
         attempts = []
         if action == "render":
@@ -828,6 +831,11 @@ def _render_page_texts(
         bbox = bubble["bbox"]
         is_outside_text = bubble.get("is_outside_text", False)
         entry_type = "outside text" if is_outside_text else "bubble"
+        if bubble.get("dismissed"):  # not text after all: the art as it was
+            if "original_crop_pil" in bubble:
+                image = _paste_original_crop(image, bubble)
+            bubble["mt_outcome"] = "dismissed"
+            continue
         action = _render_action(bubble, text, provider_tag)
 
         if action == "ocr_failed":
