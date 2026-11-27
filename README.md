@@ -1,15 +1,14 @@
 # mangatl studio: agent-based manga translation
 
-An AI agent translates and letters manga pages, working the way a scanlation team does. A local
-server, the studio, does the image work: it finds the text, erases it from the art, reads the
-Japanese and typesets whatever English it is given. It exposes all of this as an
-[MCP](https://modelcontextprotocol.io) server. The agent (Claude Code or any MCP client) is the
-translator, letterer and editor. It reads the chapter, keeps the glossary and character notes,
-hands pages to sub-agents, writes the English, picks the lettering per bubble, looks at the
-rendered page and sends weak pages back for another round.
+An Agent-based translation and lettering pipeline for manga pages, emulating the way scanlation teams work.
+A local server runs the studio work where the standard pipeline tools live: text detection, cleaning, reading and typesetting.
+These tools are exposed as an MCP server the agent can connect to. The agent (Claude Code, Codex, any MCP client) 
+works as the translator, letterer and editor. 
+It reads the chapter(s), keeps a glossary of terms and character notes,
+hands pages to sub-agents, writes the target language, figures out the lettering per speech bubble, 
+reviews the rendered page and can send weak pages back for more rounds.
 
-The research question: how far does an agent get when it can see its own output and has a
-letterer's controls, compared with a fixed translate-then-typeset pipeline?
+This is an early MVP version, and as such guzzles tokens like crazy right now. Improvements pending on that regard.
 
 ```bash
 uv run python studio.py                                                  # UI: http://127.0.0.1:7870
