@@ -348,9 +348,12 @@ def _render_outside_text(
     verbose = config.verbose
     bbox = bubble["bbox"]
     log_message(f"Rendering outside text {bbox}: '{text[:30]}...'", verbose=verbose)
+    bubble["mt_max_font"] = sizes.osb_max_font
     for attempt in attempts:
         try:
-            return _render_osb_attempt(image, bubble, text, bubble_id, config, sizes, attempt)
+            rendered = _render_osb_attempt(image, bubble, text, bubble_id, config, sizes, attempt)
+            bubble["mt_outcome"], bubble["mt_font_size"] = "fit", rendered.info.get("font_size")
+            return rendered
         except Exception as e:
             log_message(
                 f"OSB render failed at {attempt[0]:.1f} deg (vertical_stack={attempt[1]}): {e}",
@@ -364,7 +367,9 @@ def _render_outside_text(
             verbose=verbose,
             always_print=True,
         )
+        bubble["mt_outcome"] = "kept_original_no_fit"
         return _paste_original_crop(image, bubble)
+    bubble["mt_outcome"] = "failed"
     return None
 
 
@@ -434,11 +439,13 @@ def _render_bubble(
     their text gets an outline like text on the art.
     """
     sizes = _emphasis_sizes(bubble, bubble_id, sizes, page_glyphs, config)
+    bubble["mt_max_font"] = sizes.main_max_font
     outlined = bool(render_info and render_info.get("is_colored"))
     rendered = _render_bubble_once(
         image, bubble, text, bubble_id, render_info, page_cv, config, sizes, processing_scale, outlined
     )
     if rendered is not None:
+        bubble["mt_outcome"] = "fit"
         return rendered
     smaller = sizes._replace(main_min_font=max(4, sizes.main_min_font // 2))
     rendered = _render_bubble_once(
@@ -446,13 +453,16 @@ def _render_bubble(
     )
     if rendered is not None:
         log_message(f"Bubble {bubble_id}: fitted below the minimum font size", always_print=True)
+        bubble["mt_outcome"] = "below_min_font"
         return rendered
     if "original_crop_pil" in bubble:
         log_message(
             f"Bubble {bubble_id}: translation does not fit, kept the original lettering ('{text[:30]}')",
             always_print=True,
         )
+        bubble["mt_outcome"] = "kept_original_no_fit"
         return _paste_original_crop(image, bubble)
+    bubble["mt_outcome"] = "failed"
     return None
 
 
@@ -496,7 +506,7 @@ def _render_bubble_once(
         render_config = dataclasses.replace(render_config, outline_ratio=sizes.osb_outline_ratio)
 
     def render(mask, color, raise_on_safe_error: bool) -> Image.Image:
-        return render_text_skia(
+        out = render_text_skia(
             pil_image=image,
             text=text,
             bbox=bbox,
@@ -511,6 +521,8 @@ def _render_bubble_once(
             text_color_rgb=text_color_rgb,
             raise_on_safe_error=raise_on_safe_error,
         )
+        bubble["mt_font_size"] = out.info.get("font_size")  # set by this call (a pasted crop's info isn't)
+        return out
 
     try:
         return render(cleaned_mask, bubble_color_bgr, raise_on_safe_error=True)
@@ -756,17 +768,20 @@ def _render_page_texts(
                     always_print=True,
                 )
                 image = _paste_original_crop(image, bubble)
+                bubble["mt_outcome"] = "kept_original"
             else:
                 log_message(
                     f"Skipping {entry_type} {bbox} - OCR failed and no original crop available",
                     verbose=verbose,
                 )
+                bubble["mt_outcome"] = "empty"
                 if not bubble.get("mt_skip"):
                     empty_bubbles.append(bbox)
             continue
 
         if action == "invalid":
             log_message(f"Skipping {entry_type} {bbox} - invalid translation", verbose=verbose)
+            bubble["mt_outcome"] = "empty"
             if not bubble.get("mt_skip"):  # erased on purpose (other-language block)
                 empty_bubbles.append(bbox)
             continue
@@ -778,6 +793,7 @@ def _render_page_texts(
                 always_print=True,
             )
             image = _paste_original_crop(image, bubble)
+            bubble["mt_outcome"] = "kept_original"
             continue
 
         if is_outside_text:

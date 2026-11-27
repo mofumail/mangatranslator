@@ -693,10 +693,12 @@ def typeset(w: WorkPage, strip_glyph_size: list[float] | None = None) -> WorkPag
     return w
 
 
-def render(w: WorkPage, empty_bubbles: list | None = None) -> Image.Image:
+def render(w: WorkPage, empty_bubbles: list | None = None, outcomes: dict | None = None) -> Image.Image:
     """The translations drawn on the cleaned page, with the outside-text fills. The page and
     its regions are left as they are (rendering works on copies), so a page renders again the
-    same way. `empty_bubbles` receives the boxes of bubbles left without text."""
+    same way. `empty_bubbles` receives the boxes of bubbles left without text; `outcomes`, per
+    region id, how its text came out: {"outcome": "fit" | "below_min_font" | "kept_original_no_fit"
+    | "kept_original" | "empty" | "failed", "font_size", "max_font"}."""
     assert w.canvas is not None and w.page_cv is not None
     copies = {id(item): dict(item) for item in [*w.ordered, *w.outside]}
     image = render_translations(
@@ -712,6 +714,14 @@ def render(w: WorkPage, empty_bubbles: list | None = None) -> Image.Image:
         w.cancel,
         w.glyphs,
     )
+    if outcomes is not None:
+        for item in w.ordered:
+            done = copies[id(item)]
+            outcomes[item["region_id"]] = {
+                "outcome": done.get("mt_outcome", "empty"),
+                "font_size": done.get("mt_font_size"),
+                "max_font": done.get("mt_max_font"),
+            }
     return paint_pending_osb_fills(image, [copies[id(item)] for item in w.outside])
 
 

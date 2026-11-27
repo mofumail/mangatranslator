@@ -28,6 +28,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "onnxruntime>=1.31.1",
+    "mcp>=2.3.0",
 ]
 
 [tool.uv]
@@ -67,6 +68,8 @@ include = [
     "mangatl/common/eval_hooks.py", "mangatl/ocr/line_ocr.py", "mangatl/typeset/narration.py",
     "mangatl/typeset/sfx_labels.py", "mangatl/typeset/symbols.py", "mangatl/translate/vision_pass.py",
     "mangatl/translate/page.py", "mangatl/project", "mangatl/engine",
+    "mangatl/studio",
+    "studio.py",
     "mangatl/clean/page_glyph_map.py", "mangatl/ocr/readers.py",
     "mangatl/pipeline/stages.py", "mangatl/pipeline/stored.py", "eval/harness.py", "eval/rebuild_check.py", "tests",
 ]

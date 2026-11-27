@@ -1,0 +1,617 @@
+"""The studio's state: one engine, the open projects, and per project its pages, claims, notes,
+reports and activity. The MCP tools (mangatl.studio.mcp) and the inspector UI
+(mangatl.studio.web) are two views of this.
+
+A project is a folder of page images. Its work lives in the studio's workspace, one directory
+per project:
+
+    project.mtl     the page documents (mangatl.project.store), with their history
+    out/            the rendered pages (<name>_translated.png)
+    studio.json     per page: draft status, last render's outcomes, the worker's report
+    notes.md        the chapter notes the agents share (characters, terms, style decisions)
+    activity.jsonl  every tool call: who, what, on which page, how it went
+
+Drafting runs the pipeline up to the translation (detect, clean, OCR, font sizes) and leaves
+the text to the agent; set_translations draws it and measures how each region came out.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+import re
+import threading
+import time
+from collections import OrderedDict, defaultdict
+from pathlib import Path
+from typing import Any
+
+from PIL import Image, ImageDraw, ImageFont
+
+from mangatl.common.log import log_message
+from mangatl.engine import Engine, Priority
+from mangatl.engine.models import Model
+from mangatl.settings import Settings
+
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+WORK_CACHE = 8  # stored pages kept loaded (a page's working data: masks, crops, canvas)
+CLAIM_TTL_S = 15 * 60  # a claim nobody renews lapses
+ACTIVITY_KEPT = 5000  # in memory, for the UI (all of it stays in activity.jsonl)
+SMALL_TEXT = 0.6  # font size under this share of the region's size cap reads as crowded
+
+# How a region's text came out (stages.render outcomes); the ones that need work
+PROBLEMS = {
+    "below_min_font": "text only fits below the minimum font size (too long for the bubble)",
+    "kept_original_no_fit": "text does not fit at all; the Japanese lettering was put back",
+    "failed": "text could not be placed",
+}
+
+
+class StudioError(ValueError):
+    """A request the studio refuses, with a message for the agent."""
+
+
+def _slug(folder: Path) -> str:
+    name = re.sub(r"[^A-Za-z0-9_-]+", "-", folder.name).strip("-") or "project"
+    return f"{name}-{hashlib.sha1(str(folder).encode()).hexdigest()[:6]}"
+
+
+def _write_json(path: Path, data: Any) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1))
+    tmp.replace(path)
+
+
+class Studio:
+    def __init__(self, engine: Engine, workspace: Path, overrides: list[str] | None = None):
+        self.engine = engine
+        self.workspace = Path(workspace).resolve()
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        self.overrides = overrides or []
+        self.lock = threading.Lock()
+        self.projects: dict[str, StudioProject] = {}
+        for meta in sorted(self.workspace.glob("*/studio.json")):
+            try:
+                folder = Path(json.loads(meta.read_text())["folder"])
+                self.projects[meta.parent.name] = StudioProject(self, meta.parent, folder)
+            except Exception as e:  # a broken project shouldn't keep the studio from starting
+                log_message(f"Studio: skipped {meta.parent.name}: {e!r}", always_print=True)
+
+    def settings(self, project_dir: Path) -> Settings:
+        """The settings drafts are made with: translate.py's defaults, without the parts that
+        only serve the LLM translation, and the pipeline's stages in plain order."""
+        from mangatl import presets
+
+        outside = self.engine.path(Model.OUTSIDE_TEXT).exists()
+        settings = presets.build(batch=True, output=project_dir, outside_text=outside, log=lambda *_: None)
+        settings = settings.updated(
+            **{
+                "output.project": project_dir / "project.mtl",
+                "runtime.overlap_llm_with_inpaint": False,
+                "runtime.verbose": False,
+                "preprocessing.split_long_strips": False,
+                "translation.full_page_context": False,
+            }
+        )
+        return presets.apply_overrides(settings, self.overrides) if self.overrides else settings
+
+    def open(self, folder: str | Path) -> StudioProject:
+        path = Path(folder).expanduser().resolve()
+        if not path.is_dir():
+            raise StudioError(f"not a folder: {path}")
+        with self.lock:
+            for p in self.projects.values():
+                if p.folder == path:
+                    p.refresh_pages()
+                    return p
+            project = StudioProject(self, self.workspace / _slug(path), path)
+            self.projects[project.id] = project
+            return project
+
+    def get(self, project_id: str | None) -> StudioProject:
+        if project_id is None:
+            if len(self.projects) == 1:
+                return next(iter(self.projects.values()))
+            raise StudioError(f"name the project; open ones: {sorted(self.projects)}")
+        if project_id not in self.projects:
+            raise StudioError(
+                f"no open project {project_id!r}; open ones: {sorted(self.projects)} (open_project first)"
+            )
+        return self.projects[project_id]
+
+
+class StudioProject:
+    def __init__(self, studio: Studio, directory: Path, folder: Path):
+        from mangatl.project import capture
+
+        self.studio = studio
+        self.engine = studio.engine
+        self.dir = directory
+        self.id = directory.name
+        self.folder = folder
+        self.out = directory / "out"
+        self.out.mkdir(parents=True, exist_ok=True)
+        self.lock = threading.RLock()  # meta, claims, activity, notes
+        self._page_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
+        self._work: OrderedDict[str, Any] = OrderedDict()  # page id -> WorkPage
+        self._work_lock = threading.Lock()  # the cache (a page's own use is under its page lock)
+        self.claims: dict[str, tuple[str, float]] = {}
+        self.job = None
+        meta_path = directory / "studio.json"
+        self.meta: dict[str, Any] = (
+            json.loads(meta_path.read_text())
+            if meta_path.exists()
+            else {"folder": str(folder), "created": time.time(), "pages": {}}
+        )
+        for page in self.meta["pages"].values():  # a draft the last studio didn't finish
+            if page.get("draft") in ("queued", "drafting"):
+                page["draft"] = "pending"
+        self.activity: list[dict] = []
+        log = directory / "activity.jsonl"
+        if log.exists():
+            self.activity = [
+                json.loads(line) for line in log.read_text().splitlines()[-ACTIVITY_KEPT:] if line
+            ]
+        self.config = studio.settings(directory)
+        self.store = capture.open_project(directory / "project.mtl")
+        self.refresh_pages()
+
+    # ------------------------------------------------------------------ pages
+    def refresh_pages(self) -> None:
+        from mangatl.pipeline.batch import natural_path_sort_key
+
+        files = sorted(
+            (p for p in self.folder.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS),
+            key=natural_path_sort_key,
+        )
+        with self.lock:
+            self.pages = [p.relative_to(self.folder).as_posix() for p in files]
+            for pid in self.pages:
+                self.meta["pages"].setdefault(pid, {"draft": "pending"})
+            self._save_meta()
+
+    def page(self, page_id: str) -> dict:
+        if page_id not in self.meta["pages"] or page_id not in self.pages:
+            raise StudioError(f"no page {page_id!r} in {self.id}; pages: {self.pages}")
+        return self.meta["pages"][page_id]
+
+    def _drafted(self, page_id: str) -> dict:
+        page = self.page(page_id)
+        if page.get("draft") != "drafted":
+            raise StudioError(f"page {page_id} isn't drafted yet ({page.get('draft')}); draft it first")
+        return page
+
+    def output_path(self, page_id: str) -> Path:
+        p = Path(page_id)
+        return self.out / p.parent / f"{p.stem}_translated.png"
+
+    def _save_meta(self) -> None:
+        with self.lock:
+            _write_json(self.dir / "studio.json", self.meta)
+
+    # ------------------------------------------------------------------ activity, claims, notes
+    def log(self, worker: str, tool: str, page: str | None, ok: bool, summary: str, ms: float) -> None:
+        with self.lock:
+            entry = {
+                "seq": (self.activity[-1]["seq"] + 1) if self.activity else 1,
+                "t": time.time(),
+                "worker": worker or "?",
+                "tool": tool,
+                "page": page,
+                "ok": ok,
+                "summary": summary[:500],
+                "ms": round(ms),
+            }
+            self.activity.append(entry)
+            del self.activity[:-ACTIVITY_KEPT]
+            with open(self.dir / "activity.jsonl", "a") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def claimed_by(self, page_id: str) -> str | None:
+        claim = self.claims.get(page_id)
+        if claim and time.time() - claim[1] < CLAIM_TTL_S:
+            return claim[0]
+        return None
+
+    def claim(self, page_id: str, worker: str, take_over: bool = False) -> str | None:
+        """Claim a page for `worker`; returns the holder it took over from (take_over), if any."""
+        if not worker:
+            raise StudioError("say who you are: pass worker (e.g. 'page-3')")
+        self.page(page_id)
+        with self.lock:
+            holder = self.claimed_by(page_id)
+            if holder and holder != worker and not take_over:
+                left = CLAIM_TTL_S - (time.time() - self.claims[page_id][1])
+                raise StudioError(
+                    f"page {page_id} is claimed by {holder} (lapses in {left:.0f} s unless renewed; "
+                    "claim_page with take_over=true once that worker has finished)"
+                )
+            self.claims[page_id] = (worker, time.time())
+            return holder if holder != worker else None
+
+    def release(self, page_id: str, worker: str, report: str) -> None:
+        self.claim(page_id, worker)  # only the holder releases
+        with self.lock:
+            del self.claims[page_id]
+            if report:
+                self.page(page_id)["report"] = {"worker": worker, "text": report, "t": time.time()}
+                self._save_meta()
+
+    def notes(self) -> str:
+        path = self.dir / "notes.md"
+        return path.read_text() if path.exists() else ""
+
+    def update_notes(self, text: str, mode: str) -> str:
+        if mode not in ("replace", "append"):
+            raise StudioError("mode is 'replace' or 'append'")
+        with self.lock:
+            new = text if mode == "replace" else (self.notes().rstrip() + "\n\n" + text).strip()
+            (self.dir / "notes.md").write_text(new + "\n")
+            return new
+
+    # ------------------------------------------------------------------ drafting
+    def start_draft(self, pages: list[str] | None, redo: bool) -> None:
+        with self.lock:
+            if self.job is not None and self.job.status in ("queued", "running"):
+                return
+            todo = [p for p in (pages or self.pages) if redo or self.page(p).get("draft") != "drafted"]
+            for p in todo:
+                self.meta["pages"][p].update(draft="queued", error=None)
+            self._save_meta()
+            if todo:
+                self.job = self.engine.jobs.submit(
+                    lambda cancel: self._draft_all(todo, cancel), Priority.BATCH, label=f"draft {self.id}"
+                )
+
+    def _draft_all(self, pages: list[str], cancel) -> None:
+        for page_id in pages:
+            if cancel.is_cancelled():
+                with self.lock:
+                    for p in pages:
+                        if self.meta["pages"][p]["draft"] == "queued":
+                            self.meta["pages"][p]["draft"] = "pending"
+                    self._save_meta()
+                return
+            with self.lock:
+                self.meta["pages"][page_id]["draft"] = "drafting"
+                self._save_meta()
+            t0 = time.time()
+            try:
+                with self._page_locks[page_id]:
+                    regions = self._draft(page_id, cancel)
+                self.log("studio", "draft", page_id, True, f"{regions} regions", (time.time() - t0) * 1000)
+            except Exception as e:
+                with self.lock:
+                    self.meta["pages"][page_id].update(draft="error", error=f"{type(e).__name__}: {e}")
+                    self._save_meta()
+                self.log(
+                    "studio", "draft", page_id, False, f"{type(e).__name__}: {e}", (time.time() - t0) * 1000
+                )
+
+    def _draft(self, page_id: str, cancel) -> int:
+        """Detect, clean, read and size one page; record it; render it (no text yet)."""
+        from mangatl.common.image_utils import convert_image_to_target_mode
+        from mangatl.pipeline import page as page_pipeline
+        from mangatl.pipeline import stages
+        from mangatl.project import capture
+
+        config = self.config.with_models(self.engine.models(Priority.BATCH))
+        path = self.folder / page_id
+        out = self.output_path(page_id)
+        with Image.open(path) as opened:
+            image_format = opened.format
+            mime_type, cv2_ext = stages.get_image_encoding_params(image_format)
+            target_mode = page_pipeline._resolve_target_mode(config, path, out)
+            image = convert_image_to_target_mode(opened, target_mode, False)
+        image, _ = page_pipeline._apply_pre_upscale_if_needed(image, config)
+        w = stages.WorkPage(
+            config=config,
+            image=image,
+            processing_scale=page_pipeline._resolve_processing_scale(image, config),
+            target_mode=target_mode,
+            mime_type=mime_type,
+            cv2_ext=cv2_ext,
+            image_format=image_format,
+            source_path=path,
+            context_image=image.copy(),
+            cancel=cancel,
+        )
+        stages.detect(w)
+        if w.bubbles or w.outside:
+            stages.clean(w)
+            stages.prepare(w, refine_masks=True)
+            if w.ordered:
+                stages.ocr(w)
+                w.translations = [""] * len(w.ordered)
+                stages.typeset(w)
+        capture.capture(self.store, page_id, work=w, source_path=path, output_path=out)
+        outcomes: dict = {}
+        rendered = stages.render(w, outcomes=outcomes) if w.typeset_done else stages.result(w)
+        self._write(out, rendered, w.target_mode)
+        with self._work_lock:
+            self._work.pop(page_id, None)
+        with self.lock:
+            self.meta["pages"][page_id].update(
+                draft="drafted",
+                error=None,
+                outcomes=outcomes,
+                version=self.page(page_id).get("version", 0) + 1,
+            )
+            self._save_meta()
+        return len(w.ordered)
+
+    def _write(self, out: Path, image: Image.Image, mode: str) -> None:
+        from mangatl.common.image_utils import save_image_with_compression
+
+        out.parent.mkdir(parents=True, exist_ok=True)
+        save_image_with_compression(
+            image if image.mode == mode else image.convert(mode),
+            out,
+            jpeg_quality=self.config.output.jpeg_quality,
+            png_compression=self.config.output.png_compression,
+            verbose=False,
+        )
+
+    def wait_draft(self, seconds: float) -> None:
+        job = self.job
+        if job is None or seconds <= 0:
+            return
+        try:
+            job.result(timeout=seconds)
+        except Exception:  # timeout, or a failed job: the pages say which
+            pass
+
+    # ------------------------------------------------------------------ editing
+    def work(self, page_id: str):
+        """The stored page, loaded for the stages (cached)."""
+        from mangatl.pipeline import stored
+
+        with self._work_lock:
+            w = self._work.get(page_id)
+            if w is not None:
+                self._work.move_to_end(page_id)
+                return w
+        w = stored.load(self.store, page_id, self.engine.models(Priority.INTERACTIVE))
+        w.config = w.config.updated(**{"runtime.verbose": False})
+        with self._work_lock:
+            self._work[page_id] = w
+            while len(self._work) > WORK_CACHE:
+                self._work.popitem(last=False)
+        return w
+
+    def set_translations(self, page_id: str, translations: dict[str, str], worker: str) -> dict:
+        from mangatl.pipeline import stages, stored
+
+        self._drafted(page_id)
+        self.claim(page_id, worker)
+        with self._page_locks[page_id]:
+            w = self.work(page_id)
+            ids = [item["region_id"] for item in w.ordered]
+            unknown = [r for r in translations if r not in ids]
+            if unknown:
+                raise StudioError(f"no translatable region {unknown} on {page_id}; its regions: {ids}")
+            if len(w.translations) != len(ids):
+                w.translations = [""] * len(ids)
+            for rid, text in translations.items():
+                w.translations[ids.index(rid)] = text.strip()
+            if not w.typeset_done:
+                stages.typeset(w)
+            outcomes: dict = {}
+            image = stages.render(w, outcomes=outcomes)
+            stored.save(
+                self.store,
+                page_id,
+                w,
+                author="agent",
+                label=f"translations by {worker}",
+                ran={"translate", "typeset"},
+                region_ids=list(translations),
+            )
+            self._write(self.output_path(page_id), image, w.target_mode)
+            with self.lock:
+                page = self.page(page_id)
+                page.update(outcomes=outcomes, version=page.get("version", 0) + 1, rendered=time.time())
+                self._save_meta()
+        return self.page_info(page_id, only=list(translations))
+
+    # ------------------------------------------------------------------ reading
+    def page_info(self, page_id: str, only: list[str] | None = None) -> dict:
+        """The page as an agent reads it: regions in reading order with their source text,
+        translation and how the translation came out."""
+        page = self._drafted(page_id)
+        with self._page_locks[page_id]:
+            w = self.work(page_id)
+            ordered = list(w.ordered)
+            translations = (
+                list(w.translations) if len(w.translations) == len(ordered) else [""] * len(ordered)
+            )
+            ocr = list(w.ocr_texts) if len(w.ocr_texts) == len(ordered) else [""] * len(ordered)
+            size = w.image.size
+            dialogue = getattr(w.sizes, "main_max_font", None)
+        outcomes = page.get("outcomes") or {}
+        regions, problems = [], []
+        for n, (item, text, read) in enumerate(zip(ordered, translations, ocr, strict=True), 1):
+            rid = item["region_id"]
+            o = outcomes.get(rid, {})
+            region = {
+                "id": rid,
+                "order": n,
+                "kind": "outside" if item.get("is_outside_text") else "bubble",
+                "bbox": [int(v) for v in item["bbox"]],
+                "ocr": read,
+                "translation": text,
+                "outcome": o.get("outcome", "empty"),
+                "font_size": o.get("font_size"),
+                "max_font": o.get("max_font"),
+            }
+            problem = _problem(region)
+            if problem:
+                region["problem"] = problem
+                problems.append(f"{rid}: {problem}")
+            if only is None or rid in only:
+                regions.append(region)
+        info = {
+            "project": self.id,
+            "page": page_id,
+            "size": list(size),
+            "dialogue_font_size": dialogue,
+            "claimed_by": self.claimed_by(page_id),
+            "translated": sum(1 for t in translations if t),
+            "regions_total": len(ordered),
+            "problems": problems,
+            "regions": regions,
+            "output": str(self.output_path(page_id)),
+        }
+        if only is not None:
+            info["note"] = "only the regions just changed are listed; get_page shows all"
+        return info
+
+    def status(self) -> dict:
+        pages = []
+        for pid in self.pages:
+            page = self.meta["pages"][pid]
+            outcomes = page.get("outcomes") or {}
+            entry: dict[str, Any] = {"page": pid, "draft": page.get("draft")}
+            if page.get("error"):
+                entry["error"] = page["error"]
+            if page.get("draft") == "drafted":
+                entry["regions"] = len(outcomes)
+                entry["translated"] = sum(1 for o in outcomes.values() if o.get("outcome") != "empty")
+                entry["problems"] = sum(1 for o in outcomes.values() if o.get("outcome") in PROBLEMS)
+            holder = self.claimed_by(pid)
+            if holder:
+                entry["claimed_by"] = holder
+            if page.get("report"):
+                entry["report_by"] = page["report"]["worker"]
+            pages.append(entry)
+        job = self.job.info() if self.job is not None else None
+        return {
+            "project": self.id,
+            "folder": str(self.folder),
+            "output": str(self.out),
+            "draft_job": job,
+            "pages": pages,
+            "notes_chars": len(self.notes()),
+        }
+
+    def image(self, page_id: str, layer: str) -> Image.Image:
+        """original: the source; cleaned: text removed, nothing drawn; rendered: the latest render."""
+        if layer == "original":
+            with Image.open(self.folder / page_id) as im:
+                return im.convert("RGB")
+        self._drafted(page_id)
+        if layer == "rendered" and self.output_path(page_id).exists():
+            with Image.open(self.output_path(page_id)) as im:
+                return im.convert("RGB")
+        if layer not in ("cleaned", "rendered"):
+            raise StudioError("layer is 'original', 'cleaned' or 'rendered'")
+        from mangatl.clean.outside_text import paint_pending_osb_fills
+
+        with self._page_locks[page_id]:
+            w = self.work(page_id)
+            if w.canvas is None:
+                return w.image.convert("RGB")
+            return paint_pending_osb_fills(w.canvas.copy(), [dict(i) for i in w.outside]).convert("RGB")
+
+    def regions_for_overlay(self, page_id: str) -> tuple[tuple[int, int], list[dict]]:
+        info = self.page_info(page_id)
+        return tuple(info["size"]), info["regions"]  # type: ignore[return-value]
+
+
+def _problem(region: dict) -> str | None:
+    if not region["translation"]:
+        return "not translated"
+    if region["outcome"] in PROBLEMS:
+        return PROBLEMS[region["outcome"]]
+    size, cap = region.get("font_size"), region.get("max_font")
+    if size and cap and size < SMALL_TEXT * cap:
+        return f"small text: {size:.0f}px, {size / cap:.0%} of this region's size cap ({cap:.0f}px); shorten or rebreak"
+    return None
+
+
+# --------------------------------------------------------------------------- images
+OUTCOME_COLORS = {
+    "fit": (46, 160, 67),
+    "below_min_font": (230, 140, 20),
+    "kept_original_no_fit": (220, 40, 40),
+    "failed": (220, 40, 40),
+    "kept_original": (140, 90, 200),
+    "empty": (90, 140, 230),
+}
+
+
+def _font(size: int):
+    try:
+        return ImageFont.truetype("DejaVuSans-Bold.ttf", size)
+    except OSError:
+        return ImageFont.load_default()
+
+
+def overlay(image: Image.Image, work_size: tuple[int, int], regions: list[dict]) -> Image.Image:
+    """Region boxes with their reading order and id, coloured by outcome."""
+    image = image.convert("RGB")
+    sx, sy = image.width / work_size[0], image.height / work_size[1]
+    draw = ImageDraw.Draw(image)
+    width = max(2, round(image.width / 400))
+    font = _font(max(14, round(image.width / 55)))
+    for r in regions:
+        x1, y1, x2, y2 = r["bbox"]
+        box = (x1 * sx, y1 * sy, x2 * sx, y2 * sy)
+        color = (
+            OUTCOME_COLORS.get(r["outcome"], (200, 200, 200)) if r["translation"] else OUTCOME_COLORS["empty"]
+        )
+        draw.rectangle(box, outline=color, width=width)
+        label = f"{r['order']} {r['id']}"
+        tb = draw.textbbox((box[0], box[1]), label, font=font)
+        draw.rectangle((tb[0] - 2, tb[1] - 2, tb[2] + 2, tb[3] + 2), fill=color)
+        draw.text((box[0], box[1]), label, fill=(255, 255, 255), font=font)
+    return image
+
+
+def fit(image: Image.Image, max_side: int) -> Image.Image:
+    scale = max_side / max(image.size)
+    if scale >= 1:
+        return image
+    return image.resize((round(image.width * scale), round(image.height * scale)), Image.Resampling.LANCZOS)
+
+
+def encode(image: Image.Image, fmt: str = "JPEG", quality: int = 88) -> bytes:
+    buf = io.BytesIO()
+    image.convert("RGB").save(buf, format=fmt, quality=quality)
+    return buf.getvalue()
+
+
+def region_view(
+    project: StudioProject, page_id: str, region_id: str, max_side: int = 640
+) -> tuple[Image.Image, dict]:
+    """The region before (source) and after (rendered), side by side, with some context around it."""
+    info = project.page_info(page_id)
+    region = next((r for r in info["regions"] if r["id"] == region_id), None)
+    if region is None:
+        raise StudioError(
+            f"no region {region_id} on {page_id}; regions: {[r['id'] for r in info['regions']]}"
+        )
+    work_w, work_h = info["size"]
+    x1, y1, x2, y2 = region["bbox"]
+    pad = max(16, round(0.15 * max(x2 - x1, y2 - y1)))
+    crops = []
+    for layer in ("original", "rendered"):
+        im = project.image(page_id, layer)
+        sx, sy = im.width / work_w, im.height / work_h
+        box = (
+            max(0, round((x1 - pad) * sx)),
+            max(0, round((y1 - pad) * sy)),
+            min(im.width, round((x2 + pad) * sx)),
+            min(im.height, round((y2 + pad) * sy)),
+        )
+        crops.append(im.crop(box))
+    h = max(c.height for c in crops)
+    gap = 12
+    side = Image.new("RGB", (sum(c.width for c in crops) + gap, h), (128, 128, 128))
+    side.paste(crops[0], (0, 0))
+    side.paste(crops[1], (crops[0].width + gap, 0))
+    scale = min(max_side / side.width, 2.0 if max(side.size) < 320 else 1.0)
+    if scale != 1:
+        side = side.resize((round(side.width * scale), round(side.height * scale)), Image.Resampling.LANCZOS)
+    return side, region

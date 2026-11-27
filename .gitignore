@@ -29,3 +29,4 @@ eval/om/out/
 eval/djn/out/*/llm/
 eval/runs/
 .ci/
+studio_data/

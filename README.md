@@ -46,6 +46,26 @@ uv run python webui.py        # open http://127.0.0.1:7860
   or "Open folder in reader" for any folder of images (e.g. CLI output).
 - One job runs at a time (single GPU); others queue. Bound to 127.0.0.1 only; nothing loads from the internet.
 
+## Studio: agents translate over MCP (prototype)
+
+```bash
+uv run python studio.py       # UI http://127.0.0.1:7870, MCP endpoint http://127.0.0.1:7870/mcp
+claude mcp add --transport http mangatl-studio http://127.0.0.1:7870/mcp   # in any Claude Code
+```
+
+The studio drafts each page (detects the text, removes it from the art, reads the Japanese, sizes
+the lettering) and an agent writes the English through MCP tools: it reads the regions, sets
+translations, sees how each one came out (fit, too small, does not fit) and looks at the rendered
+page. The workflow (a coordinator with chapter notes, one worker per page, review, consistency
+pass) is in `mangatl/studio/playbook.md`, which the server hands to the agent. Any MCP client works;
+in Claude Code, `/mcp__mangatl-studio__translate_folder` starts it on a folder.
+
+The UI shows the work live: pages with their progress, original / cleaned / rendered with region
+overlays coloured by outcome, each region's source and translation, worker reports, the chapter
+notes and every tool call. Projects are kept in `studio_data/<name>-<hash>/` (project file,
+rendered pages in `out/`, notes, reports, activity log). No LLM runs in the studio; the agent is
+the translator. Not yet: moving text, fonts and sizes, fixing OCR or detection, editing in the UI.
+
 ## Command line
 
 Input can be a folder of images, a volume folder with one subfolder per chapter (translated in natural
@@ -178,7 +198,7 @@ once the model is accessible/downloaded.
 
 ```bash
 uv run --group dev python -m pytest       # unit + static tests; with models and a harness run of
-                                          # om10, also the stage API and the engine (GPU)
+                                          # om10, also the stage API, the engine and the studio (GPU)
 uv run --group dev ruff check . && uv run --group dev ruff format --check .
 uv run --group dev pyright                # type check (our own modules; see [tool.pyright])
 uv run python eval/harness.py check       # regression check against the saved baseline (GPU)
@@ -194,11 +214,14 @@ the pipeline is checked with the harness (see `eval/README.md`): zero difference
 ```
 translate.py          wrapper / entry point (CLI)
 webui.py, webui/      browser UI + reader (state in webui_data/, default output in translated/)
+studio.py             the studio: MCP server + inspector UI for agent translation (state in studio_data/)
 mangatl/              the pipeline (derived from MangaTranslator at e347a09; see mangatl/NOTICE)
   settings.py         Settings: one typed object (pydantic) describing a run, by stage; written to
                       <output>/settings.json with every run (secrets excluded)
   presets.py          user-facing options (translate.py, web UI) -> Settings
   cli.py              runs one input (run(): translate.py calls it in-process for each chapter)
+  studio/             workspace.py (projects, drafts, renders with outcomes, claims, notes,
+                      activity), tools.py (the MCP tools), web.py + static/ (UI), playbook.md
   engine/             the long-lived engine: every model (models.py: local-first download, loaders),
                       lazy loading and unloading to fit free VRAM (engine.py), one GPU slot where
                       interactive calls go before batch ones (gpu.py), llama-server (llm.py), jobs

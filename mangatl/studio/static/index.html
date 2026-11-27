@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mangatl studio</title>
+<style>
+  :root {
+    --bg: #15171c; --panel: #1d2027; --panel2: #252933; --line: #323744; --text: #e4e6eb;
+    --dim: #9aa1ae; --accent: #6ea8fe; --fit: #2ea043; --small: #e68c14; --bad: #dc2828;
+    --kept: #8c5ac8; --empty: #5a8ce6;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; gap: 12px; align-items: center; padding: 8px 14px; background: var(--panel);
+    border-bottom: 1px solid var(--line); height: 48px; }
+  header h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 650; letter-spacing: .3px; }
+  select, input, button { background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font: inherit; }
+  button { cursor: pointer; }
+  button.on { background: var(--accent); color: #0b1020; border-color: var(--accent); }
+  .dim { color: var(--dim); }
+  .grow { flex: 1; }
+  #job { max-width: 38vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  main { display: grid; grid-template-columns: 230px 1fr 400px; height: calc(100% - 48px); }
+  #pages { overflow: auto; border-right: 1px solid var(--line); padding: 8px; }
+  .pg { display: flex; gap: 8px; padding: 6px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; }
+  .pg:hover { background: var(--panel2); }
+  .pg.sel { background: var(--panel2); outline: 1px solid var(--accent); }
+  .pg img { width: 56px; height: 80px; object-fit: cover; border-radius: 4px; background: #000; flex: none; }
+  .pg .name { font-weight: 600; word-break: break-all; }
+  .badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .b { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: var(--panel2); color: var(--dim);
+    border: 1px solid var(--line); white-space: nowrap; }
+  .b.fit { color: #fff; background: var(--fit); border-color: transparent; }
+  .b.small { color: #fff; background: var(--small); border-color: transparent; }
+  .b.bad { color: #fff; background: var(--bad); border-color: transparent; }
+  .b.kept { color: #fff; background: var(--kept); border-color: transparent; }
+  .b.empty { color: #fff; background: var(--empty); border-color: transparent; }
+  .b.claim { color: #0b1020; background: #f0c674; border-color: transparent; }
+  #view { display: flex; flex-direction: column; min-width: 0; }
+  #toolbar { display: flex; gap: 6px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  #stage { flex: 1; overflow: auto; display: flex; justify-content: center; align-items: flex-start; padding: 12px; }
+  #frame { position: relative; display: inline-block; }
+  #frame img { display: block; max-width: 100%; height: auto; }
+  #stage.fith #frame img { max-height: calc(100vh - 130px); width: auto; }
+  #frame svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #frame svg rect { fill: transparent; stroke-width: 3; vector-effect: non-scaling-stroke; pointer-events: all; cursor: pointer; }
+  #frame svg rect.hi { fill: rgba(110, 168, 254, .18); stroke-width: 5; }
+  #frame svg text { font: 700 18px system-ui; paint-order: stroke; stroke: #000; stroke-width: 4px; fill: #fff; }
+  aside { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  #tabs { display: flex; gap: 4px; padding: 8px; border-bottom: 1px solid var(--line); }
+  #panel { overflow: auto; flex: 1; padding: 8px 10px; }
+  .rg { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; background: var(--panel); cursor: pointer; }
+  .rg.hi { outline: 1px solid var(--accent); }
+  .rg .top { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
+  .rg .ocr { color: var(--dim); font-size: 13px; }
+  .rg .tl { white-space: pre-wrap; margin-top: 4px; }
+  .rg .prob { color: #ff9a8a; font-size: 12px; margin-top: 4px; }
+  .act { padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+  .act .w { color: #f0c674; font-weight: 600; }
+  .act .err { color: #ff9a8a; }
+  pre.notes { white-space: pre-wrap; font: 13px/1.5 ui-monospace, monospace; margin: 0; }
+  .empty-state { color: var(--dim); padding: 40px; text-align: center; }
+  .sum { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>mangatl studio</h1>
+  <select id="project"></select>
+  <input id="folder" placeholder="open a folder…" size="34">
+  <button id="open">Open</button>
+  <span class="grow"></span>
+  <span id="job" class="dim"></span>
+  <span id="engine" class="dim"></span>
+</header>
+<main>
+  <nav id="pages"></nav>
+  <section id="view">
+    <div id="toolbar">
+      <button data-layer="original">Original</button>
+      <button data-layer="cleaned">Cleaned</button>
+      <button data-layer="rendered">Rendered</button>
+      <span class="dim">&nbsp;hold <b>C</b> to compare</span>
+      <span class="grow"></span>
+      <button id="boxes">Regions</button>
+      <button id="fith">Fit height</button>
+    </div>
+    <div id="stage" class="fith"><div class="empty-state">Open a project, or let an agent open one over MCP.</div></div>
+  </section>
+  <aside>
+    <div id="tabs">
+      <button data-tab="regions">Regions</button>
+      <button data-tab="report">Report</button>
+      <button data-tab="notes">Notes</button>
+      <button data-tab="activity">Activity</button>
+    </div>
+    <div id="panel"></div>
+  </aside>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const OUT = { fit: ["fit", "fit"], below_min_font: ["small", "too long"], kept_original_no_fit: ["bad", "no fit"],
+  failed: ["bad", "failed"], kept_original: ["kept", "original kept"], empty: ["empty", "untranslated"] };
+const COLOR = { fit: "var(--fit)", small: "var(--small)", bad: "var(--bad)", kept: "var(--kept)", empty: "var(--empty)" };
+
+const st = { project: null, page: null, layer: "rendered", boxes: true, tab: "regions", status: null,
+  pageData: null, activity: [], lastSeq: 0, hi: null, comparing: false };
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  return r.json();
+}
+function saveHash() { location.hash = st.project ? `${encodeURIComponent(st.project)}/${encodeURIComponent(st.page || "")}` : ""; }
+function regionClass(r) { return r.translation ? (OUT[r.outcome] || ["", r.outcome])[0] : "empty"; }
+
+async function loadState() {
+  const s = await api("/api/state");
+  const sel = $("#project");
+  const ids = s.projects.map((p) => p.id);
+  if (sel.options.length !== ids.length || [...sel.options].some((o, i) => o.value !== ids[i])) {
+    sel.innerHTML = s.projects.map((p) => `<option value="${esc(p.id)}">${esc(p.id)} (${p.pages})</option>`).join("");
+  }
+  if (!st.project && ids.length) st.project = ids[0];
+  if (st.project) sel.value = st.project;
+  const e = s.engine;
+  $("#engine").textContent = e.free_mb != null ? `VRAM free ${(e.free_mb / 1024).toFixed(1)} / ${(e.total_mb / 1024).toFixed(1)} GB · ${s.loaded.length} models` : e.device;
+}
+
+async function loadProject() {
+  if (!st.project) return;
+  const s = await api(`/api/projects/${encodeURIComponent(st.project)}`);
+  const prev = st.status;
+  st.status = s;
+  const job = s.draft_job;
+  $("#job").title = s.output;
+  $("#job").textContent = job && (job.status === "running" || job.status === "queued") ? `drafting… (${s.pages.filter((p) => p.draft === "drafted").length}/${s.pages.length})` : `output: ${s.output}`;
+  renderPages();
+  if (!st.page && s.pages.length) selectPage(s.pages[0].page);
+  else if (st.page) {
+    const now = s.pages.find((p) => p.page === st.page);
+    const before = prev && prev.pages.find((p) => p.page === st.page);
+    if (now && (!before || now.version !== before.version || now.draft !== before.draft || now.report_by !== before.report_by)) loadPage();
+  }
+  if (st.tab === "notes") renderPanel();
+}
+
+function renderPages() {
+  const s = st.status;
+  $("#pages").innerHTML = s.pages.map((p) => {
+    const b = [];
+    if (p.draft !== "drafted") b.push(`<span class="b ${p.draft === "error" ? "bad" : ""}">${esc(p.draft)}</span>`);
+    else {
+      b.push(`<span class="b ${p.translated === p.regions && p.regions ? "fit" : ""}">${p.translated}/${p.regions}</span>`);
+      if (p.problems) b.push(`<span class="b small">${p.problems} problem${p.problems > 1 ? "s" : ""}</span>`);
+    }
+    if (p.claimed_by) b.push(`<span class="b claim">${esc(p.claimed_by)}</span>`);
+    if (p.report_by) b.push(`<span class="b">report</span>`);
+    const thumb = p.draft === "drafted" ? "rendered" : "original";
+    return `<div class="pg ${p.page === st.page ? "sel" : ""}" data-page="${esc(p.page)}">
+      <img loading="lazy" src="/api/projects/${encodeURIComponent(st.project)}/image?page=${encodeURIComponent(p.page)}&layer=${thumb}&v=${p.version}">
+      <div><div class="name">${esc(p.page)}</div><div class="badges">${b.join("")}</div></div></div>`;
+  }).join("");
+}
+
+function selectPage(page) { st.page = page; st.hi = null; saveHash(); renderPages(); loadPage(); }
+
+async function loadPage() {
+  if (!st.page) return;
+  st.pageData = await api(`/api/projects/${encodeURIComponent(st.project)}/page?page=${encodeURIComponent(st.page)}`);
+  renderStage();
+  renderPanel();
+}
+
+function imgUrl(layer) {
+  const v = st.pageData ? st.pageData.version : 0;
+  return `/api/projects/${encodeURIComponent(st.project)}/image?page=${encodeURIComponent(st.page)}&layer=${layer}&v=${v}`;
+}
+
+function renderStage() {
+  const d = st.pageData;
+  const layer = d.draft === "drafted" ? (st.comparing ? "original" : st.layer) : "original";
+  document.querySelectorAll("[data-layer]").forEach((b) => b.classList.toggle("on", b.dataset.layer === st.layer));
+  $("#boxes").classList.toggle("on", st.boxes);
+  let svg = "";
+  if (st.boxes && d.regions && d.regions.length && d.size) {
+    const [w, h] = d.size;
+    svg = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">` + d.regions.map((r) => {
+      const [x1, y1, x2, y2] = r.bbox; const c = COLOR[regionClass(r)] || "#ccc";
+      return `<rect data-rid="${r.id}" class="${r.id === st.hi ? "hi" : ""}" x="${x1}" y="${y1}" width="${x2 - x1}" height="${y2 - y1}" style="stroke:${c}"></rect>
+        <text x="${x1 + 4}" y="${y1 + 20}">${r.order}</text>`;
+    }).join("") + "</svg>";
+  }
+  $("#stage").innerHTML = `<div id="frame"><img src="${imgUrl(layer)}">${svg}</div>`;
+  document.querySelectorAll("#frame rect").forEach((el) => el.addEventListener("click", () => highlight(el.dataset.rid, true)));
+}
+
+function highlight(rid, scroll) {
+  st.hi = rid;
+  document.querySelectorAll("#frame rect").forEach((el) => el.classList.toggle("hi", el.dataset.rid === rid));
+  document.querySelectorAll(".rg").forEach((el) => {
+    el.classList.toggle("hi", el.dataset.rid === rid);
+    if (scroll && el.dataset.rid === rid) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  });
+}
+
+function renderPanel() {
+  document.querySelectorAll("[data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === st.tab));
+  const d = st.pageData; const panel = $("#panel");
+  if (st.tab === "regions") {
+    if (!d || !d.regions || !d.regions.length) { panel.innerHTML = `<div class="empty-state">${d ? esc(d.draft) : ""}</div>`; return; }
+    const counts = {};
+    d.regions.forEach((r) => { const k = regionClass(r); counts[k] = (counts[k] || 0) + 1; });
+    panel.innerHTML = `<div class="sum">${Object.entries(counts).map(([k, n]) => `<span class="b ${k}">${n} ${esc(({ fit: "fit", small: "too long", bad: "no fit", kept: "kept", empty: "untranslated" })[k] || k)}</span>`).join("")}
+      ${d.dialogue_font_size ? `<span class="b">dialogue ${Math.round(d.dialogue_font_size)}px</span>` : ""}</div>` +
+      d.regions.map((r) => {
+        const k = regionClass(r); const label = r.translation ? (OUT[r.outcome] || ["", r.outcome])[1] : "untranslated";
+        const size = r.font_size ? `${Math.round(r.font_size)}/${Math.round(r.max_font)}px` : "";
+        return `<div class="rg ${r.id === st.hi ? "hi" : ""}" data-rid="${r.id}">
+          <div class="top"><b>${r.order}</b><span class="dim">${r.id} · ${r.kind}</span><span class="grow"></span>
+          <span class="dim">${size}</span><span class="b ${k}">${esc(label)}</span></div>
+          <div class="ocr">${esc(r.ocr)}</div><div class="tl">${esc(r.translation)}</div>
+          ${r.problem ? `<div class="prob">${esc(r.problem)}</div>` : ""}</div>`;
+      }).join("");
+    document.querySelectorAll(".rg").forEach((el) => el.addEventListener("click", () => highlight(el.dataset.rid, false)));
+  } else if (st.tab === "report") {
+    const r = d && d.report;
+    panel.innerHTML = r ? `<div class="dim">${esc(r.worker)} · ${new Date(r.t * 1000).toLocaleString()}</div><pre class="notes">${esc(r.text)}</pre>` : `<div class="empty-state">No report for this page yet.</div>`;
+  } else if (st.tab === "notes") {
+    const n = st.status && st.status.notes;
+    panel.innerHTML = n ? `<pre class="notes">${esc(n)}</pre>` : `<div class="empty-state">No chapter notes yet.</div>`;
+  } else {
+    const items = st.activity.slice().reverse();
+    panel.innerHTML = items.length ? items.map((a) => `<div class="act"><span class="dim">${new Date(a.t * 1000).toLocaleTimeString()}</span>
+      <span class="w">${esc(a.worker)}</span> ${esc(a.tool)}${a.page ? ` <a href="#" data-goto="${esc(a.page)}">${esc(a.page)}</a>` : ""}
+      <span class="dim">${a.ms} ms</span>${a.summary ? `<div class="${a.ok ? "dim" : "err"}">${esc(a.summary)}</div>` : ""}</div>`).join("")
+      : `<div class="empty-state">No activity yet.</div>`;
+    panel.querySelectorAll("[data-goto]").forEach((el) => el.addEventListener("click", (e) => { e.preventDefault(); selectPage(el.dataset.goto); }));
+  }
+}
+
+async function loadActivity() {
+  if (!st.project) return;
+  const items = await api(`/api/projects/${encodeURIComponent(st.project)}/activity?after=${st.lastSeq}`);
+  if (items.length) {
+    st.activity = st.activity.concat(items).slice(-1000);
+    st.lastSeq = items[items.length - 1].seq;
+    if (st.tab === "activity") renderPanel();
+  }
+}
+
+async function tick() {
+  try { await loadState(); await loadProject(); await loadActivity(); } catch (e) { console.warn(e); }
+}
+
+$("#project").addEventListener("change", (e) => {
+  st.project = e.target.value; st.page = null; st.status = null; st.activity = []; st.lastSeq = 0; saveHash(); tick();
+});
+$("#open").addEventListener("click", async () => {
+  const folder = $("#folder").value.trim(); if (!folder) return;
+  try { const r = await api("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder }) });
+    st.project = r.id; st.page = null; st.status = null; st.activity = []; st.lastSeq = 0; $("#folder").value = ""; tick();
+  } catch (e) { alert(e.message); }
+});
+document.querySelectorAll("[data-layer]").forEach((b) => b.addEventListener("click", () => { st.layer = b.dataset.layer; renderStage(); }));
+document.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => { st.tab = b.dataset.tab; renderPanel(); }));
+$("#boxes").addEventListener("click", () => { st.boxes = !st.boxes; renderStage(); });
+$("#fith").addEventListener("click", () => { $("#stage").classList.toggle("fith"); $("#fith").classList.toggle("on"); });
+$("#fith").classList.add("on");
+$("#pages").addEventListener("click", (e) => { const el = e.target.closest(".pg"); if (el) selectPage(el.dataset.page); });
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.key === "c" && !st.comparing && st.pageData) { st.comparing = true; renderStage(); }
+  if ((e.key === "ArrowDown" || e.key === "ArrowRight" || e.key === "ArrowUp" || e.key === "ArrowLeft") && st.status) {
+    const ids = st.status.pages.map((p) => p.page); const i = ids.indexOf(st.page);
+    const j = i + (e.key === "ArrowDown" || e.key === "ArrowLeft" ? 1 : -1);
+    if (j >= 0 && j < ids.length) { e.preventDefault(); selectPage(ids[j]); }
+  }
+});
+document.addEventListener("keyup", (e) => { if (e.key === "c" && st.comparing) { st.comparing = false; renderStage(); } });
+
+const [hp, hpage] = location.hash.slice(1).split("/").map(decodeURIComponent);
+if (hp) { st.project = hp; st.page = hpage || null; }
+tick().then(() => { if (st.page) loadPage(); });
+setInterval(tick, 2000);
+</script>
+</body>
+</html>
