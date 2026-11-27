@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from functools import partial
+from typing import Any
 
 import cv2
 import numpy as np
@@ -14,8 +15,8 @@ from mangatl.clean.glyph_mask import (
 )
 from mangatl.common.exceptions import CancellationError
 from mangatl.common.log import log_message
+from mangatl.engine import Model
 from mangatl.ml.hi_sam import predict_text_probability
-from mangatl.ml.model_manager import get_model_manager
 from mangatl.settings import Settings
 
 
@@ -25,11 +26,11 @@ class PageGlyphMap:
 
     Bubble cleaning, OSB tilt detection, LaMa's glyph masks, and the edit models' glyph
     composites share it, so the text segmentation model runs at most once per page, and
-    not at all on pages that need none of them. The model stays on the device like the
-    app's other models until a diffusion inpainter parks it to make room.
+    not at all on pages that need none of them.
     """
 
     image: Image.Image
+    models: Any  # the engine's models (mangatl.engine.Models)
     verbose: bool = False
     # LaMa masks add text found in each box at twice the text scale
     upscale_boxes: bool = False
@@ -43,6 +44,7 @@ class PageGlyphMap:
     def for_page(cls, image: Image.Image, config: Settings, verbose: bool) -> "PageGlyphMap":
         return cls(
             image,
+            config.models,
             verbose=verbose,
             upscale_boxes=config.cleaning.inpainter == "lama_manga",
             enabled=config.cleaning.text_segmentation,
@@ -51,60 +53,42 @@ class PageGlyphMap:
     def get(self) -> np.ndarray | None:
         """The probability map, or None when the text model can't be loaded or run."""
         if self.prob is None and self.enabled and not self.failed:
-            manager = get_model_manager()
-            with manager.inference_lock:
-                # Another caller may have built it while this one waited
-                if self.prob is None and not self.failed:
-                    self._compute(manager)
+            try:
+                # The GPU slot also makes this build once: another caller waits, then finds it
+                with self.models.use(Model.TEXT_SAM) as sam:
+                    if self.prob is None and not self.failed:
+                        self.prob = page_glyph_probability(self.image, partial(predict_text_probability, sam))
+            except CancellationError:
+                raise
+            except Exception as e:
+                self.failed = True
+                log_message(
+                    f"Text segmentation unavailable ({e}); cleaning and inpainting "
+                    "without glyph masks, and using heuristic tilt",
+                    always_print=True,
+                )
         return self.prob
-
-    def _compute(self, manager) -> None:
-        try:
-            # No local reference to the model, so unloading it frees its memory
-            self.prob = page_glyph_probability(
-                self.image,
-                partial(
-                    predict_text_probability,
-                    manager.load_text_sam(verbose=self.verbose),
-                ),
-            )
-        except CancellationError:
-            raise
-        except Exception as e:
-            self.failed = True
-            log_message(
-                f"Text segmentation unavailable ({e}); cleaning and inpainting "
-                "without glyph masks, and using heuristic tilt",
-                always_print=True,
-            )
 
     def box_probability(self, box: tuple[int, int, int, int]) -> np.ndarray | None:
         """Text probability inside `box` at twice the text scale, or None when that
         pass doesn't run for this page."""
         if not self.upscale_boxes or self.get() is None:
             return None
-        manager = get_model_manager()
-        with manager.inference_lock:
-            try:
+        try:
+            with self.models.use(Model.TEXT_SAM) as sam:
                 if self._upscaled is None:
                     self._upscaled = UpscaledGlyphMap(self.image)
-                return self._upscaled.box_probability(
-                    box,
-                    partial(
-                        predict_text_probability,
-                        manager.load_text_sam(verbose=self.verbose),
-                    ),
-                )
-            except CancellationError:
-                raise
-            except Exception as e:
-                self.upscale_boxes = False
-                self._upscaled = None
-                log_message(
-                    f"Upscaled text segmentation failed ({e}); LaMa masks use the page map alone",
-                    always_print=True,
-                )
-                return None
+                return self._upscaled.box_probability(box, partial(predict_text_probability, sam))
+        except CancellationError:
+            raise
+        except Exception as e:
+            self.upscale_boxes = False
+            self._upscaled = None
+            log_message(
+                f"Upscaled text segmentation failed ({e}); LaMa masks use the page map alone",
+                always_print=True,
+            )
+            return None
 
     def lama_mask(self, box_mask: np.ndarray) -> np.ndarray:
         """`box_mask` shrunk to its dilated glyphs, including those found inside its

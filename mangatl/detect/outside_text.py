@@ -28,11 +28,11 @@ from mangatl.common.image_utils import (
     pil_to_cv2,
     process_bubble_image_cached,
     resize_lanczos_antiring,
+    upscaler_for,
 )
 from mangatl.common.log import log_message
 from mangatl.detect.outside_text_detector import OutsideTextDetector
 from mangatl.detect.tilt import detect_crop_tilt_angle
-from mangatl.ml.model_manager import get_model_manager
 from mangatl.ocr import line_ocr
 from mangatl.ocr.readers import extract_text_with_manga_ocr
 from mangatl.settings import Settings
@@ -108,32 +108,15 @@ def outside_text_crop(
     outside_text_image_pil = cv2_to_pil(outside_text_image_cv)
     osb_upscale_method = config.ocr.upscale
 
-    if osb_upscale_method == "model":
-        model_manager = get_model_manager()
-        upscale_model = model_manager.load_upscale(verbose=verbose)
+    if osb_upscale_method in ("model", "model_lite"):
         final_text_pil = process_bubble_image_cached(
             outside_text_image_pil,
-            upscale_model,
-            config.device,
+            upscaler_for(config.models, osb_upscale_method),
             config.ocr.outside_min_side,
             "min",
-            "model",
+            osb_upscale_method,
             verbose,
         )
-        model_manager.clear_cache()
-    elif osb_upscale_method == "model_lite":
-        model_manager = get_model_manager()
-        upscale_model = model_manager.load_upscale_lite(verbose=verbose)
-        final_text_pil = process_bubble_image_cached(
-            outside_text_image_pil,
-            upscale_model,
-            config.device,
-            config.ocr.outside_min_side,
-            "min",
-            "model_lite",
-            verbose,
-        )
-        model_manager.clear_cache()
     elif osb_upscale_method == "lanczos":
         w, h = outside_text_image_pil.size
         min_side = min(w, h)
@@ -248,9 +231,9 @@ def _build_outside_text_data(
             )
 
     if outside_text_data:  # line-by-line OCR finds this page's text lines once (line_ocr)
-        token = line_ocr.register_page(pil_image)
+        page_lines = line_ocr.PageLines(pil_image)
         for item in outside_text_data:
-            item["mt_page"] = token
+            item["mt_page"] = page_lines
     return outside_text_data
 
 
@@ -468,7 +451,7 @@ def _drop_page_numbers(
             f"Verifying {len(suspicious_crops)} suspicious OSB regions with OCR...",
             verbose=verbose,
         )
-        suspicious_texts = extract_text_with_manga_ocr(suspicious_crops, verbose=verbose)
+        suspicious_texts = extract_text_with_manga_ocr(suspicious_crops, config.models, verbose=verbose)
 
         for i, text in enumerate(suspicious_texts):
             if not _is_page_number(text):
@@ -832,11 +815,10 @@ def prepare_outside_text_work(
     log_message("Detecting text outside speech bubbles...", verbose=verbose)
 
     try:
-        outside_detector = OutsideTextDetector(device=config.device, hf_token=config.runtime.hf_token)
+        outside_detector = OutsideTextDetector(config.models)
         detect = partial(
             outside_detector.detect_outside_text,
             str(image_path),
-            yolo_model_path=config.yolo_model_path,
             conjoined_confidence=config.detection.conjoined_confidence,
             verbose=verbose,
             image_override=pil_image,

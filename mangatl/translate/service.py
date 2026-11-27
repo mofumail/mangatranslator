@@ -757,8 +757,7 @@ Translate each item under `## INPUT DATA` into {output_language}.{special_instru
 def prepare_bubble_images_for_translation(
     bubble_data: list[dict[str, Any]],
     original_cv_image: np.ndarray,
-    upscale_model: Any,
-    device: Any,
+    upscaler: Any,
     mime_type: str,
     bubble_min_side_pixels: int,
     upscale_method: str = "model_lite",
@@ -777,8 +776,7 @@ def prepare_bubble_images_for_translation(
     Args:
         bubble_data: List of bubble detection dicts with 'bbox' keys
         original_cv_image: OpenCV image array of the original image
-        upscale_model: Loaded upscaling model
-        device: PyTorch device for model inference
+        upscaler: The upscaling model (an image_utils.Upscaler) for "model" / "model_lite"
         mime_type: MIME type for image encoding
         upscale_method: Method for upscaling - "model", "lanczos", or "none"
         verbose: Whether to print detailed logging
@@ -875,8 +873,7 @@ def prepare_bubble_images_for_translation(
         if upscale_method in {"model", "model_lite"}:
             final_bubble_pil = process_bubble_image_cached(
                 bubble_image_pil,
-                upscale_model,
-                device,
+                upscaler,
                 bubble_min_side_pixels,
                 "min",
                 upscale_method,

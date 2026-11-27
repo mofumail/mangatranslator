@@ -182,7 +182,7 @@ def _create_osb_inpainter(config: Settings, verbose: bool):
         try:
             inpainter = make_inpainter(
                 inpainting_method,
-                device=config.device,
+                models=config.models,
                 luminance_correction=config.cleaning.luminance_correction,
                 verbose=verbose,
             )

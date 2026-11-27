@@ -1,4 +1,4 @@
-"""Run the pipeline on one input with a settings file (written by translate.py).
+"""Run the pipeline on one input: run() in-process (translate.py), or with a settings file:
 
 python -m mangatl.cli --settings run/settings.json --input chapter/ --output run/ --batch
 """
@@ -32,32 +32,43 @@ def main():
     )
     args = parser.parse_args()
 
-    from mangatl.common.log import init_file_logging
-
-    init_file_logging()
-
     from mangatl.common import eval_hooks
-    from mangatl.common.log import log_message
-    from mangatl.ml.model_manager import get_model_manager, migrate_model_dirs
-    from mangatl.pipeline.batch import batch_translate_images
-    from mangatl.pipeline.page import translate_and_render
+    from mangatl.common.log import init_file_logging
+    from mangatl.engine import Engine
     from mangatl.settings import Settings
 
+    init_file_logging()
     config = Settings.load(args.settings)
     eval_hooks.configure(config.debug)
+    engine = Engine.from_settings(config)
+    try:
+        code = run(config.with_models(engine.models()), args.input, args.output, args.batch, args.page_prefix)
+    finally:
+        engine.close()
+    sys.exit(code)
 
-    models_dir = config.runtime.models_dir.resolve()
-    models_dir.mkdir(parents=True, exist_ok=True)
-    migrate_model_dirs(models_dir)
-    manager = get_model_manager()
-    manager.set_models_dir(models_dir)
-    if config.runtime.device == "cpu":
-        manager.set_device(config.device)
-    if config.runtime.hf_cache:
-        manager.use_hf_cache = True
+
+def run(
+    config,
+    input_arg: str | Path,
+    output_arg: str | Path | None,
+    batch: bool,
+    page_prefix: str = "",
+    cancellation_manager=None,
+) -> int:
+    """Translate one input (an image; with batch: a folder, ZIP/CBZ archive or failed-paths
+    list) with `config`, whose models are attached (Settings.with_models). Returns the exit
+    code: 0, or 1 when pages failed."""
+    from mangatl.common.log import log_message
+    from mangatl.pipeline.batch import batch_translate_images
+    from mangatl.pipeline.page import translate_and_render
+
     log_message(f"Using {config.device.type.upper()} device.", always_print=True)
+    args = argparse.Namespace(
+        input=str(input_arg), output=str(output_arg) if output_arg else None, page_prefix=page_prefix
+    )
 
-    if args.batch:
+    if batch:
         input_path = Path(args.input)
         suffix = input_path.suffix.lower()
         glossary_name = (
@@ -96,13 +107,13 @@ def main():
                     f"Error: '{args.input}' is not a valid ZIP archive.",
                     always_print=True,
                 )
-                sys.exit(1)
+                return 1
             except Exception as e:
                 log_message(
                     f"Error extracting ZIP archive: {e!s}",
                     always_print=True,
                 )
-                sys.exit(1)
+                return 1
         elif input_path.is_file() and input_path.suffix.lower() == ".txt":
             from mangatl.inputs.path_list import stage_path_list
 
@@ -118,7 +129,7 @@ def main():
                     f"Error: no existing image paths found in '{args.input}'.",
                     always_print=True,
                 )
-                sys.exit(1)
+                return 1
 
             log_message(
                 f"Prepared {len(source_path_map)} image(s) from path list",
@@ -132,7 +143,7 @@ def main():
                 "ZIP/CBZ archive, or failed-paths .txt file.",
                 always_print=True,
             )
-            sys.exit(1)
+            return 1
 
         # A failed-paths list writes back into its original run unless --output is set
         output_dir = Path(args.output) if args.output else path_list_run_dir
@@ -146,7 +157,7 @@ def main():
                     f"Error: Specified --output '{output_dir}' is not a directory.",
                     always_print=True,
                 )
-                sys.exit(1)
+                return 1
 
         try:
             results = batch_translate_images(
@@ -158,6 +169,7 @@ def main():
                 glossary_name=glossary_name,
                 glossary_path=glossary_path,
                 page_prefix=args.page_prefix,
+                cancellation_manager=cancellation_manager,
             )
             failed_paths_file = results.get("failed_paths_file")
             if failed_paths_file:
@@ -166,7 +178,7 @@ def main():
                     always_print=True,
                 )
             if results.get("error_count", 0) > 0:
-                raise SystemExit(1)
+                return 1
         finally:
             for temp_obj, label in (
                 (zip_temp_dir_obj, "ZIP extraction"),
@@ -189,7 +201,7 @@ def main():
         input_path = Path(args.input)
         if not input_path.is_file():
             log_message(f"Error: Input '{args.input}' is not a valid file.", always_print=True)
-            sys.exit(1)
+            return 1
 
         output_path_arg = args.output
         original_ext = input_path.suffix.lower()
@@ -230,6 +242,7 @@ def main():
                 config,
                 output_path,
                 project_page=f"{args.page_prefix.strip('/')}/{input_path.name}".lstrip("/"),
+                cancellation_manager=cancellation_manager,
             )
             log_message(
                 f"Translation complete. Result saved to {output_path}",
@@ -237,9 +250,10 @@ def main():
             )
         except Exception as e:
             log_message(f"Error processing {input_path}: {e}", always_print=True)
-            raise SystemExit(1) from e
+            return 1
         finally:
             close_projects()
+    return 0
 
 
 if __name__ == "__main__":

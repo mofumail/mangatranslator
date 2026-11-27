@@ -566,10 +566,9 @@ def process_single_bubble(
 
 def clean_speech_bubbles(
     image_input: str | Path | Image.Image,
-    model_path,
+    models,
     confidence=0.6,
     pre_computed_detections=None,
-    device=None,
     thresholding_value: int = 200,
     use_otsu_threshold: bool = False,
     roi_shrink_px: int = 5,
@@ -580,7 +579,6 @@ def clean_speech_bubbles(
     inpaint_colored_bubbles: bool = False,
     seed: int = 1,
     osb_text_verification: bool = False,
-    osb_text_hf_token: str = "",
     inpaint_method: str = "lama_manga",
     luminance_correction: bool = True,
     bubble_detector_model: str = "yolo_2",
@@ -592,10 +590,9 @@ def clean_speech_bubbles(
 
     Args:
         image_input (str, Path, or PIL.Image.Image): Path to input image or a PIL Image object.
-        model_path (str): Path to YOLO model.
+        models: The engine's models (mangatl.engine.Models): detection when needed, inpainting.
         confidence (float): Confidence threshold for detections.
         pre_computed_detections (list, optional): Pre-computed detections from previous call.
-        device (torch.device, optional): The device to run detection model on if needed.
         thresholding_value (int): Fixed threshold value for text detection (0-255). Lower values (e.g., 180)
                                  are useful for uncleaned text close to bubble's edges.
         use_otsu_threshold (bool): If True, use Otsu's method for thresholding instead of the fixed value.
@@ -605,7 +602,6 @@ def clean_speech_bubbles(
         inpaint_colored_bubbles (bool): If True, detect non-solid background bubbles and inpaint their text.
         seed (int): Inpainting seed; -1 enables random per run.
         osb_text_verification (bool): When True, expand bubble boxes to fully cover OSB text detections.
-        osb_text_hf_token (str): Optional token for OSB text model downloads.
         glyph_map: Text map of the original page. Letters the fill leaves uncovered are
             cleaned too, and LaMa inpaints only the letters of colored bubbles.
 
@@ -643,12 +639,10 @@ def clean_speech_bubbles(
         elif image_path is not None:
             detection_result = detect_speech_bubbles(
                 image_path,
-                model_path,
+                models,
                 confidence,
-                device=device,
                 conjoined_confidence=conjoined_confidence,
                 osb_text_verification=osb_text_verification,
-                osb_text_hf_token=osb_text_hf_token,
                 bubble_detector_model=bubble_detector_model,
             )
             detections = detection_result[0] if isinstance(detection_result, tuple) else detection_result
@@ -790,7 +784,7 @@ def clean_speech_bubbles(
                 try:
                     inpainter = make_inpainter(
                         inpaint_method,
-                        device=device,
+                        models=models,
                         luminance_correction=luminance_correction,
                         verbose=verbose,
                     )

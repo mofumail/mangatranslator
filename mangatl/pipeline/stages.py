@@ -37,13 +37,13 @@ from mangatl.common.image_utils import (
     pil_to_cv2,
     resize_to_max_side,
     upscale_image_to_dimension,
+    upscaler_for,
 )
 from mangatl.common.log import log_message
 from mangatl.common.scaling import scale_length
 from mangatl.detect.bubbles import detect_panels, detect_speech_bubbles
 from mangatl.detect.outside_text import prepare_outside_text_work
 from mangatl.detect.reading_order import sort_bubbles_by_reading_order
-from mangatl.ml.model_manager import get_model_manager
 from mangatl.settings import Settings
 from mangatl.translate.page import attach_ocr_texts, translate_or_error_texts, translate_page
 from mangatl.translate.service import prepare_bubble_images_for_translation
@@ -58,7 +58,6 @@ def _clean_speech_bubbles_for_page(
     pil_image_processed: Image.Image,
     bubble_data: list[dict[str, Any]],
     config: Settings,
-    device,
     processing_scale: float,
     verbose: bool,
     fallback_cv_image: np.ndarray,
@@ -75,10 +74,9 @@ def _clean_speech_bubbles_for_page(
 
         cleaned_image_cv, processed_bubbles_info = clean_speech_bubbles(
             pil_image_processed,
-            config.yolo_model_path,
+            config.models,
             config.detection.confidence,
             pre_computed_detections=bubble_data,
-            device=device,
             thresholding_value=config.cleaning.threshold,
             use_otsu_threshold=use_otsu,
             auto_threshold=config.cleaning.auto_threshold,
@@ -89,7 +87,6 @@ def _clean_speech_bubbles_for_page(
             inpaint_colored_bubbles=inpaints_colored_bubbles(config),
             seed=config.cleaning.seed,
             osb_text_verification=config.detection.outside_text.cover_with_bubbles,
-            osb_text_hf_token=config.runtime.hf_token,
             inpaint_method=config.cleaning.inpainter,
             luminance_correction=config.cleaning.luminance_correction,
             bubble_detector_model=config.detection.bubble_model,
@@ -126,23 +123,10 @@ def _encode_context_image(image: Image.Image, config: Settings, cv2_ext: str) ->
     )
     upscale_method = config.ocr.upscale
 
-    if upscale_method in ("model", "model_lite"):
-        model_manager = get_model_manager()
-        if upscale_method == "model":
-            upscale_model = model_manager.load_upscale(verbose=verbose)
-        else:
-            upscale_model = model_manager.load_upscale_lite(verbose=verbose)
-        image = upscale_image_to_dimension(
-            upscale_model,
-            image,
-            max_side,
-            config.device,
-            "max",
-            upscale_method,
-            verbose,
-        )
+    upscaler = upscaler_for(config.models, upscale_method)
+    if upscaler is not None:
+        image = upscale_image_to_dimension(upscaler, image, max_side, "max", upscale_method, verbose)
         image = resize_to_max_side(image, max_side, verbose=verbose)
-        model_manager.clear_cache()
     elif upscale_method == "lanczos":
         image = resize_to_max_side(image, max_side, verbose=verbose, antiring=True)
 
@@ -164,16 +148,14 @@ def _detect_page_bubbles(
     try:
         return detect_speech_bubbles(
             image_path,
-            config.yolo_model_path,
+            config.models,
             config.detection.confidence,
             verbose=config.verbose,
-            device=config.device,
             conjoined_detection=config.detection.conjoined,
             conjoined_confidence=config.detection.conjoined_confidence,
             image_override=image,
             osb_enabled=config.detection.outside_text.enabled,
             osb_text_verification=config.detection.outside_text.cover_with_bubbles,
-            osb_text_hf_token=config.runtime.hf_token,
             bubble_detector_model=config.detection.bubble_model,
         )
     except Exception as e:
@@ -191,8 +173,8 @@ def _detect_page_panels(image_path: Path, image: Image.Image, config: Settings) 
         log_message("Detecting panels...", verbose=verbose)
         panels = detect_panels(
             image_path,
+            config.models,
             confidence=config.detection.panel_confidence,
-            device=config.device,
             verbose=verbose,
             image_override=image,
         )
@@ -236,7 +218,6 @@ def _clean_page(
         image,
         bubble_data,
         config,
-        config.device,
         processing_scale,
         config.verbose,
         pil_to_cv2(image),
@@ -288,26 +269,16 @@ def _prepare_bubble_crops(
 
     upscale_method = config.ocr.upscale
 
-    model_manager = get_model_manager()
-    upscale_model = None
-    if upscale_method == "model":
-        upscale_model = model_manager.load_upscale(verbose=verbose)
-    elif upscale_method == "model_lite":
-        upscale_model = model_manager.load_upscale_lite(verbose=verbose)
-
     bubble_data = prepare_bubble_images_for_translation(
         bubble_data,
         page_cv,
-        upscale_model,
-        config.device,
+        upscaler_for(config.models, upscale_method),
         mime_type,
         config.ocr.bubble_min_side,
         upscale_method,
         config.ocr.whiteout_neighbors,
         verbose,
     )
-    if upscale_model is not None:
-        model_manager.clear_cache()
 
     action = "Upscaled" if upscale_method != "none" else "Prepared"
     log_message(

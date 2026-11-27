@@ -6,10 +6,9 @@ import torch
 from PIL import Image
 
 from mangatl.common.caching import get_cache
-from mangatl.common.device import get_best_device
 from mangatl.common.exceptions import ImageProcessingError, ModelError
 from mangatl.common.log import log_message
-from mangatl.ml.model_manager import ModelType, get_model_manager
+from mangatl.engine.models import Model
 
 IOA_THRESHOLD = 0.50  # 50% IoA threshold for conjoined bubble detection
 SAM_MASK_THRESHOLD = 0.5  # mask binarization threshold
@@ -83,10 +82,8 @@ def _expand_boxes_with_osb_text(
     image_pil,
     primary_boxes: torch.Tensor,
     cache,
-    model_manager,
-    device,
+    models,
     confidence: float,
-    hf_token: str,
     verbose: bool,
 ):
     """Expand speech-bubble boxes to fully contain detected OSB text boxes."""
@@ -94,21 +91,21 @@ def _expand_boxes_with_osb_text(
         return primary_boxes
 
     try:
-        model_path = str(model_manager.model_paths[ModelType.YOLO_OSBTEXT])
+        model_path = str(models.path(Model.OUTSIDE_TEXT))
         cache_key = cache.get_yolo_cache_key(image_pil, model_path, confidence)
         cached = cache.get_yolo_detection(cache_key)
 
         if cached is not None:
             _, osb_boxes, _ = cached
         else:
-            osb_model = model_manager.load_yolo_osbtext(token=hf_token)
-            osb_results = osb_model(
-                image_cv,
-                conf=confidence,
-                device=device,
-                verbose=False,
-                imgsz=640,
-            )[0]
+            with models.use(Model.OUTSIDE_TEXT) as osb_model:
+                osb_results = osb_model(
+                    image_cv,
+                    conf=confidence,
+                    device=models.device,
+                    verbose=False,
+                    imgsz=640,
+                )[0]
             osb_boxes = osb_results.boxes.xyxy if osb_results.boxes is not None else torch.tensor([])
             osb_confs = osb_results.boxes.conf if osb_results.boxes is not None else torch.tensor([])
             cache.set_yolo_detection(cache_key, (osb_results, osb_boxes, osb_confs))
@@ -248,10 +245,10 @@ def _remove_contained_boxes(
     return boxes[keep], kept_indices
 
 
-def _get_cached_osb_text_boxes(cache, model_manager, image_pil, confidence):
+def _get_cached_osb_text_boxes(cache, models, image_pil, confidence):
     """Retrieve cached OSB text boxes as a numpy array, or None if unavailable."""
     try:
-        model_path = str(model_manager.model_paths[ModelType.YOLO_OSBTEXT])
+        model_path = str(models.path(Model.OUTSIDE_TEXT))
         cache_key = cache.get_yolo_cache_key(image_pil, model_path, confidence)
         cached = cache.get_yolo_detection(cache_key)
         if cached is not None:
@@ -936,7 +933,7 @@ def _get_detection_metadata(
     source: str,
     orig_idx: int,
     primary_results,
-    primary_model,
+    primary_names,
     secondary_results,
     conjoined_confidence: float,
 ):
@@ -945,7 +942,7 @@ def _get_detection_metadata(
         safe_idx = min(orig_idx, len(primary_results.boxes.conf) - 1)
         conf = float(primary_results.boxes.conf[safe_idx])
         cls_id = int(primary_results.boxes.cls[safe_idx])
-        return conf, primary_model.names[cls_id]
+        return conf, primary_names[cls_id]
 
     if source == "secondary" and secondary_results is not None and len(secondary_results.boxes) > 0:
         safe_idx = min(orig_idx, len(secondary_results.boxes.conf) - 1)
@@ -966,7 +963,7 @@ def _build_segmentation_detections(
     grouping_primary_boxes,
     primary_sources,
     primary_results,
-    primary_model,
+    primary_names,
     secondary_boxes,
     secondary_sources,
     secondary_results,
@@ -989,7 +986,7 @@ def _build_segmentation_detections(
             source,
             orig_idx,
             primary_results,
-            primary_model,
+            primary_names,
             secondary_results,
             conjoined_confidence,
         )
@@ -1066,7 +1063,7 @@ def _build_segmentation_detections(
                 source,
                 orig_idx,
                 primary_results,
-                primary_model,
+                primary_names,
                 secondary_results,
                 conjoined_confidence,
             )
@@ -1113,7 +1110,7 @@ def _build_segmentation_detections(
                 source,
                 orig_idx,
                 primary_results,
-                primary_model,
+                primary_names,
                 secondary_results,
                 conjoined_confidence,
             )
@@ -1240,16 +1237,14 @@ def _drop_text_free_primaries(primary_boxes, primary_sources: list, text_free_bo
 
 def detect_speech_bubbles(
     image_path: Path,
-    model_path,
+    models,
     confidence=0.6,
     verbose=False,
-    device=None,
     conjoined_detection: bool = True,
     conjoined_confidence=0.35,
     image_override: Image.Image | None = None,
     osb_enabled: bool = False,
     osb_text_verification: bool = False,
-    osb_text_hf_token: str = "",
     bubble_detector_model: str = "yolo_2",
 ):
     """Detect speech bubbles using primary YOLO and optional RT-DETR + SAM refinement.
@@ -1259,14 +1254,13 @@ def detect_speech_bubbles(
 
     Args:
         image_path (Path): Path to the input image
-        model_path (str): Path to the primary YOLO segmentation model
+        models: The engine's models (mangatl.engine.Models)
         confidence (float): Confidence threshold for primary YOLO model detections
         verbose (bool): Whether to show detailed processing information
-        device (torch.device, optional): The device to run the model on. Autodetects if None.
         conjoined_detection (bool): Whether to enable conjoined bubble detection using secondary RT-DETR model
         conjoined_confidence (float): Confidence threshold for secondary RT-DETR model (conjoined bubble detection)
         osb_text_verification (bool): When True, expand bubble boxes to fully cover OSB text detections
-        osb_text_hf_token (str): Optional token for gated model downloads (OSB text)
+        bubble_detector_model (str): "yolo_2" (Manga109 segmentation) or "yolo"
 
     Returns:
         tuple[list, list]: (speech bubble detections, text_free boxes from secondary model)
@@ -1274,7 +1268,9 @@ def detect_speech_bubbles(
     detections = []
     text_free_boxes: list[list[float]] = []
 
-    _device = device if device is not None else get_best_device()
+    _device = models.device
+    primary = Model.BUBBLES_2 if bubble_detector_model == "yolo_2" else Model.BUBBLES
+    model_path = str(models.path(primary))
     try:
         if image_override is not None:
             image_pil = image_override if image_override.mode == "RGB" else image_override.convert("RGB")
@@ -1291,14 +1287,7 @@ def detect_speech_bubbles(
     except Exception as e:
         raise ImageProcessingError(f"Error loading image: {e}") from e
 
-    model_manager = get_model_manager()
     cache = get_cache()
-    try:
-        primary_model = model_manager.load_yolo_speech_bubble(model_path)
-        log_message(f"Loaded primary YOLO model: {model_path}", verbose=verbose)
-    except Exception as e:
-        raise ModelError(f"Error loading primary model: {e}") from e
-
     yolo_cache_key = cache.get_yolo_cache_key(image_pil, model_path, confidence)
     cached_yolo = cache.get_yolo_detection(yolo_cache_key)
 
@@ -1307,14 +1296,18 @@ def detect_speech_bubbles(
         primary_results, primary_boxes = cached_yolo
     else:
         primary_imgsz = 1600 if bubble_detector_model == "yolo_2" else 640
-        primary_results = primary_model(
-            image_cv,
-            conf=confidence,
-            device=_device,
-            verbose=False,
-            imgsz=primary_imgsz,
-            retina_masks=True,
-        )[0]
+        try:
+            with models.use(primary) as yolo:
+                primary_results = yolo(
+                    image_cv,
+                    conf=confidence,
+                    device=_device,
+                    verbose=False,
+                    imgsz=primary_imgsz,
+                    retina_masks=True,
+                )[0]
+        except Exception as e:
+            raise ModelError(f"Error running primary model: {e}") from e
         primary_boxes = primary_results.boxes.xyxy if primary_results.boxes is not None else torch.tensor([])
         cache.set_yolo_detection(yolo_cache_key, (primary_results, primary_boxes))
 
@@ -1352,20 +1345,16 @@ def detect_speech_bubbles(
     secondary_results = None
     if conjoined_detection:
         try:
-            secondary_model = model_manager.load_rtdetr_conjoined_bubble()
-            log_message(
-                "Loaded secondary RT-DETR model for conjoined/fallback detection",
-                verbose=verbose,
-            )
-
             # RT-DETR-v2 (ogkalu) was trained at 640; ignore in-bubble text_bubble class.
-            secondary_results = secondary_model(
-                image_cv,
-                conf=conjoined_confidence,
-                device=_device,
-                verbose=False,
-                imgsz=640,
-            )[0]
+            with models.use(Model.CONJOINED) as secondary_model:
+                secondary_results = secondary_model(
+                    image_cv,
+                    conf=conjoined_confidence,
+                    device=_device,
+                    verbose=False,
+                    imgsz=640,
+                )[0]
+                secondary_names = getattr(secondary_model, "names", None)
             secondary_boxes = (
                 secondary_results.boxes.xyxy if secondary_results.boxes is not None else torch.tensor([])
             )
@@ -1383,9 +1372,9 @@ def detect_speech_bubbles(
                     )
 
             # Keep bubble for conjoined processing; collect text_free for OSB; ignore text_bubble.
-            if len(secondary_boxes) > 0 and hasattr(secondary_model, "names"):
+            if len(secondary_boxes) > 0 and secondary_names is not None:
                 secondary_boxes, secondary_sources = _split_secondary_classes(
-                    secondary_model.names,
+                    secondary_names,
                     secondary_results.boxes.cls,
                     secondary_boxes,
                     secondary_sources,
@@ -1426,14 +1415,12 @@ def detect_speech_bubbles(
             image_pil,
             primary_boxes,
             cache,
-            model_manager,
-            _device,
+            models,
             confidence,
-            osb_text_hf_token,
             verbose,
         )
         # Retrieve cached OSB text boxes for bisector nudge during overlap resolution
-        osb_text_boxes_np = _get_cached_osb_text_boxes(cache, model_manager, image_pil, confidence)
+        osb_text_boxes_np = _get_cached_osb_text_boxes(cache, models, image_pil, confidence)
 
     conjoined_indices = []
     simple_indices = list(range(len(primary_boxes)))
@@ -1488,7 +1475,7 @@ def detect_speech_bubbles(
             grouping_primary_boxes,
             primary_sources,
             primary_results,
-            primary_model,
+            primary_results.names,
             secondary_boxes,
             secondary_sources,
             secondary_results,
@@ -1507,8 +1494,8 @@ def detect_speech_bubbles(
 
 def detect_panels(
     image_path: Path,
+    models,
     confidence: float = 0.25,
-    device=None,
     verbose=False,
     image_override: Image.Image | None = None,
 ) -> list[tuple[int, int, int, int]]:
@@ -1517,7 +1504,6 @@ def detect_panels(
     Args:
         image_path (Path): Path to the input image
         confidence (float): Confidence threshold for panel YOLO detections
-        device (torch.device, optional): The device to run the model on. Autodetects if None.
         verbose (bool): Whether to show detailed processing information
         image_override (Image.Image, optional): PIL Image to use instead of loading from path
 
@@ -1525,7 +1511,6 @@ def detect_panels(
         list: List of tuples (x1, y1, x2, y2) representing panel bounding boxes.
               Only includes detections with class "frame".
     """
-    _device = device if device is not None else get_best_device()
 
     try:
         if image_override is not None:
@@ -1544,20 +1529,16 @@ def detect_panels(
     except Exception as e:
         raise ImageProcessingError(f"Error loading image: {e}") from e
 
-    model_manager = get_model_manager()
     try:
-        panel_model = model_manager.load_yolo_panel(verbose=verbose)
-    except Exception as e:
-        raise ModelError(f"Error loading panel model: {e}") from e
-
-    try:
-        results = panel_model(
-            image_cv,
-            conf=confidence,
-            device=_device,
-            verbose=False,
-            imgsz=640,
-        )[0]
+        with models.use(Model.PANELS) as panel_model:
+            results = panel_model(
+                image_cv,
+                conf=confidence,
+                device=models.device,
+                verbose=False,
+                imgsz=640,
+            )[0]
+            names = panel_model.names
         boxes = results.boxes.xyxy if results.boxes is not None else torch.tensor([])
         classes = results.boxes.cls if results.boxes is not None else torch.tensor([])
 
@@ -1567,8 +1548,8 @@ def detect_panels(
 
         # Panels are the "frame" class
         frame_class_id = None
-        if hasattr(panel_model, "names"):
-            for class_id, class_name in panel_model.names.items():
+        if names:
+            for class_id, class_name in names.items():
                 if class_name.lower() == "frame":
                     frame_class_id = class_id
                     break

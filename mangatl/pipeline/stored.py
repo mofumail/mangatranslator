@@ -1,6 +1,6 @@
 """Stored pages in and out of the stages: what the editor and the agent work with.
 
-    w = load(project, "ch1/002.jpg")          # a WorkPage, as the pipeline left it
+    w = load(project, "ch1/002.jpg", models)  # a WorkPage, as the pipeline left it
     stages.ocr(w, ["r7"])                     # re-read one region
     stages.translate(w, ["r7"])               # same request (page context), only r7 changes
     stages.typeset(w); image = stages.render(w)
@@ -25,6 +25,7 @@ from PIL import Image
 
 from mangatl.common.image_utils import pil_to_cv2
 from mangatl.detect.outside_text import outside_text_crop
+from mangatl.engine import Models
 from mangatl.ocr import line_ocr
 from mangatl.pipeline.batch import natural_path_sort_key
 from mangatl.pipeline.page import _resolve_processing_scale
@@ -77,10 +78,12 @@ def _region_dict(project: Project, region: Region, page_cv: np.ndarray) -> dict:
     return item
 
 
-def load(project: Project, page_id: str) -> WorkPage:
-    """A stored page as a WorkPage, ready for any stage after detection."""
+def load(project: Project, page_id: str, models: Models) -> WorkPage:
+    """A stored page as a WorkPage, ready for any stage after detection; its stages call
+    `models` (an engine at a priority: Priority.INTERACTIVE for a person waiting)."""
     page = project.load_page(page_id)
-    config = Settings.model_validate_json(project.get_settings(page.settings)).resolve_secrets()
+    settings = Settings.model_validate_json(project.get_settings(page.settings)).resolve_secrets()
+    config = settings.with_models(models)
     work = work_image(project, page)
     page_cv = pil_to_cv2(work)
     source_format = Image.open(io.BytesIO(project.get_blob(page.source.blob))).format
@@ -115,13 +118,13 @@ def load(project: Project, page_id: str) -> WorkPage:
         osb_mime = "image/png" if source_format and source_format.upper() == "PNG" else "image/jpeg"
         osb_ext = ".png" if source_format and source_format.upper() == "PNG" else ".jpg"
         original_cv = cv2.cvtColor(np.array(detected), cv2.COLOR_RGB2BGR)
-        token = line_ocr.register_page(detected)
+        page_lines = line_ocr.PageLines(detected)
         for r in outside:
             assert r.outside is not None
             crop = outside_text_crop(original_cv, r.bbox, r.outside.original_bbox, config, config.verbose)
             ok, buffer = cv2.imencode(osb_ext, crop)
             item = items[r.id]
-            item.update(confidence=r.confidence, mime_type=osb_mime, mt_page=token)
+            item.update(confidence=r.confidence, mime_type=osb_mime, mt_page=page_lines)
             if ok:
                 item["image_b64"] = base64.b64encode(buffer).decode("utf-8")
     w.outside = [items[r.id] for r in outside]

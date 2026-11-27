@@ -70,7 +70,11 @@ page from the project alone and compares it with the PNG written (`--export DIR`
 | Typesetting | Skia/HarfBuzz renderer: per-page font size matching, hyphenation, markdown italics/bold for emphasis; ♥ ♪ ★ drawn from a bundled symbol font when the lettering font lacks them; sound effects keep the artist's lettering with a small English label beside it, sized to the effect (`--sfx redraw` to replace them) |
 
 The pipeline lives in `./mangatl`, derived from [MangaTranslator](https://github.com/meangrinch/MangaTranslator)
-(Apache-2.0, see `mangatl/NOTICE`); `translate.py` starts/stops llama-server, picks local defaults and forwards everything else.
+(Apache-2.0, see `mangatl/NOTICE`); `translate.py` picks local defaults and runs it in one process on
+one engine (`mangatl/engine`): models load on first use and stay loaded across chapters, idle ones are
+unloaded when free VRAM runs short (llama-server and other apps count; `--set
+runtime.vram_budget_mb=N` caps it), model files on disk are never re-checked online, and the engine
+starts and stops llama-server.
 
 ## Measured (RTX 4070 Ti 12 GB, 10 OpenMantra pages, ~110 bubbles)
 
@@ -173,8 +177,8 @@ once the model is accessible/downloaded.
 ## Development
 
 ```bash
-uv run --group dev pytest                 # unit + static tests; with models and a harness run of
-                                          # om10, also the stage API on a stored page (GPU)
+uv run --group dev python -m pytest       # unit + static tests; with models and a harness run of
+                                          # om10, also the stage API and the engine (GPU)
 uv run --group dev ruff check . && uv run --group dev ruff format --check .
 uv run --group dev pyright                # type check (our own modules; see [tool.pyright])
 uv run python eval/harness.py check       # regression check against the saved baseline (GPU)
@@ -194,7 +198,10 @@ mangatl/              the pipeline (derived from MangaTranslator at e347a09; see
   settings.py         Settings: one typed object (pydantic) describing a run, by stage; written to
                       <output>/settings.json with every run (secrets excluded)
   presets.py          user-facing options (translate.py, web UI) -> Settings
-  cli.py              runs one input with a settings file (translate.py runs `python -m mangatl.cli`)
+  cli.py              runs one input (run(): translate.py calls it in-process for each chapter)
+  engine/             the long-lived engine: every model (models.py: local-first download, loaders),
+                      lazy loading and unloading to fit free VRAM (engine.py), one GPU slot where
+                      interactive calls go before batch ones (gpu.py), llama-server (llm.py), jobs
   project/            the page document (model.py), operation log with undo / conflicts / staleness
                       (ops.py), the project file (store.py, SQLite), images as patches and 1-bit
                       masks (blobs.py), pipeline state in and out (capture.py), rebuild.py,
@@ -208,7 +215,7 @@ mangatl/              the pipeline (derived from MangaTranslator at e347a09; see
   clean/              bubble cleaning, glyph masks, LaMa inpainting
   translate/          prompts and calls (service.py), vision_pass.py, glossary, LLM client
   typeset/            layout, fonts, renderer, symbols, narration, sound-effect labels
-  ml/                 model loading (model_manager.py), RT-DETR adapter, SAM-TS (hi_sam)
+  ml/                 RT-DETR adapter, SAM-TS (hi_sam)
   common/             shared helpers: image utils, caching, logging, eval_hooks (harness)
   inputs/             archives and path lists
 bin/llama.cpp/        prebuilt llama.cpp b11972, CUDA 13.4
@@ -219,7 +226,8 @@ fonts/                Comic Neue (dialogue), Bangers (OSB/SFX) — both SIL OFL
                       Add your own as fonts/<Name>/ with -Regular/-Bold/-Italic in the file names
                       (e.g. CC Wild Words, Anime Ace; git-ignored, as their licenses forbid redistribution)
 tests/                unit tests and static checks (imports resolve, Settings reads exist);
-                      test_stages_gpu.py: region-scoped stages on a stored page
+                      test_stages_gpu.py: region-scoped stages on a stored page;
+                      test_engine_gpu.py: warm latency, a batch interleaved with editor requests
 eval/                 harness.py: regression check of every change against a saved baseline (replays
                       the LLM answers, diffs pages and text; see eval/README.md);
                       OpenMantra benchmark pages used to check quality; eval/djn/ doujin test runner;

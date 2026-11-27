@@ -41,7 +41,7 @@ def env():
     import json
 
     from mangatl.common import eval_hooks
-    from mangatl.ml.model_manager import get_model_manager
+    from mangatl.engine import Engine, Priority
     from mangatl.project.store import Project
     from mangatl.settings import DebugSettings
 
@@ -56,15 +56,21 @@ def env():
     if not debug.get("llm_replay") or not Path(debug.get("llm_cache") or "").is_dir():
         pytest.skip("the stored project doesn't replay a baseline cache")
     eval_hooks.configure(DebugSettings(**debug))
-    get_model_manager().set_models_dir(settings["runtime"]["models_dir"])
-    return src
+    engine = Engine(settings["runtime"]["models_dir"])
+    yield src, engine.models(Priority.INTERACTIVE)
+    engine.close()
+
+
+@pytest.fixture
+def models(env):
+    return env[1]
 
 
 @pytest.fixture
 def project(env, tmp_path):
     from mangatl.project.store import Project
 
-    shutil.copy(env, tmp_path / "project.mtl")
+    shutil.copy(env[0], tmp_path / "project.mtl")
     p = Project(tmp_path / "project.mtl", create=False)
     yield p
     p.close()
@@ -82,7 +88,7 @@ def _json(region) -> str:
     return region.model_dump_json()
 
 
-def test_reocr_one_region_leaves_the_others_untouched(project):
+def test_reocr_one_region_leaves_the_others_untouched(project, models):
     from mangatl.pipeline import stages, stored
     from mangatl.project import ops as oplog
 
@@ -92,7 +98,7 @@ def test_reocr_one_region_leaves_the_others_untouched(project):
     project.apply(PAGE, oplog.set_op(doc, ("regions", rid, "ocr"), "wrong read", author="user"))
     before = {r.id: _json(r) for r in project.load_page(PAGE).regions}
 
-    w = stored.load(project, PAGE)
+    w = stored.load(project, PAGE, models)
     stages.ocr(w, [rid])
     assert stored.save(project, PAGE, w, ran={"ocr"}, region_ids=[rid]) is not None
 
@@ -105,7 +111,7 @@ def test_reocr_one_region_leaves_the_others_untouched(project):
             assert _json(r) == before[r.id], r.id
 
 
-def test_edited_translation_changes_only_that_regions_pixels(project):
+def test_edited_translation_changes_only_that_regions_pixels(project, models):
     import numpy as np
     from PIL import Image
 
@@ -120,7 +126,7 @@ def test_edited_translation_changes_only_that_regions_pixels(project):
         PAGE, oplog.set_op(page.model_dump(mode="json"), ("regions", rid, "translation"), "Hello there!")
     )
 
-    w = stored.load(project, PAGE)
+    w = stored.load(project, PAGE, models)
     stages.typeset(w)
     image = stages.render(w).convert(w.target_mode)
     a, b = np.asarray(image), np.asarray(written.convert(image.mode))
@@ -140,7 +146,7 @@ def test_edited_translation_changes_only_that_regions_pixels(project):
     assert project.load_page(PAGE).region(rid).status["typeset"] == "done"
 
 
-def test_region_scoped_translate_sends_the_page_and_writes_one_region(project, tmp_path):
+def test_region_scoped_translate_sends_the_page_and_writes_one_region(project, tmp_path, models):
     from mangatl.pipeline import stages, stored
     from mangatl.project import ops as oplog
 
@@ -152,7 +158,7 @@ def test_region_scoped_translate_sends_the_page_and_writes_one_region(project, t
     ops2 = oplog.set_op(doc, ("regions", redo, "translation"), "REDO ME", author="user")
     project.apply(PAGE, ops + ops2)
 
-    w = stored.load(project, PAGE)
+    w = stored.load(project, PAGE, models)
     empty = tmp_path / "glossary.txt"
     empty.write_text("")  # as it was when the page was first translated
     w.config = w.config.updated(**{"translation.glossary_path": empty})
@@ -166,7 +172,7 @@ def test_region_scoped_translate_sends_the_page_and_writes_one_region(project, t
     assert after.region(keep).translation == "KEEP ME"
 
 
-def test_locked_regions_are_left_alone(project):
+def test_locked_regions_are_left_alone(project, models):
     from mangatl.pipeline import stages, stored
     from mangatl.project import ops as oplog
 
@@ -178,7 +184,7 @@ def test_locked_regions_are_left_alone(project):
     ops += oplog.set_op(doc, ("regions", rid, "locked"), True, author="user")
     project.apply(PAGE, ops)
 
-    w = stored.load(project, PAGE)
+    w = stored.load(project, PAGE, models)
     stages.ocr(w)  # every region
     stored.save(project, PAGE, w, ran={"ocr"})
     region = project.load_page(PAGE).region(rid)
@@ -200,14 +206,14 @@ def _rerun_after_redetect(w, found, project, glossary):
     stages.typeset(w)
 
 
-def test_redetecting_an_unchanged_page_keeps_every_region(project, tmp_path):
+def test_redetecting_an_unchanged_page_keeps_every_region(project, tmp_path, models):
     import numpy as np
     from PIL import Image
 
     from mangatl.pipeline import stages, stored
 
     page = project.load_page(PAGE)
-    w = stored.load(project, PAGE)
+    w = stored.load(project, PAGE, models)
     found = stages.redetect(w)
     assert sorted(found.same) == sorted(r.id for r in page.regions)
     assert not (found.moved or found.added or found.removed or found.kept)
@@ -222,7 +228,7 @@ def test_redetecting_an_unchanged_page_keeps_every_region(project, tmp_path):
     assert [r.id for r in after.regions] == [r.id for r in page.regions]
 
 
-def test_a_region_found_again_gets_a_new_id_and_the_others_keep_theirs(project, tmp_path):
+def test_a_region_found_again_gets_a_new_id_and_the_others_keep_theirs(project, tmp_path, models):
     import numpy as np
     from PIL import Image
 
@@ -235,7 +241,7 @@ def test_a_region_found_again_gets_a_new_id_and_the_others_keep_theirs(project, 
     project.apply(PAGE, oplog.set_op(page.model_dump(mode="json"), ("regions", gone), None))
     before = {r.id: r.model_dump_json() for r in project.load_page(PAGE).regions}
 
-    w = stored.load(project, PAGE)
+    w = stored.load(project, PAGE, models)
     margin = 10
     found = stages.redetect(w, area=(box[0] - margin, box[1] - margin, box[2] + margin, box[3] + margin))
     assert found.added == [f"r{page.next_region}"] and not found.removed
@@ -258,7 +264,7 @@ def test_a_region_found_again_gets_a_new_id_and_the_others_keep_theirs(project, 
             assert r.model_dump_json() == before[r.id], r.id
 
 
-def test_a_vanished_region_with_a_persons_work_is_kept_and_flagged(project):
+def test_a_vanished_region_with_a_persons_work_is_kept_and_flagged(project, models):
     from mangatl.pipeline import stages, stored
     from mangatl.project import ops as oplog
     from mangatl.project.model import Region
@@ -280,6 +286,6 @@ def test_a_vanished_region_with_a_persons_work_is_kept_and_flagged(project):
     ops += oplog.set_op(doc, ("next_region",), page.next_region + 1)
     project.apply(PAGE, ops)
 
-    w = stored.load(project, PAGE)
+    w = stored.load(project, PAGE, models)
     found = stages.redetect(w)
     assert found.kept == [ghost["id"]] and not found.removed

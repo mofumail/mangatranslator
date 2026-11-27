@@ -8,9 +8,8 @@ from scipy.ndimage import distance_transform_edt
 
 from mangatl.common.caching import get_cache
 from mangatl.common.cancellation import raise_if_cancelled
-from mangatl.common.device import get_best_device, get_best_dtype
 from mangatl.common.log import log_message
-from mangatl.ml.model_manager import get_model_manager
+from mangatl.engine import Model
 
 # Dynamic edge feathering scaled to bubble size; clamped to prevent sharp seams on small text or bleed on large text
 BLUR_SCALE_FACTOR = 0.1
@@ -50,13 +49,13 @@ def _prompt_value_to_device(value, device: torch.device):
 def make_inpainter(
     method: str,
     *,
-    device: torch.device | None,
+    models,
     luminance_correction: bool,
     verbose: bool = False,
 ):
     """The inpainting model for a method key: LaMa Manga ("lama_manga"), else None."""
     if method == "lama_manga":
-        return LamaInpainter(device=device, luminance_correction=luminance_correction, verbose=verbose)
+        return LamaInpainter(models, luminance_correction=luminance_correction, verbose=verbose)
     return None
 
 
@@ -277,16 +276,14 @@ def _match_luminance(
 class _CropInpainter:
     """Inpaints a padded crop around the mask and blends the patch back in.
 
-    Subclasses set `model_key` and `label` and provide load_models, unload_models,
-    and _generate_patch.
+    Subclasses set `model` (the engine's), `model_key` and `label` and provide _generate_patch.
     """
 
+    model: Model
     model_key = ""
     label = ""
     PROMPT = ""
     GUIDANCE_SCALE = 1.0
-    # Diffusion models need the VRAM the text segmentation model holds
-    PARKS_TEXT_SAM = True
 
     # DiT patch requirements (multiples of 16) and VRAM cap (~4MP max inference)
     MIN_RESOLUTION = 64
@@ -299,7 +296,7 @@ class _CropInpainter:
         self,
         *,
         backend: str,
-        device: torch.device | None,
+        models,
         num_inference_steps: int,
         luminance_correction: bool,
         upscale_small_crops: bool,
@@ -311,20 +308,13 @@ class _CropInpainter:
         self.upscale_small_crops = upscale_small_crops
         self.verbose = verbose
 
-        self.DEVICE = device if device is not None else get_best_device()
-        self.DTYPE = get_best_dtype(self.DEVICE)
-        self.manager = get_model_manager()
+        self.models = models
+        self.DEVICE = models.device
         self.cache = get_cache()
-        self.pipeline = None
-
-    def load_models(self):
-        raise NotImplementedError
-
-    def unload_models(self):
-        raise NotImplementedError
 
     def _generate_patch(
         self,
+        net,
         image: Image.Image,
         mask: np.ndarray,
         width: int,
@@ -611,20 +601,10 @@ class _CropInpainter:
 
             log_message("  - Running inference...", verbose=verbose)
 
-            with self.manager.inference_lock:
-                raise_if_cancelled()  # Jobs queued on the lock skip their inference
-                if self.PARKS_TEXT_SAM:
-                    self.manager.park_text_sam(verbose=verbose)
-                self.load_models()
-
-                if self.pipeline is None:
-                    log_message(
-                        f"Warning: {self.label} pipeline unavailable.",
-                        always_print=True,
-                    )
-                    return image_pil
-
+            with self.models.use(self.model) as net:
+                raise_if_cancelled()  # Jobs queued for the GPU skip their inference
                 generated_patch_pil = self._generate_patch(
+                    net,
                     inference_image,
                     mask_crop_np,
                     inference_w,
@@ -658,21 +638,20 @@ class _CropInpainter:
 class LamaInpainter(_CropInpainter):
     """Inpainter using the manga-finetuned Big-LaMa, a fast non-diffusion model."""
 
+    model = Model.LAMA
     model_key = "lama_manga"
     label = "LaMa Manga"
-    # Small enough to share the device with the text segmentation model
-    PARKS_TEXT_SAM = False
 
     def __init__(
         self,
-        device: torch.device | None = None,
+        models,
         luminance_correction: bool = True,
         verbose: bool = False,
     ):
         # LaMa fills from the crop's own context, so it runs at native resolution
         super().__init__(
             backend="torch",
-            device=device,
+            models=models,
             num_inference_steps=1,
             luminance_correction=luminance_correction,
             upscale_small_crops=False,
@@ -703,16 +682,9 @@ class LamaInpainter(_CropInpainter):
             **kwargs,
         )
 
-    def load_models(self):
-        if self.pipeline is None:
-            self.pipeline = self.manager.load_lama_manga(verbose=self.verbose)
-
-    def unload_models(self):
-        self.pipeline = None
-        self.manager.unload_lama_manga()
-
     def _generate_patch(
         self,
+        net,
         image: Image.Image,
         mask: np.ndarray,
         width: int,
@@ -724,11 +696,11 @@ class LamaInpainter(_CropInpainter):
             mask = cv2.resize(mask.astype(np.uint8), (width, height), interpolation=cv2.INTER_NEAREST).astype(
                 bool
             )
-        device = self.pipeline.device
+        device = net.device
         image_np = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
         image_t = torch.from_numpy(image_np).permute(2, 0, 1)[None].to(device)
         mask_t = torch.from_numpy(mask.astype(np.float32))[None, None].to(device)
         with torch.inference_mode():
-            output = self.pipeline(image_t, mask_t)
+            output = net(image_t, mask_t)
         output_np = output[0].permute(1, 2, 0).clamp(0, 1).cpu().numpy()
         return Image.fromarray((output_np * 255).round().astype(np.uint8))

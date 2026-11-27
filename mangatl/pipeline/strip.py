@@ -82,10 +82,9 @@ def detect_strip_text_rows(crop: Image.Image, image_path: Path, config: Settings
     """Row ranges occupied by bubbles and text in a strip crop, for choosing cut rows."""
     bubbles, text_free_boxes = detect_speech_bubbles(
         image_path,
-        config.yolo_model_path,
+        config.models,
         config.detection.confidence,
         verbose=config.verbose,
-        device=config.device,
         conjoined_detection=config.detection.conjoined,
         conjoined_confidence=config.detection.conjoined_confidence,
         image_override=crop,

@@ -37,6 +37,9 @@ class RuntimeSettings(_Section):
     device: Literal["auto", "cpu"] = "auto"
     hf_cache: bool = False  # load Hugging Face models from the default HF cache
     hf_token: str = Field(default="", exclude=True, repr=False)  # gated downloads; from HF_TOKEN / token file
+    # VRAM the pipeline's models may hold (MB; None: whatever is free). Idle models are unloaded
+    # to stay under it, e.g. to leave room for a game or a bigger translator.
+    vram_budget_mb: float | None = Field(default=None, ge=0)
     verbose: bool = False
     cleaning_only: bool = False
     # Parallel requests to the translator (useful with hosted models; llama-server serves one)
@@ -292,7 +295,7 @@ class Settings(_Section):
     preprocessing: PreprocessingSettings = Field(default_factory=lambda: PreprocessingSettings())
     debug: DebugSettings = Field(default_factory=lambda: DebugSettings())
 
-    _device: Any = PrivateAttr(default=None)
+    _models: Any = PrivateAttr(default=None)
     _request_coordinator: Any = PrivateAttr(default=None)
 
     # --- runtime-only state -------------------------------------------------------------
@@ -301,15 +304,23 @@ class Settings(_Section):
         return self.runtime.verbose
 
     @property
+    def models(self):
+        """The engine's models this run calls (mangatl.engine.Models), attached by whoever runs
+        it: with_models()."""
+        if self._models is None:
+            raise RuntimeError("no engine attached to these settings (Settings.with_models)")
+        return self._models
+
+    def with_models(self, models) -> Settings:
+        """A copy whose pipeline calls go to `models` (an engine at a priority)."""
+        new = self.model_copy()
+        new._models, new._request_coordinator = models, self._request_coordinator
+        return new
+
+    @property
     def device(self):
-        """The torch device for this run (resolved from runtime.device on first use)."""
-        if self._device is None:
-            import torch
-
-            from mangatl.common.device import get_best_device
-
-            self._device = torch.device("cpu") if self.runtime.device == "cpu" else get_best_device()
-        return self._device
+        """The torch device the engine runs models on."""
+        return self.models.device
 
     @property
     def request_coordinator(self):
@@ -319,17 +330,6 @@ class Settings(_Section):
     @request_coordinator.setter
     def request_coordinator(self, value) -> None:
         self._request_coordinator = value
-
-    @property
-    def yolo_model_path(self) -> str:
-        """Bubble detector weights (downloaded by the model manager when missing)."""
-        yolo_dir = self.runtime.models_dir / "detection" / "yolo"
-        name = (
-            "manga109-segmentation-bubble.pt"
-            if self.detection.bubble_model == "yolo_2"
-            else "yolov8m_seg-speech-bubble.pt"
-        )
-        return str(yolo_dir / name)
 
     # --- persistence --------------------------------------------------------------------
     def resolve_secrets(self) -> Settings:
@@ -368,7 +368,7 @@ class Settings(_Section):
         """Re-validate every value (e.g. after --set), keeping secrets and runtime state."""
         new = type(self).model_validate(self.model_dump())
         new.runtime.hf_token, new.translation.api_key = self.runtime.hf_token, self.translation.api_key
-        new._device, new._request_coordinator = self._device, self._request_coordinator
+        new._models, new._request_coordinator = self._models, self._request_coordinator
         return new
 
 

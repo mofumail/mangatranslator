@@ -6,10 +6,9 @@ import torch
 from PIL import Image
 
 from mangatl.common.caching import get_cache
-from mangatl.common.device import get_best_device
 from mangatl.common.exceptions import ImageProcessingError
 from mangatl.common.log import log_message
-from mangatl.ml.model_manager import ModelType, get_model_manager
+from mangatl.engine.models import Model
 
 OSB_BUBBLE_MATCH_IOA_THRESHOLD = 0.2  # Minimum text-box overlap ratio for OSB assignment
 TEXT_FREE_BUBBLE_IOA_THRESHOLD = 0.5  # Bubble treated as text_free only with substantial overlap
@@ -28,18 +27,11 @@ class OutsideTextDetector:
 
     def __init__(
         self,
-        device: torch.device | None = None,
-        hf_token: str | None = None,
+        models,
     ):
-        """Initialize the outside text detector.
-
-        Args:
-            device: PyTorch device to use. Auto-detects if None.
-            hf_token: Hugging Face token for gated repo access.
-        """
-        self.device = device if device is not None else get_best_device()
-        self.hf_token = hf_token
-        self.manager = get_model_manager()
+        """models: the engine's models (mangatl.engine.Models) the detectors run on."""
+        self.models = models
+        self.device = models.device
         self.cache = get_cache()
 
     def boxes_overlap(self, box1, box2):
@@ -205,14 +197,9 @@ class OutsideTextDetector:
 
         return filtered_results
 
-    def unload_models(self):
-        """Unload OCR models via model manager to free GPU/CPU memory."""
-        self.manager.unload_ocr_models()
-
     def detect_outside_text(
         self,
         image_path: str,
-        yolo_model_path: str | None = None,
         confidence: float = 0.6,
         conjoined_confidence: float = 0.35,
         verbose: bool = False,
@@ -227,7 +214,6 @@ class OutsideTextDetector:
 
         Args:
             image_path: Path to the input image.
-            yolo_model_path: Optional custom YOLO model path.
             confidence: Confidence threshold for primary YOLO model detections.
             conjoined_confidence: Confidence threshold for secondary RT-DETR model (conjoined bubble detection).
             verbose: If True, logs intermediate steps.
@@ -296,11 +282,8 @@ class OutsideTextDetector:
         else:
             log_message("Running YOLO detection for speech bubbles...", verbose=verbose)
 
-            sb_model_path = (
-                str(self.manager.model_paths[ModelType.YOLO_SPEECH_BUBBLE])
-                if yolo_model_path is None
-                else yolo_model_path
-            )
+            sb_model = Model.BUBBLES_2 if bubble_detector_model == "yolo_2" else Model.BUBBLES
+            sb_model_path = str(self.models.path(sb_model))
             sb_cache_key = self.cache.get_yolo_cache_key(image_pil, sb_model_path, confidence)
             cached_sb = self.cache.get_yolo_detection(sb_cache_key)
 
@@ -308,15 +291,15 @@ class OutsideTextDetector:
                 log_message("  - Using cached speech bubble detections", always_print=True)
                 yolo_results, yolo_boxes = cached_sb
             else:
-                yolo_model = self.manager.load_yolo_speech_bubble(yolo_model_path)
-                yolo_results = yolo_model(
-                    image_cv,
-                    conf=confidence,
-                    device=self.device,
-                    verbose=False,
-                    imgsz=1600 if bubble_detector_model == "yolo_2" else 640,
-                    retina_masks=True,
-                )[0]
+                with self.models.use(sb_model) as yolo_model:
+                    yolo_results = yolo_model(
+                        image_cv,
+                        conf=confidence,
+                        device=self.device,
+                        verbose=False,
+                        imgsz=1600 if bubble_detector_model == "yolo_2" else 640,
+                        retina_masks=True,
+                    )[0]
                 yolo_boxes = yolo_results.boxes.xyxy if yolo_results.boxes is not None else torch.tensor([])
                 self.cache.set_yolo_detection(sb_cache_key, (yolo_results, yolo_boxes))
 
@@ -329,14 +312,15 @@ class OutsideTextDetector:
         if (text_free_only and not text_free_boxes) or not provided_bubble_boxes:
             log_message("Running secondary RT-DETR to catch missed bubbles...", verbose=verbose)
             try:
-                sec_model = self.manager.load_rtdetr_conjoined_bubble()
-                sec_results = sec_model(
-                    image_cv,
-                    conf=conjoined_confidence,
-                    device=self.device,
-                    verbose=False,
-                    imgsz=640,
-                )[0]
+                with self.models.use(Model.CONJOINED) as sec_model:
+                    sec_results = sec_model(
+                        image_cv,
+                        conf=conjoined_confidence,
+                        device=self.device,
+                        verbose=False,
+                        imgsz=640,
+                    )[0]
+                    names = getattr(sec_model, "names", None)
 
                 sec_boxes = sec_results.boxes.xyxy if sec_results.boxes is not None else torch.tensor([])
                 sec_cls = sec_results.boxes.cls if sec_results.boxes is not None else torch.tensor([])
@@ -344,8 +328,8 @@ class OutsideTextDetector:
                 # bubble = speech bubbles; text_free = OSB; ignore text_bubble (in-bubble text)
                 bubble_id = None
                 tf_id = None
-                if hasattr(sec_model, "names"):
-                    for cid, cname in sec_model.names.items():
+                if names is not None:
+                    for cid, cname in names.items():
                         if cname == "bubble":
                             bubble_id = cid
                         elif cname == "text_free":
@@ -399,7 +383,7 @@ class OutsideTextDetector:
         else:
             log_message("Running YOLO OSB Text...", always_print=True)
             try:
-                osbtext_model_path = str(self.manager.model_paths[ModelType.YOLO_OSBTEXT])
+                osbtext_model_path = str(self.models.path(Model.OUTSIDE_TEXT))
                 osbtext_cache_key = self.cache.get_yolo_cache_key(image_pil, osbtext_model_path, confidence)
 
                 cached_osbtext = self.cache.get_yolo_detection(osbtext_cache_key)
@@ -411,14 +395,14 @@ class OutsideTextDetector:
                     )
                     osbtext_results, osbtext_boxes, osbtext_confs = cached_osbtext
                 else:
-                    osbtext_model = self.manager.load_yolo_osbtext(token=self.hf_token)
-                    osbtext_results = osbtext_model(
-                        image_cv,
-                        conf=confidence,
-                        device=self.device,
-                        verbose=False,
-                        imgsz=640,
-                    )[0]
+                    with self.models.use(Model.OUTSIDE_TEXT) as osbtext_model:
+                        osbtext_results = osbtext_model(
+                            image_cv,
+                            conf=confidence,
+                            device=self.device,
+                            verbose=False,
+                            imgsz=640,
+                        )[0]
                     osbtext_boxes = osbtext_results.boxes.xyxy if osbtext_results.boxes is not None else None
                     osbtext_confs = osbtext_results.boxes.conf if osbtext_results.boxes is not None else None
                     self.cache.set_yolo_detection(
@@ -503,7 +487,6 @@ class OutsideTextDetector:
     ) -> list[list[tuple[tuple[float, float, float, float], float]]]:
         """OSB text detections for each region, from crops around it at several pads
         and input sizes, as (page box, confidence) pairs."""
-        model = self.manager.load_yolo_osbtext(token=self.hf_token)
         img_h, img_w = image_cv.shape[:2]
         regions = [tuple(int(c) for c in box) for box in boxes]
         crops = []  # (region index, crop origin, crop)
@@ -520,7 +503,8 @@ class OutsideTextDetector:
         # texts on the sample pages and saved under a tenth of a second per page
         for index, origin, crop in crops:
             for size in NEAR_CROP_SIZES:
-                result = model(crop, conf=confidence, device=self.device, verbose=False, imgsz=size)[0]
+                with self.models.use(Model.OUTSIDE_TEXT) as model:
+                    result = model(crop, conf=confidence, device=self.device, verbose=False, imgsz=size)[0]
                 found[index] += self._near_detections(result, origin, regions[index], confidence)
         return found
 

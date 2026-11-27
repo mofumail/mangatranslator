@@ -9,7 +9,6 @@ from typing import Optional
 from PIL import Image
 
 from mangatl.common import eval_hooks
-from mangatl.common.caching import get_cache
 from mangatl.common.cancellation import CancellationManager, raise_if_manager_cancelled
 from mangatl.common.exceptions import ImageProcessingError
 from mangatl.common.image_utils import (
@@ -18,7 +17,6 @@ from mangatl.common.image_utils import (
     upscale_image,
 )
 from mangatl.common.log import log_message
-from mangatl.ml.model_manager import get_model_manager
 from mangatl.pipeline import stages
 from mangatl.pipeline.stages import get_image_encoding_params
 from mangatl.pipeline.strip import detect_strip_text_rows, find_cut_rows, translate_strip
@@ -48,7 +46,7 @@ def _apply_pre_upscale_if_needed(
         return image, 1.0
 
     model_type = config.preprocessing.upscale_model
-    upscaled = upscale_image(image, factor, model_type=model_type, verbose=verbose)
+    upscaled = upscale_image(image, factor, config.models, model_type=model_type, verbose=verbose)
     return upscaled, factor
 
 
@@ -173,8 +171,6 @@ def translate_and_render(
 
     log_message(f"Using device: {config.device}", verbose=verbose)
 
-    get_model_manager().set_hf_token(config.runtime.hf_token)
-
     pil_original = _open_source_image(image_path)
     image_format = pil_original.format
     mime_type, cv2_ext = get_image_encoding_params(image_format)
@@ -205,7 +201,6 @@ def translate_and_render(
 
     page, _ = _apply_pre_upscale_if_needed(page, config, verbose)
     processing_scale = _resolve_processing_scale(page, config)
-    get_cache().set_current_image(page, verbose)
     work = stages.WorkPage(
         config=config,
         image=page,

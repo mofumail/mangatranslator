@@ -7,41 +7,20 @@ no `trust_remote_code` is used; only weights, tokenizer and JSON configs are dow
 from __future__ import annotations
 
 import json
-import threading
 from pathlib import Path
 
 import torch
 from PIL import Image
 
-REPO = "JustANormalTinkerer/hayai-ocr-v2.5-nova"
-REVISION = "2803d0dc005fa4396ab1e7c5a472d2c450a247f7"  # matches vendor/hayai
-SIGLIP = "google/siglip2-base-patch16-naflex"
-
-_lock = threading.Lock()
-_gen_lock = threading.Lock()
-_instance: "HayaiOCR | None" = None
-
 
 class HayaiOCR:
-    def __init__(self, models_dir: Path, device: str = "cuda"):
-        from huggingface_hub import snapshot_download
+    def __init__(self, weights: Path, siglip: Path, device: str = "cuda"):
+        """weights: the model's snapshot (mangatl.engine.models fetches it at the pinned
+        revision); siglip: the SigLIP2 configs its vision tower and processor use."""
         from transformers import PreTrainedTokenizerFast, Siglip2ImageProcessor
 
         from vendor.hayai.configuration_hayai import HayaiConfig
         from vendor.hayai.modeling_hayai import HayaiModel
-
-        base = Path(models_dir) / "ocr"
-        weights = snapshot_download(
-            REPO,
-            revision=REVISION,
-            local_dir=base / "hayai-ocr-v2.5-nova",
-            allow_patterns=["model.safetensors", "config.json", "tokenizer.json", "tokenizer_config.json"],
-        )
-        siglip = snapshot_download(
-            SIGLIP,
-            local_dir=base / "siglip2-naflex",
-            allow_patterns=["config.json", "preprocessor_config.json"],
-        )
 
         cfg = HayaiConfig.from_pretrained(weights)
         cfg.vision_config = json.loads((Path(siglip) / "config.json").read_text())["vision_config"]
@@ -58,23 +37,15 @@ class HayaiOCR:
             images=[im.convert("RGB") for im in images], max_num_patches=max_patches, return_tensors="pt"
         ).to(self.device)
         # Plain PyTorch path: the fused engine records CUDA graphs, which crashed the GPU context
-        # ("illegal memory access") while upstream inpaints from another thread at the same time.
-        with _gen_lock:
-            return self.model.generate(
-                pixel_values=inp["pixel_values"],
-                pixel_attention_mask=inp["pixel_attention_mask"],
-                spatial_shapes=inp["spatial_shapes"],
-                tokenizer=self.tokenizer,
-                max_new_tokens=max_new_tokens,
-                repetition_penalty=1.0,
-                use_cuda_graph=False,
-                fast_engine=False,
-            )
-
-
-def get(models_dir: Path, device: str = "cuda") -> HayaiOCR:
-    global _instance
-    with _lock:
-        if _instance is None:
-            _instance = HayaiOCR(models_dir, device)
-        return _instance
+        # ("illegal memory access") while another thread inpainted (calls are serialised by the
+        # engine's GPU slot now, but graphs would also pin memory between calls).
+        return self.model.generate(
+            pixel_values=inp["pixel_values"],
+            pixel_attention_mask=inp["pixel_attention_mask"],
+            spatial_shapes=inp["spatial_shapes"],
+            tokenizer=self.tokenizer,
+            max_new_tokens=max_new_tokens,
+            repetition_penalty=1.0,
+            use_cuda_graph=False,
+            fast_engine=False,
+        )

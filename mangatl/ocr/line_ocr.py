@@ -11,11 +11,8 @@ onomatopoeia. Used by translate.service._perform_manga_ocr.
 
 from __future__ import annotations
 
-import itertools
 import re
 import threading
-from collections import OrderedDict
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -62,35 +59,25 @@ def is_other_cjk(text: str) -> bool:
 
 
 # CTD is a page-level detector (trained on whole pages at 1024 px), so it runs once per page,
-# like in manga-image-translator; each region then takes the lines that fall inside it.
-# Pages are registered when the outside-text regions are built (same coordinates).
-_page_lock = threading.Lock()
-_page_ids = itertools.count(1)
-_PAGES: "OrderedDict[int, Image.Image]" = OrderedDict()
-_PAGE_LINES: dict[int, list] = {}
+# like in manga-image-translator; each region then takes the lines that fall inside it. The
+# outside-text regions of a page share one PageLines (same coordinates as their boxes).
+class PageLines:
+    """A page and its text lines, detected on first use."""
 
+    def __init__(self, image: Image.Image):
+        self.image = image
+        self._lines: list | None = None
+        self._lock = threading.Lock()
 
-def register_page(pil_image: Image.Image) -> int:
-    with _page_lock:
-        token = next(_page_ids)
-        _PAGES[token] = pil_image
-        while len(_PAGES) > 4:  # a few pages in flight at most
-            old, _ = _PAGES.popitem(last=False)
-            _PAGE_LINES.pop(old, None)
-        return token
+    def lines(self, models) -> list:
+        from mangatl.engine import Model
 
-
-def _page_lines(token: int, models_dir: Path) -> list:
-    from mangatl.detect import text_lines
-
-    with _page_lock:
-        if token in _PAGE_LINES:
-            return _PAGE_LINES[token]
-        page = _PAGES.get(token)
-    lines = text_lines.get(models_dir).detect(page) if page is not None else []
-    with _page_lock:
-        _PAGE_LINES[token] = lines
-    return lines
+        with self._lock:
+            if self._lines is None:
+                with models.use(Model.TEXT_LINES) as detector:
+                    self._lines = list(detector.detect(self.image))
+            lines: list = self._lines
+            return lines
 
 
 def _lines_in(lines: list, box) -> list:
@@ -137,32 +124,29 @@ def pick_sfx_read(tight: str, padded: str) -> str:
     return pick_read(tight, padded)
 
 
-def read_region(meta: dict, models_dir: Path, rtl: bool = True) -> str | None:
+def read_region(meta: dict, models, rtl: bool = True) -> str | None:
     """Hayai OCR of one outside-text region: line by line when it holds MIN_LINES or more
     detected lines, otherwise the whole region in one pass (sound effects, short asides; Hayai
     was trained on onomatopoeia, manga-ocr was not). None (keep upstream's read) if the page
     is unknown."""
     from mangatl.detect import text_lines
-    from mangatl.ocr import hayai as hayai_ocr
+    from mangatl.engine import Model
 
-    token = meta.get("mt_page")
+    page_lines = meta.get("mt_page")
     box = meta.get("original_bbox") or meta.get("bbox")
-    page = _PAGES.get(token) if token else None
-    if token is None or page is None or not box or len(box) != 4:
+    if not isinstance(page_lines, PageLines) or not box or len(box) != 4:
         return None
-    lines = text_lines.reading_order(_lines_in(_page_lines(token, models_dir), box), rtl=rtl)
+    page = page_lines.image
+    lines = text_lines.reading_order(_lines_in(page_lines.lines(models), box), rtl=rtl)
     W, H = page.size
     if len(lines) < MIN_LINES:
         x1, y1, x2, y2 = (int(v) for v in box)
         if x2 - x1 < 4 or y2 - y1 < 4:
             return None
         crop = page.crop((max(0, x1), max(0, y1), min(W, x2), min(H, y2))).convert("RGB")
-        tight, padded = (
-            t.strip()
-            for t in hayai_ocr.get(models_dir).read(
-                [crop, _pad_mean(crop)], max_patches=512, max_new_tokens=64
-            )
-        )
+        with models.use(Model.HAYAI) as hayai:
+            reads = hayai.read([crop, _pad_mean(crop)], max_patches=512, max_new_tokens=64)
+        tight, padded = (t.strip() for t in reads)
         return pick_sfx_read(tight, padded) or None
     pieces = []
     for line in lines:
@@ -172,7 +156,8 @@ def read_region(meta: dict, models_dir: Path, rtl: bool = True) -> str | None:
                 (max(0, line.x1 - pad), max(0, line.y1 - pad), min(W, line.x2 + pad), min(H, line.y2 + pad))
             )
         )
-    texts = [t.strip() for t in hayai_ocr.get(models_dir).read(pieces, max_patches=512, max_new_tokens=160)]
+    with models.use(Model.HAYAI) as hayai:
+        texts = [t.strip() for t in hayai.read(pieces, max_patches=512, max_new_tokens=160)]
     texts = [t for t in texts if t]
     if not texts:
         return None

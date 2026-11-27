@@ -10,7 +10,8 @@ Pipeline (all on this machine):
 
 The pipeline lives in ./mangatl (derived from MangaTranslator, see mangatl/NOTICE). This wrapper
 turns its options into one Settings object (mangatl/presets.py), writes it to
-<output>/settings.json, starts/stops llama-server and runs the pipeline per chapter.
+<output>/settings.json and runs the pipeline per chapter in this process, on one engine
+(mangatl.engine: models stay loaded across chapters; it starts and stops llama-server).
 
 Usage:
   uv run python translate.py --input chapter01/ --output chapter01_en/
@@ -25,25 +26,24 @@ import argparse
 import atexit
 import os
 import re
-import shlex
 import shutil
 import signal
-import subprocess
 import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 from mangatl import presets
+from mangatl.common.cancellation import CancellationManager
+from mangatl.engine.llm import server_healthy
 from mangatl.settings import FONTS_DIR, Settings
 
 MODELS_DIR = ROOT / "models"
-LOG_DIR = ROOT / "logs"
-LLAMA_SERVER = ROOT / "bin" / "llama.cpp" / "llama-server"
 
 OSB_TEXT_MODEL = MODELS_DIR / "detection" / "yolo" / "animetext_yolov12x.pt"
 OSB_TEXT_URL = "https://huggingface.co/deepghs/AnimeText_yolo/resolve/main/yolo12x_animetext/model.pt"
@@ -51,94 +51,6 @@ OSB_TEXT_URL = "https://huggingface.co/deepghs/AnimeText_yolo/resolve/main/yolo1
 
 def log(msg: str) -> None:
     print(f"[translate] {msg}", flush=True)
-
-
-# --------------------------------------------------------------------------- llama-server
-
-
-def server_healthy(base_url: str) -> bool:
-    root = base_url.rstrip("/").removesuffix("/v1")
-    try:
-        with urllib.request.urlopen(f"{root}/health", timeout=2) as r:
-            return r.status == 200
-    except (urllib.error.URLError, OSError):
-        return False
-
-
-def start_llama_server(server, vision: bool, repo: str) -> subprocess.Popen:
-    if not LLAMA_SERVER.exists():
-        sys.exit(f"llama-server not found at {LLAMA_SERVER}")
-    if not Path(server.gguf).exists():
-        sys.exit(f"LLM weights not found: {server.gguf}")
-
-    cmd = [
-        str(LLAMA_SERVER),
-        "-m",
-        str(server.gguf),
-        "--alias",
-        presets.model_alias(server.gguf),
-        "--host",
-        "127.0.0.1",
-        "--port",
-        str(server.port),
-        "-c",
-        str(server.ctx),
-        "-np",
-        "1",
-        "-ngl",
-        "99",
-        "-fa",
-        "on",
-        "--reasoning",
-        "off",  # thinking burns tokens without improving translations
-        "--no-webui",
-    ]
-    if vision:
-        if not Path(server.mmproj).exists():
-            sys.exit(
-                f"Vision projector not found: {server.mmproj}\n"
-                f"Download mmproj-F16.gguf from https://huggingface.co/{repo} to that path."
-            )
-        # Gemma 4 vision needs the whole image in one ubatch
-        cmd += ["--mmproj", str(server.mmproj), "-b", "2048", "-ub", "2048"]
-    else:
-        cmd += ["--no-mmproj"]
-    if server.cpu_moe:  # MoE models: keep expert weights of the first N layers in system RAM
-        cmd += ["--n-cpu-moe", str(server.cpu_moe)]
-    extra = shlex.split(server.extra_args)
-    if "--fit" in extra or "-fit" in extra:  # let llama.cpp choose the GPU layer count
-        i = cmd.index("-ngl")
-        del cmd[i : i + 2]
-    cmd += extra
-
-    LOG_DIR.mkdir(exist_ok=True)
-    log_path = LOG_DIR / "llama-server.log"
-    log(f"Starting llama-server ({'vision' if vision else 'text-only'}), log: {log_path}")
-    logf = open(log_path, "w")
-    proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
-
-    def _stop() -> None:
-        if proc.poll() is None:
-            log("Stopping llama-server")
-            proc.send_signal(signal.SIGINT)
-            try:
-                proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-        logf.close()
-
-    atexit.register(_stop)
-
-    url = f"http://127.0.0.1:{server.port}/v1"
-    deadline = time.time() + 300
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            sys.exit(f"llama-server exited early (code {proc.returncode}); see {log_path}")
-        if server_healthy(url):
-            log("llama-server ready")
-            return proc
-        time.sleep(1)
-    sys.exit(f"llama-server did not become healthy in time; see {log_path}")
 
 
 # --------------------------------------------------------------------------- helpers
@@ -349,6 +261,8 @@ def parse_args() -> argparse.Namespace:
         help="Any setting, e.g. --set typesetting.bubbles.max_font_size=28 (repeatable)",
     )
     p.add_argument("--show-settings", action="store_true", help="Print the run's settings as JSON and exit")
+    p.add_argument("--gpu-restarts", type=int, default=0, help=argparse.SUPPRESS)  # after a CUDA fault
+    p.add_argument("--started", type=float, default=0.0, help=argparse.SUPPRESS)
     p.add_argument("--dry-run", action="store_true", help="Print the pipeline commands and exit")
 
     d = p.add_argument_group("evaluation (eval/harness.py)")
@@ -418,19 +332,80 @@ def build_settings(args: argparse.Namespace, out: Path, batch: bool, outside_tex
         sys.exit(f"--set: {e}")
 
 
+class _Watch:
+    """stdout and stderr, watched line by line: the page in progress, problems the pipeline only
+    logs (it still exits 0 and writes untranslated pages), and CUDA faults that poison the process."""
+
+    FATAL = ("Error loading", "Failed to download", "Error during detection", "Failed image paths saved to")
+    # A CUDA fault is "sticky": every later page would come out untranslated
+    STICKY = ("illegal memory access", "Sticky error detected", "device-side assert")
+
+    def __init__(self):
+        import threading
+
+        self.lock = threading.RLock()  # pages print from worker threads; on_sticky may print
+        self.current: str | None = None
+        self.sticky: str | None = None
+        self.problems: list[str] = []
+        self.on_sticky: Callable[[str], None] | None = None  # called once, with the line
+        self.saved = (sys.stdout, sys.stderr)
+
+    def install(self) -> None:
+        sys.stdout, sys.stderr = (_Watched(self, out) for out in self.saved)
+
+    def uninstall(self) -> None:
+        sys.stdout, sys.stderr = self.saved
+
+    def line(self, line: str) -> None:
+        m = re.match(r"(?:Processing|Retrying) \d+/\d+: (.+?)(?: \(warming up models\))?$", line)
+        if m:
+            self.current = m.group(1)
+        if self.sticky is None and any(k in line for k in self.STICKY):
+            self.sticky = line
+            if self.on_sticky:
+                self.on_sticky(line)
+        if any(k in line for k in self.FATAL):
+            self.problems.append(line)
+
+
+class _Watched:
+    """One stream (stdout or stderr) passed through, its lines fed to the watch."""
+
+    def __init__(self, watch: _Watch, out):
+        self.watch, self.out, self.buf = watch, out, ""
+
+    def write(self, s: str) -> int:
+        with self.watch.lock:
+            self.out.write(s)
+            self.buf += s
+            while "\n" in self.buf:
+                line, self.buf = self.buf.split("\n", 1)
+                self.watch.line(line.strip())
+        return len(s)
+
+    def flush(self) -> None:
+        self.out.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.out, name)
+
+
+MAX_GPU_RESTARTS = 2
+
+
 def main() -> None:
     args = parse_args()
-    env = os.environ.copy()
     # No telemetry, ever. Downloads (first run only) are still allowed unless --offline.
-    env.update(
+    os.environ.update(
         HF_HUB_DISABLE_TELEMETRY="1",
         YOLO_OFFLINE="1",
         DO_NOT_TRACK="1",
         PYTHONUNBUFFERED="1",
-        PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True",
+        PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True",  # before CUDA starts
     )
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "24")
     if args.offline:
-        env.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
+        os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
 
     if not args.input or not args.output:
         sys.exit("error: --input and --output are required")
@@ -458,16 +433,6 @@ def main() -> None:
         print(settings.to_json())
         return
 
-    t = settings.translation
-    if not settings.server.launch:
-        if not server_healthy(t.url):
-            log(f"warning: {t.url} does not answer /health; continuing anyway")
-    elif not settings.debug.llm_replay and server_healthy(t.url):
-        sys.exit(
-            f"Something is already listening on port {settings.server.port}. "
-            f"Pass --llm-url {t.url} to reuse it, or --port to pick another."
-        )
-
     # (input, output) per pipeline run. The pipeline only reads the top level of a folder, so a
     # volume folder with chapter subfolders becomes one run per chapter, mirrored in the output.
     fmt = settings.output.format
@@ -484,20 +449,39 @@ def main() -> None:
         jobs = [(inp, out / f"{inp.stem}{ext}")]
 
     settings_file = out / "settings.json"
-    pipeline = [sys.executable, "-m", "mangatl.cli", "--settings", str(settings_file)]  # run from ROOT
-    if batch:
-        pipeline.append("--batch")
     if args.dry_run:
         for src, dst in jobs:
-            print(shlex.join(pipeline + ["--input", str(src), "--output", str(dst)]))
+            print(f"translate {src} -> {dst} (settings: {settings_file}{', batch' if batch else ''})")
         return
-    out.mkdir(parents=True, exist_ok=True)
-    settings.save(settings_file)  # secrets excluded; the pipeline reads them from the environment
 
+    t = settings.translation
+    if not settings.server.launch and not server_healthy(t.url):
+        log(f"warning: {t.url} does not answer /health; continuing anyway")
+
+    out.mkdir(parents=True, exist_ok=True)
+    settings.save(settings_file)  # secrets excluded; read back from the environment
+    from mangatl.cli import run
+    from mangatl.common import eval_hooks
+    from mangatl.common.log import init_file_logging
+    from mangatl.engine import Engine
+    from mangatl.engine.llm import LlmServerError
+    from mangatl.typeset.fontconfig import start_fontconfig_quietly
+
+    init_file_logging()
+    start_fontconfig_quietly()
+    config = Settings.load(settings_file)  # exactly what is on disk
+    eval_hooks.configure(config.debug)
+    engine = Engine.from_settings(config, offline=args.offline)
+    atexit.register(engine.close)
+    engine.llm.log = log
     if settings.server.launch and not settings.debug.llm_replay:
-        start_llama_server(
-            settings.server, t.vision != "off", presets.MODEL_PRESETS[settings.server.model].repo
-        )
+        try:
+            engine.llm.ensure(
+                settings.server, t.vision != "off", presets.MODEL_PRESETS[settings.server.model].repo
+            )
+        except LlmServerError as e:
+            sys.exit(str(e))
+    config = config.with_models(engine.models())
 
     llm = Path(settings.server.gguf or "").stem if settings.server.launch else t.model
     log(
@@ -505,20 +489,9 @@ def main() -> None:
         f"OCR: {settings.ocr.method}, inpaint: {settings.cleaning.inpainter}, "
         f"OSB: {'on' if osb else 'off'}, page image: {t.vision})"
     )
-    t0 = time.time()
-    # The pipeline logs model-loading problems but still exits 0 (and writes untranslated
-    # pages), so watch its output and turn those into a failing exit code.
-    fatal_markers = (
-        "Error loading",
-        "Failed to download",
-        "Error during detection",
-        "Failed image paths saved to",
-    )
-    problems: list[str] = []
-    # A CUDA fault poisons the whole process ("sticky" error): every later page would come out
-    # untranslated. Stop at once, drop the page in progress and resume in a fresh process.
-    sticky_markers = ("illegal memory access", "Sticky error detected", "device-side assert")
-    max_gpu_restarts = 2
+    t0 = args.started or time.time()
+    watch = _Watch()
+    watch.install()
     rc = 0
     tmp_dirs: list[tempfile.TemporaryDirectory] = []
     for n, (src0, dst) in enumerate(jobs, 1):
@@ -526,87 +499,69 @@ def main() -> None:
             log(f"[{n}/{len(jobs)}] {src0.relative_to(inp) if src0 != inp else '.'}")
         if batch:
             dst.mkdir(parents=True, exist_ok=True)
-        skip_existing, restarts = args.skip_existing, 0
-        while True:
-            src = src0
-            if skip_existing and src0.is_dir():
-                pages = [f for f in src0.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTS]
-                # --skip-existing (resume): trust outputs since --skip-existing-since (default: any).
-                # Restart after a GPU fault in a fresh run: only outputs written by this run.
-                since = args.skip_existing_since if args.skip_existing else t0
+        src = src0
+        if args.skip_existing and src0.is_dir():
+            pages = [f for f in src0.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTS]
 
-                def finished(f: Path) -> bool:
-                    out_file = dst / translated_name(f, fmt)
-                    return out_file.exists() and out_file.stat().st_mtime >= since
+            def finished(f: Path) -> bool:  # resume: trust outputs written since --skip-existing-since
+                out_file = dst / translated_name(f, fmt)
+                return out_file.exists() and out_file.stat().st_mtime >= args.skip_existing_since
 
-                todo = [f for f in pages if not finished(f)]
-                if not todo:
-                    log("  already translated, skipping")
-                    break
-                if len(todo) < len(pages):  # run only the missing pages, via a folder of symlinks
-                    log(f"  resuming: {len(todo)}/{len(pages)} pages left")
-                    tmp = tempfile.TemporaryDirectory(prefix="mt_resume_")
-                    tmp_dirs.append(tmp)
-                    for f in todo:
-                        (Path(tmp.name) / f.name).symlink_to(f)
-                    src = Path(tmp.name)
-            full = pipeline + ["--input", str(src), "--output", str(dst)]
-            if src0 != inp:  # a volume's chapter: page ids in the project file start with its folder
-                full += ["--page-prefix", src0.relative_to(inp).as_posix()]
-            proc = subprocess.Popen(
-                full,
-                cwd=ROOT,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-            assert proc.stdout is not None
-            current, sticky = None, None
-            for line in proc.stdout:
-                if line.startswith("Fontconfig "):  # harmless noise from skia vs. system fontconfig
-                    continue
-                sys.stdout.write(line)
-                m = re.match(
-                    r"(?:Processing|Retrying) \d+/\d+: (.+?)(?: \(warming up models\))?$", line.strip()
-                )
-                if m:
-                    current = m.group(1)
-                if any(k in line for k in sticky_markers):
-                    sticky = line.strip()
-                    proc.terminate()
-                    break
-                if any(k in line for k in fatal_markers):
-                    problems.append(line.strip())
-            if sticky:
-                try:
-                    proc.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
-                if current:  # its output (if any) was made with a broken GPU context
-                    (dst / Path(current).parent / translated_name(Path(current), fmt)).unlink(missing_ok=True)
-                if restarts < max_gpu_restarts:
-                    restarts += 1
-                    skip_existing = True
-                    log(
-                        f"GPU error on {current or 'a page'} ({sticky[:90]}); "
-                        f"resuming in a fresh process ({restarts}/{max_gpu_restarts})"
-                    )
-                    continue
-                problems.append(f"GPU error, gave up after {max_gpu_restarts} restarts: {sticky}")
-                rc = rc or 3
-                break
-            rc = proc.wait() or rc
-            break
-    if rc == 0 and problems:
+            todo = [f for f in pages if not finished(f)]
+            if not todo:
+                log("  already translated, skipping")
+                continue
+            if len(todo) < len(pages):  # run only the missing pages, via a folder of symlinks
+                log(f"  resuming: {len(todo)}/{len(pages)} pages left")
+                tmp = tempfile.TemporaryDirectory(prefix="mt_resume_")
+                tmp_dirs.append(tmp)
+                for f in todo:
+                    (Path(tmp.name) / f.name).symlink_to(f)
+                src = Path(tmp.name)
+        prefix = src0.relative_to(inp).as_posix() if src0 != inp else ""  # a volume's chapter
+        cancel = CancellationManager()
+        watch.on_sticky = lambda _line, c=cancel: c.cancel()
+        rc = run(config, src, dst, batch, prefix, cancel) or rc
+        if watch.sticky:
+            _restart_after_gpu_fault(args, engine, watch, dst, fmt, t0)
+    watch.uninstall()
+    if rc == 0 and watch.problems:
         rc = 2
         log("Pipeline reported problems (output may be incomplete):")
-        for line in problems[:10]:
+        for line in watch.problems[:10]:
             log(f"  {line[:200]}")
     log(f"Finished in {time.time() - t0:.0f}s (exit code {rc})")
     sys.exit(rc)
+
+
+def _restart_after_gpu_fault(args, engine, watch: _Watch, dst: Path, fmt: str, t0: float) -> None:
+    """Drop the page in progress (made with a broken GPU context) and resume in a fresh
+    process: this one's CUDA context can't recover."""
+    watch.uninstall()
+    current = watch.current
+    if current:
+        (dst / Path(current).parent / translated_name(Path(current), fmt)).unlink(missing_ok=True)
+    if args.gpu_restarts >= MAX_GPU_RESTARTS:
+        log(f"GPU error, gave up after {MAX_GPU_RESTARTS} restarts: {watch.sticky}")
+        sys.exit(2)  # as "pipeline reported problems": the web UI shows the line above
+    log(
+        f"GPU error on {current or 'a page'} ({(watch.sticky or '')[:90]}); "
+        f"resuming in a fresh process ({args.gpu_restarts + 1}/{MAX_GPU_RESTARTS})"
+    )
+    from mangatl.project.capture import close_projects
+
+    close_projects()
+    engine.llm.stop()
+    argv = [a for a in sys.argv[1:]]
+    for flag in ("--gpu-restarts", "--started"):
+        while flag in argv:
+            i = argv.index(flag)
+            del argv[i : i + 2]
+    if not args.skip_existing:  # only outputs this run wrote
+        argv += ["--skip-existing", "--skip-existing-since", str(t0)]
+    argv += ["--gpu-restarts", str(args.gpu_restarts + 1), "--started", str(t0)]
+    sys.stdout.flush()
+    os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), *argv])
 
 
 if __name__ == "__main__":

@@ -11,7 +11,6 @@ from PIL import Image
 from mangatl.common.caching import get_cache
 from mangatl.common.exceptions import ImageProcessingError
 from mangatl.common.log import log_message
-from mangatl.ml.model_manager import get_model_manager
 
 
 def pil_to_cv2(pil_image):
@@ -402,19 +401,34 @@ def tensor_to_image(tensor: torch.Tensor) -> Image.Image:
     return Image.fromarray(img_np)
 
 
-def _upscale_image(model, image: Image.Image, device: torch.device) -> Image.Image:
-    """Upscales a PIL image using the provided model."""
-    tensor_in = image_to_tensor(image, device)
-    with torch.no_grad():
-        tensor_out = model(tensor_in)
-    return tensor_to_image(tensor_out)
+class Upscaler:
+    """An upscaling model of the engine, called one image at a time (each call holds the GPU slot
+    for that image only)."""
+
+    def __init__(self, models, method: str):
+        from mangatl.engine import Model
+
+        self.models = models
+        self.method = method  # "model" / "model_lite" (cache keys)
+        self.model = Model.UPSCALE_LITE if method == "model_lite" else Model.UPSCALE
+
+    def __call__(self, image: Image.Image) -> Image.Image:
+        with self.models.use(self.model) as net:
+            tensor_in = image_to_tensor(image, self.models.device)
+            with torch.no_grad():
+                tensor_out = net(tensor_in)
+            return tensor_to_image(tensor_out)
+
+
+def upscaler_for(models, method: str) -> Upscaler | None:
+    """The upscaler of an ocr.upscale method; None unless it is "model" or "model_lite"."""
+    return Upscaler(models, method) if method in ("model", "model_lite") else None
 
 
 def upscale_image_to_dimension(
-    model,
+    upscaler: Upscaler,
     image: Image.Image,
     target: int,
-    device: torch.device,
     mode: str,
     model_type: str = "model",
     verbose: bool = False,
@@ -459,7 +473,7 @@ def upscale_image_to_dimension(
             f"Upscaling from {current_image.width}x{current_image.height}...",
             verbose=verbose,
         )
-        current_image = _upscale_image(model, current_image, device)
+        current_image = upscaler(current_image)
         log_message(f"...to {current_image.width}x{current_image.height}", verbose=verbose)
 
     cache.set_upscaled_image(cache_key, current_image, verbose)
@@ -467,7 +481,7 @@ def upscale_image_to_dimension(
 
 
 def upscale_image(
-    image: Image.Image, factor: float, model_type: str = "model", verbose: bool = False
+    image: Image.Image, factor: float, models, model_type: str = "model", verbose: bool = False
 ) -> Image.Image:
     """Upscales an image by a given factor.
 
@@ -487,23 +501,14 @@ def upscale_image(
         log_message("  - Using cached upscaled image", always_print=True)
         return cached_upscale
 
-    model_manager = get_model_manager()
-    if model_type == "model_lite":
-        upscale_model = model_manager.load_upscale_lite()
-        log_message(f"Upscaling image by {factor}x with lite model...", verbose=verbose)
-    else:
-        upscale_model = model_manager.load_upscale()
-        log_message(f"Upscaling image by {factor}x...", verbose=verbose)
-    device = model_manager.device
-
+    log_message(f"Upscaling image by {factor}x...", verbose=verbose)
     target_width = int(image.width * factor)
     target_height = int(image.height * factor)
 
     upscaled_image = upscale_image_to_dimension(
-        upscale_model,
+        Upscaler(models, model_type),
         image,
         max(target_width, target_height),
-        device,
         "max",
         model_type,
         verbose,
@@ -653,8 +658,7 @@ def convert_image_to_target_mode(
 
 def process_bubble_image_cached(
     bubble_image_pil: Image.Image,
-    upscale_model,
-    device: torch.device,
+    upscaler: Upscaler,
     target_min_side: int = 200,
     mode: str = "min",
     model_type: str = "model",
@@ -670,8 +674,7 @@ def process_bubble_image_cached(
 
     Args:
         bubble_image_pil: The bubble image to process
-        upscale_model: The upscaling model to use
-        device: PyTorch device for model inference
+        upscaler: The upscaling model to use
         target_min_side: Target minimum side length
         mode: Upscaling mode ('max' or 'min')
         model_type: Model type identifier ("model" or "model_lite")
@@ -692,10 +695,9 @@ def process_bubble_image_cached(
         return cached_result
 
     upscaled_bubble = upscale_image_to_dimension(
-        upscale_model,
+        upscaler,
         bubble_image_pil,
         target_min_side,
-        device,
         mode,
         model_type,
         verbose,

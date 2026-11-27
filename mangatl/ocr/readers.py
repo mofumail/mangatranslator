@@ -3,10 +3,10 @@
 from PIL import Image
 
 from mangatl.common.log import log_message
-from mangatl.ml.model_manager import get_model_manager
+from mangatl.engine import Model
 
 
-def extract_text_with_manga_ocr(images: list[Image.Image], verbose: bool = False) -> list[str]:
+def extract_text_with_manga_ocr(images: list[Image.Image], models, verbose: bool = False) -> list[str]:
     """Extract text from images using manga-ocr library.
 
     Args:
@@ -20,8 +20,8 @@ def extract_text_with_manga_ocr(images: list[Image.Image], verbose: bool = False
         return []
 
     try:
-        model_manager = get_model_manager()
-        manga_ocr_instance = model_manager.get_manga_ocr(verbose=verbose)
+        with models.use(Model.MANGA_OCR):  # load errors fail the whole list
+            pass
 
         extracted_texts = []
         for i, img in enumerate(images):
@@ -38,7 +38,8 @@ def extract_text_with_manga_ocr(images: list[Image.Image], verbose: bool = False
                     f"Processing image {i + 1}/{len(images)} with manga-ocr",
                     verbose=verbose,
                 )
-                text = manga_ocr_instance(img)
+                with models.use(Model.MANGA_OCR) as manga_ocr:
+                    text = manga_ocr(img)
 
                 extracted_texts.append(text.strip() if text else "")
 
@@ -77,7 +78,7 @@ def _get_paddle_ocr_vl_size(processor, max_pixels: int) -> dict:
     }
 
 
-def extract_text_with_paddle_ocr_vl(images: list[Image.Image], verbose: bool = False) -> list[str]:
+def extract_text_with_paddle_ocr_vl(images: list[Image.Image], models, verbose: bool = False) -> list[str]:
     """Extract text from images using PaddleOCR-VL-1.6.
 
     Args:
@@ -91,11 +92,8 @@ def extract_text_with_paddle_ocr_vl(images: list[Image.Image], verbose: bool = F
         return []
 
     try:
-        model_manager = get_model_manager()
-        processor, model = model_manager.get_paddle_ocr_vl(verbose=verbose)
-
-        max_pixels = 1280 * 28 * 28
-        image_size = _get_paddle_ocr_vl_size(processor, max_pixels)
+        with models.use(Model.PADDLE_OCR_VL) as (processor, _):  # load errors fail the whole list
+            image_size = _get_paddle_ocr_vl_size(processor, 1280 * 28 * 28)
 
         extracted_texts = []
         for i, img in enumerate(images):
@@ -113,32 +111,33 @@ def extract_text_with_paddle_ocr_vl(images: list[Image.Image], verbose: bool = F
                     verbose=verbose,
                 )
 
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "image": img},
-                            {"type": "text", "text": "OCR:"},
-                        ],
-                    }
-                ]
-                inputs = processor.apply_chat_template(
-                    messages,
-                    add_generation_prompt=True,
-                    tokenize=True,
-                    return_dict=True,
-                    return_tensors="pt",
-                    processor_kwargs={
-                        "images_kwargs": {
-                            "size": image_size,
+                with models.use(Model.PADDLE_OCR_VL) as (processor, model):
+                    messages = [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "image": img},
+                                {"type": "text", "text": "OCR:"},
+                            ],
+                        }
+                    ]
+                    inputs = processor.apply_chat_template(
+                        messages,
+                        add_generation_prompt=True,
+                        tokenize=True,
+                        return_dict=True,
+                        return_tensors="pt",
+                        processor_kwargs={
+                            "images_kwargs": {
+                                "size": image_size,
+                            },
                         },
-                    },
-                ).to(model.device)
+                    ).to(model.device)
 
-                # The checkpoint's generation config ships use_cache=False
-                outputs = model.generate(**inputs, max_new_tokens=1024, use_cache=True)
+                    # The checkpoint's generation config ships use_cache=False
+                    outputs = model.generate(**inputs, max_new_tokens=1024, use_cache=True)
 
-                text = processor.decode(outputs[0][inputs["input_ids"].shape[-1] : -1])
+                    text = processor.decode(outputs[0][inputs["input_ids"].shape[-1] : -1])
                 extracted_texts.append(text.strip() if text else "")
 
             except Exception as e:

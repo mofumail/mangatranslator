@@ -8,9 +8,6 @@ area * 1.5 / perimeter ("unclip") so the glyph edges are inside it.
 
 from __future__ import annotations
 
-import hashlib
-import threading
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,10 +15,6 @@ import cv2
 import numpy as np
 from PIL import Image
 
-CTD_URL = (
-    "https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/comictextdetector.pt.onnx"
-)
-CTD_SHA256 = "1a86ace74961413cbd650002e7bb4dcec4980ffa21b2f19b86933372071d718f"
 INPUT = 1024
 BINARY_THRESHOLD = 0.3
 SCORE_THRESHOLD = 0.6
@@ -51,18 +44,10 @@ class TextLine:
 
 
 class LineDetector:
-    def __init__(self, models_dir: Path):
+    def __init__(self, path: Path):
+        """path: the ONNX export (mangatl.engine.models fetches and checks it)."""
         import onnxruntime as ort
 
-        path = Path(models_dir) / "detection" / "ctd" / "comictextdetector.pt.onnx"
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".part")
-            urllib.request.urlretrieve(CTD_URL, tmp)
-            tmp.replace(path)
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        if digest != CTD_SHA256:
-            raise RuntimeError(f"comic-text-detector checksum mismatch for {path}")
         opts = ort.SessionOptions()
         opts.log_severity_level = 3
         self.session = ort.InferenceSession(str(path), opts, providers=["CPUExecutionProvider"])
@@ -123,15 +108,3 @@ def reading_order(lines: list[TextLine], rtl: bool = True) -> list[TextLine]:
         else:
             groups.append([line])
     return [l for g in groups for l in sorted(g, key=along)]
-
-
-_lock = threading.Lock()
-_instance: LineDetector | None = None
-
-
-def get(models_dir: Path) -> LineDetector:
-    global _instance
-    with _lock:
-        if _instance is None:
-            _instance = LineDetector(models_dir)
-        return _instance

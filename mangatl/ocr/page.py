@@ -100,18 +100,20 @@ def _check_ocr_failure(texts: list[str], provider: str | None = None) -> bool:
 def _perform_manga_ocr(
     images_b64: list[str],
     bubble_metadata: list[dict[str, Any]],
+    models,
     debug: bool = False,
     keep_other_language: bool = False,
 ) -> list[str]:
     """Japanese OCR: manga-ocr, then Hayai re-reads and the other-language skip (_refine_ocr_reads)."""
-    texts = _manga_ocr_reads(images_b64, bubble_metadata, debug)
-    return _refine_ocr_reads(texts, images_b64, bubble_metadata, keep_other_language)
+    texts = _manga_ocr_reads(images_b64, bubble_metadata, models, debug)
+    return _refine_ocr_reads(texts, images_b64, bubble_metadata, models, keep_other_language)
 
 
 def _refine_ocr_reads(
     texts: list[str],
     images_b64: list[str],
     bubble_metadata: list[dict[str, Any]],
+    models,
     keep_other_language: bool = False,
 ) -> list[str]:
     """Improve the manga-ocr reads of a page.
@@ -124,16 +126,14 @@ def _refine_ocr_reads(
     - Pages carrying both the Japanese text and a Chinese translation of it: the Chinese block
       is marked `mt_skip` (erased, not translated) unless keep_other_language is set.
     """
-    from mangatl.ml.model_manager import get_model_manager
-    from mangatl.ocr import hayai as hayai_ocr
+    from mangatl.engine import Model
     from mangatl.ocr import line_ocr
 
-    models_dir = get_model_manager().models_dir
     changed = False
     for i, meta in enumerate(bubble_metadata):
         if i >= len(texts) or not meta.get("is_outside_text"):
             continue
-        text = line_ocr.read_region(meta, models_dir)
+        text = line_ocr.read_region(meta, models)
         if text:
             texts[i] = text
             changed = True
@@ -142,9 +142,8 @@ def _refine_ocr_reads(
     if bubble_idx:
         crops = _prepare_images_for_ocr([images_b64[i] for i in bubble_idx])
         ok = [(i, c) for i, c in zip(bubble_idx, crops) if c is not None]
-        reads = hayai_ocr.get(models_dir).read(
-            [c.convert("RGB") for _, c in ok], max_patches=512, max_new_tokens=160
-        )
+        with models.use(Model.HAYAI) as hayai:
+            reads = hayai.read([c.convert("RGB") for _, c in ok], max_patches=512, max_new_tokens=160)
         for (i, _), t in zip(ok, reads):
             picked = line_ocr.pick_read(texts[i] if texts[i] != "[OCR FAILED]" else "", t.strip())
             if picked and picked != texts[i]:
@@ -173,6 +172,7 @@ def _refine_ocr_reads(
 def _manga_ocr_reads(
     images_b64: list[str],
     bubble_metadata: list[dict[str, Any]],
+    models,
     debug: bool = False,
 ) -> list[str]:
     """Perform OCR using manga-ocr model.
@@ -198,7 +198,7 @@ def _manga_ocr_reads(
         log_message("Discarding manga-ocr cache due to length mismatch", verbose=debug)
 
     pil_images = _prepare_images_for_ocr(images_b64)
-    extracted_texts = extract_text_with_manga_ocr(pil_images, verbose=debug)
+    extracted_texts = extract_text_with_manga_ocr(pil_images, models, verbose=debug)
 
     formatted_texts = []
     for text in extracted_texts:
@@ -239,6 +239,7 @@ def _manga_ocr_reads(
 def _perform_paddle_ocr_vl(
     images_b64: list[str],
     bubble_metadata: list[dict[str, Any]],
+    models,
     debug: bool = False,
 ) -> list[str]:
     """Perform OCR using PaddleOCR-VL-1.6 model.
@@ -264,7 +265,7 @@ def _perform_paddle_ocr_vl(
         log_message("Discarding PaddleOCR-VL-1.6 cache due to length mismatch", verbose=debug)
 
     pil_images = _prepare_images_for_ocr(images_b64)
-    extracted_texts = extract_text_with_paddle_ocr_vl(pil_images, verbose=debug)
+    extracted_texts = extract_text_with_paddle_ocr_vl(pil_images, models, verbose=debug)
 
     formatted_texts = []
     for text in extracted_texts:
@@ -311,7 +312,9 @@ def run_ocr(
     """The OCR pass with the configured local OCR method."""
     log_message("Starting OCR step", verbose=debug)
     if config.ocr.method == "manga-ocr":
-        return _perform_manga_ocr(images_b64, bubble_metadata, debug, config.ocr.keep_other_language)
+        return _perform_manga_ocr(
+            images_b64, bubble_metadata, config.models, debug, config.ocr.keep_other_language
+        )
     if config.ocr.method == "paddleocr-vl-1.6":
-        return _perform_paddle_ocr_vl(images_b64, bubble_metadata, debug)
+        return _perform_paddle_ocr_vl(images_b64, bubble_metadata, config.models, debug)
     raise TranslationError(f"Unknown OCR method: {config.ocr.method}")
