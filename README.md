@@ -1,276 +1,218 @@
-# Local manga translator
+# mangatl studio: agent-based manga translation
 
-Fully local, batch Japanese → English (or any pair) manga translation.
-Nothing leaves the machine at inference time; models are downloaded once on first use.
+An AI agent translates and letters manga pages, working the way a scanlation team does. A local
+server, the studio, does the image work: it finds the text, erases it from the art, reads the
+Japanese and typesets whatever English it is given. It exposes all of this as an
+[MCP](https://modelcontextprotocol.io) server. The agent (Claude Code or any MCP client) is the
+translator, letterer and editor. It reads the chapter, keeps the glossary and character notes,
+hands pages to sub-agents, writes the English, picks the lettering per bubble, looks at the
+rendered page and sends weak pages back for another round.
+
+The research question: how far does an agent get when it can see its own output and has a
+letterer's controls, compared with a fixed translate-then-typeset pipeline?
 
 ```bash
-uv run python translate.py --input chapter01/ --output chapter01_en/
+uv run python studio.py                                                  # UI: http://127.0.0.1:7870
+claude mcp add --transport http mangatl-studio http://127.0.0.1:7870/mcp  # once, in Claude Code
 ```
+
+Then, in Claude Code: `/mcp__mangatl-studio__translate_folder /path/to/chapter`, or simply
+*"translate the manga in /path/to/chapter with the studio"*.
 
 ## Examples
 
-Original on the left, this translator's output (default settings) on the right.
+Japanese original on the left. On the right, the studio's output, with every line translated and
+lettered by Claude Code through the MCP tools. The coordinator wrote the chapter notes first
+(characters, terms, lettering conventions), then ran one sub-agent per page. No human edits.
 
-**Dialogue.** Bubbles are cleaned and relettered, sized to the source lettering. Text drawn on
-the art (the shout) is erased and relettered in place, its emphasis kept.
+**Dialogue.** Siora is polite and flustered and the thug is crude, as the chapter notes said.
+閉じ眼 ("closed-eye", the series' word for a blind person) is kept as the fixed term the notes
+chose. The agent's lettering choices:
+- the yelled line uses the `shout` preset;
+- the thug's "Y-you little...!" is at 1.4× size;
+- the sound effect is rotated 60° into its own box on the art;
+- each line is broken to suit the shape of its bubble.
 
 ![Dialogue: original and translated](docs/examples/dialogue.jpg)
 
-**Sound effects.** The artist's lettering stays, with a small English label beside it, sized to the
-effect (`--sfx redraw` replaces it instead). The あっ cut off at the panel edge is a known miss:
-only its tail gets drawn.
+**Action.**
+- KRAK is lettered white with a black outline, at 158 px, tilted 20° counter-clockwise across
+  the panel.
+- The "!?" is scaled up to fill its jagged bubble.
+- The shaken lines are set slightly smaller.
+- The outburst uses `shout`.
 
-![Sound effects: original and translated](docs/examples/sound_effects.jpg)
-
-**Colour pages.** Same pipeline: dialogue in the bubbles, the asides between them, labels for the
-sound effects.
-
-![Colour page: original and translated](docs/examples/colour.jpg)
+![Action page: original and translated](docs/examples/action.jpg)
 
 Pages from the [OpenMantra dataset](https://github.com/mantra-inc/open-mantra-dataset) (Hinami et
-al., AAAI 2021; CC BY-NC 4.0): *Tojime no Siora* and *Tencho Isoro*, the benchmark pages in
-`eval/in/`.
+al., AAAI 2021; CC BY-NC 4.0): *Tojime no Siora*, `eval/in/tojime_no_siora/`.
 
-## Web UI
+## How it works
 
-```bash
-uv run python webui.py        # open http://127.0.0.1:7860
+```
+ the agent (MCP client)               the studio (local GPU server)
+ ──────────────────────               ─────────────────────────────
+ coordinator
+   open_project, draft     ──►        detect bubbles, text on the art, panels,
+                                      reading order; erase the text; OCR;
+                                      size the lettering per page
+   get_script, set_glossary,
+   update_notes, set_style_sheet
+ worker (one per page)
+   claim_page, get_page    ◄──        regions: OCR text, panel, size cap
+   annotate_regions,
+   set_translations,       ──►        re-render; per region: fit / too small /
+   set_style, preview_region          doesn't fit, size, fill, margin, lines
+   view_page, view_region  ◄──        the rendered page or a region, as an image
+   release_page (report)
+ coordinator
+   review_page, check_consistency
+   export_project          ──►        script.md, .cbz, what's still unresolved
 ```
 
-- Drop a folder or `.zip`/`.cbz` on the page (uploaded as a copy), or pick one **on this PC** (used in place).
-- Choose the output folder (default `./translated/<name>`), languages and translator, then Translate.
-- The built-in reader opens right away and fills in pages as they finish (originals shown until then).
-  Page mode (right-to-left by default, click the sides or use arrow keys), scroll mode (`M`),
-  hold-to-compare original (`O`), page grid (`G`), chapter picker, fullscreen (`F`), `?` for all keys.
-- The library keeps every run: cancel, resume (only missing pages are redone), download as zip,
-  or "Open folder in reader" for any folder of images (e.g. CLI output).
-- One job runs at a time (single GPU); others queue. Bound to 127.0.0.1 only; nothing loads from the internet.
+No language model runs in the studio. Everything that needs judgment is left to the agent:
+translation, voice, names, which lettering a bubble calls for, whether a detection is really text,
+and whether a page reads well. The studio does what models do reliably (detection, inpainting, OCR)
+and reports exact measurements back, so the agent never has to guess whether its text fits.
 
-## Studio: agents translate over MCP (prototype)
+The workflow the agent follows is in [`mangatl/studio/playbook.md`](mangatl/studio/playbook.md).
+The server gives it to the agent (`get_playbook`, and the `translate_folder` prompt):
+1. The **coordinator** drafts the chapter and reads all of it as a script.
+2. It writes the glossary, character notes (speaker names, how each character talks, honorific and
+   SFX policy) and lettering conventions.
+3. It hands out pages to **workers**, one sub-agent per page.
+4. It reviews each page and requests changes where needed.
+5. It runs a consistency pass and exports.
 
-```bash
-uv run python studio.py       # UI http://127.0.0.1:7870, MCP endpoint http://127.0.0.1:7870/mcp
-claude mcp add --transport http mangatl-studio http://127.0.0.1:7870/mcp   # in any Claude Code
-```
+## The tools
 
-The studio drafts each page (detects the text, removes it from the art, reads the Japanese, sizes
-the lettering) and an agent writes the English through MCP tools: it reads the regions, sets
-translations, sees how each one came out (fit, too small, does not fit) and looks at the rendered
-page. The workflow (a coordinator with chapter notes, one worker per page, review, consistency
-pass) is in `mangatl/studio/playbook.md`, which the server hands to the agent. Any MCP client works;
-in Claude Code, `/mcp__mangatl-studio__translate_folder` starts it on a folder.
-
-The UI shows the work live: pages with their progress, original / cleaned / rendered with region
-overlays coloured by outcome, each region's source and translation, worker reports, the chapter
-notes and every tool call. Projects are kept in `studio_data/<name>-<hash>/` (project file,
-rendered pages in `out/`, notes, reports, activity log). No LLM runs in the studio; the agent is
-the translator.
-
-Lettering: each project has a style sheet of presets (by default dialogue in CC Wild Words capitals,
-plus shout, thought, whisper and narration) and every region can carry its own style on top (preset,
-font, size or scale, capitals, bold / italic, alignment, line spacing, rotation, colour, outline,
-text box or offset, padding), saved in the page document. Each render reports how the text sits in
-its bubble (size, fill, margin, lines), and `preview_region` compares variants without saving.
-
-Bookkeeping: regions carry a speaker, a corrected source, a dismissal (false detections are drawn as
-the original art) and links between the bubbles of one sentence; the reading order can be fixed.
-The coordinator reads the chapter as a script (`get_script`, also per speaker), keeps a glossary
-that `check_consistency` checks against (missing terms, name variants, honorifics, lines without a
-speaker), reviews pages (approve / request changes, notes the next worker reads), sees each region's
-history, and finishes with `export_project` (script, optional CBZ, what is unresolved). Not yet:
-adding or splitting regions, curved text, editing in the UI.
-
-## Command line
-
-Input can be a folder of images, a volume folder with one subfolder per chapter (translated in natural
-order, output mirrors the folder structure), a single image, or a `.zip`/`.cbz`.
-Output pages are written as `<name>_translated.png`, plus a `glossary.txt` of names/terms
-(e.g. `相川仁 -> Jin Aikawa`) that the translator keeps reusing so names stay consistent.
-
-Every run also writes `project.mtl` to the output folder: one file (SQLite) holding each page's
-source, regions (with stable ids), OCR reads, translations, cleaning and typesetting inputs, and
-the history of every change, which the editor will open. Copy it to share or resume a project;
-`--set output.project=null` turns it off. `python eval/rebuild_check.py <output>` renders every
-page from the project alone and compares it with the PNG written (`--export DIR`: each page as JSON).
-
-## Pipeline
-
-| Stage | Model (local) |
+| Area | Tools |
 |---|---|
-| Bubble detection | YOLOv8 manga109 bubble seg + RT-DETR conjoined-bubble detector + manga109 panel YOLO (reading order) |
-| OCR | Japanese: Hayai OCR v2.5 Nova everywhere. Speech bubbles: Hayai, cross-checked with `manga-ocr`. Text outside bubbles: line by line using comic-text-detector lines for multi-line blocks (see below). Other languages: PaddleOCR-VL 1.6 |
-| Cleaning | Flat fill inside bubbles, Koharu SAM-TS-L glyph masks, LaMa-manga inpainting |
-| Translation | Gemma 4 26B-A4B QAT (MoE, experts in system RAM) via `llama-server` (llama.cpp, CUDA), thinking off, 3 pages of story context + auto glossary |
-| Typesetting | Skia/HarfBuzz renderer: per-page font size matching, hyphenation, markdown italics/bold for emphasis; ♥ ♪ ★ drawn from a bundled symbol font when the lettering font lacks them; sound effects keep the artist's lettering with a small English label beside it, sized to the effect (`--sfx redraw` to replace them) |
+| Project | `get_playbook`, `open_project`, `list_projects`, `draft`, `project_status` |
+| Reading | `get_page` (regions with outcomes, problems, hints, reviews), `view_page`, `view_region` (layers, zoom), `get_script` (whole chapter or one speaker), `get_context` (neighbouring pages), `region_history` |
+| Translating | `set_translations` (with speakers and styles), `annotate_regions` (speaker, corrected source, dismiss a false detection, link the bubbles of one sentence), `set_order` |
+| Lettering | `set_style`, `preview_region` (up to four variants side by side, nothing saved), `get_style_sheet`, `set_style_sheet`, `list_fonts` |
+| Chapter | `get_glossary`, `set_glossary`, `check_consistency` (glossary misses, name variants, honorifics, lines without a speaker), `get_notes`, `update_notes` |
+| Workflow | `claim_page`, `release_page` (worker report), `review_page` (approve / request changes), `export_project` (script, CBZ) |
 
-The pipeline lives in `./mangatl`, derived from [MangaTranslator](https://github.com/meangrinch/MangaTranslator)
-(Apache-2.0, see `mangatl/NOTICE`); `translate.py` picks local defaults and runs it in one process on
-one engine (`mangatl/engine`): models load on first use and stay loaded across chapters, idle ones are
-unloaded when free VRAM runs short (llama-server and other apps count; `--set
-runtime.vram_budget_mb=N` caps it), model files on disk are never re-checked online, and the engine
-starts and stops llama-server.
+**Lettering.** Each project has a style sheet of presets. By default:
 
-## Measured (RTX 4070 Ti 12 GB, 10 OpenMantra pages, ~110 bubbles)
+| Preset | Lettering |
+|---|---|
+| `dialogue` | CC Wild Words, capitals |
+| `shout` | bold, 1.3× size |
+| `thought` | italic |
+| `whisper` | 0.85× size |
+| `narration` | Anime Ace |
 
-| Translator | Peak VRAM (whole pipeline, incl. ~1.4 GB desktop) | Speed | Notes |
-|---|---|---|---|
-| `--model 26b` (default) | 8.8 GB (6.1 with `--vision off`) | ~12 s/page | fewest meaning errors, most natural English |
-| `--model 12b` | 11.1 GB | ~6 s/page | ~3-4 % lines with meaning errors (subject mix-ups, idioms) |
+Text on the art gets the automatic lettering (Bangers for sound effects), unless the sheet
+defines an `outside` preset (the example run's coordinator added one: Bangers, black with a white
+outline). Any region can override its preset with font, size or scale, capitals, bold or italic,
+alignment, line spacing, rotation, colour, outline, a text box or offset, and padding.
+Inline `*italic*` and `**bold**` work for single words, and `--` is drawn as an em dash. Styles are
+saved in the page document and survive re-rendering.
 
-Cleaning (no leftover Japanese in bubbles) and typesetting (fits bubbles, real italics/bold for emphasis) were
-clean on every page checked, including colour pages. First page of a run is slower (model warm-up), and
-the llama-server start adds ~5-10 s per run.
+## Inspector UI
 
-## Translation quality notes
+![The studio inspector](docs/studio.jpg)
 
-- Model bake-off on the 10 OpenMantra pages (temperature 0, blind scoring of serious meaning errors):
-  Gemma 4 26B-A4B **0**, Qwen3.6-35B-A3B 4, Ministral-3-14B 18 (output shifted into wrong bubbles).
-  Re-run with `eval/bake/run.sh <label> <translate.py args>` and `eval/bake/sheet.py`.
-- A localization style note is always sent (natural English, contractions, past-tense narration).
-  Per-series choices go in `--instructions` / the web UI field, e.g. `Translate お姉ちゃん as "Sis"`.
-- If a long source line comes back implausibly short (the model sometimes drops the rest of a
-  block), the page is translated once more and the fuller answer kept.
-- A same-model "polish" pass was tested and changed little; not enabled.
-- Page image for the translator (`--vision`, local OCR kept, ~2 GB VRAM). Showing it for every line
-  (`--vision full`) was measured on three sets with repeatable runs: on a shounen chapter checked against
-  its English scanlation it fixed OCR misreads, speaker mix-ups and sound effects; on an OpenMantra book it
-  added meaning errors and turned a boyish narrator into "she"; on doujin CG pages it dropped the " / "
-  line separators of text blocks and rewrote credits. So the default is `--vision short`: translate from
-  text, then redo only short items (outside-bubble text up to 10 characters, bubbles up to 5) with the page
-  in view. That kept the gains (sound effects, the speaker of a short reply, the chapter number on a title,
-  names read from furigana: 和音 Kanon → Kazune, 宏也 Futoshi → Hiroya on a held-out OpenMantra book)
-  without touching long lines; ~2-3 s/page more. Restyle-only answers (*Huff* → **HUFF**) are ignored.
-  Off by default for `--model 12b` (out of VRAM on 12 GB), `--gguf` and `--llm-url`.
-- Tried and removed: running character notes sent with every page (built from text alone, they attributed
-  lines to the wrong speakers and changed as much for the worse as for the better), and letting Gemma read
-  the bubbles itself (more misreads than local OCR: wrong names, failed crops, "corrected" Japanese such as
-  キャンセル -> マンセル).
-- Prompt rules on top of the base prompt: honorifics dropped like a professional localization
-  (`--honorifics keep` to keep them), Western spelling for katakana Western names (プリシラ → Priscilla),
-  a vowel-only bubble that continues the previous word is that word drawn out (死ねェ / エ / エエエ!! →
-  Die! / Die... / DIEEEE!!), and sound effects never enter the name glossary.
-- Doujin CG test set (17 pages from 8 works, `eval/djn/run.sh <label>`, pages not in git): no pages with
-  empty bubbles or dropped hearts; ~17 s/page.
+`http://127.0.0.1:7870` shows the work as it happens:
+- each page's progress, state (drafted, in progress, translated, changes requested, approved),
+  problems, claims and reports;
+- the original, cleaned and rendered layers (hold `C` to compare), with regions outlined and
+  coloured by outcome;
+- each region's source, translation, preset, size, fill and margin;
+- tabs for the worker reports and reviews, the chapter notes and glossary, the script, and a log of
+  every tool call.
 
-## Common options
+Projects live in `studio_data/<folder>-<hash>/`:
+- `project.mtl`: SQLite, holding the page documents and the full edit history;
+- `out/`: the rendered pages;
+- `notes.md`, `script.md`, `activity.jsonl`.
 
-```bash
---source Korean --target English     # languages (OCR + reading direction picked automatically)
---glossary vol1_en/glossary.txt      # reuse names/terms from an earlier run (e.g. the previous volume)
---instructions "Keep honorifics"     # extra instructions for the translator
---font "Comic Neue"                  # any font pack folder in ./fonts (drop in e.g. CC Wild Words)
---inpaint opencv|none                # text over artwork: simple fill or leave it (default: LaMa)
---osb on|off|auto                    # text outside bubbles (narration/SFX) — see below
---offline                            # hard-forbid network access (all models must be downloaded)
---skip-existing                      # resume: only translate pages without an output yet
---adult                              # 18+ content: translate explicit lines fully (web UI: checkbox)
---keep-other-language                # don't erase other-script blocks (e.g. Chinese next to Japanese)
---vision short|full|off              # page image for the translator (default short; see notes)
---sfx label|redraw                   # sound effects: keep the art + small label (default), or redraw
---honorifics keep                    # keep -san/-sama/... (default: drop them, as pro localizations do)
---no-ocr-correction                  # don't let the LLM repair lines the OCR obviously misread
---llm-url http://host:port/v1 --llm-model-name X   # use another OpenAI-compatible server
---model 12b                          # faster dense translator, fully on GPU
---gguf models/llm/other.gguf [--cpu-moe N]         # use another GGUF (MoE: N layers' experts in RAM)
---vertical-text                      # allow stacking short text vertically (default only for CJK targets)
---set typesetting.bubbles.max_font_size=28   # any setting (repeatable); see --show-settings
---show-settings                      # print the run's settings as JSON
---verbose                            # detailed pipeline log
-```
+## What the studio runs (all local)
 
-## Text outside speech bubbles (OSB)
+| Stage | Models |
+|---|---|
+| Detection | YOLOv8 manga109 bubble segmentation, RT-DETR conjoined-bubble detector, manga109 panel YOLO (reading order), AnimeText YOLO + comic-text-detector for text on the art |
+| OCR | Hayai OCR v2.5 Nova (line by line for text blocks on the art), cross-checked with manga-ocr in bubbles |
+| Cleaning | flat fill in bubbles, Koharu SAM-TS-L glyph masks, LaMa-manga inpainting |
+| Typesetting | Skia / HarfBuzz: fitting to the bubble, hyphenation, per-page size matching, real and synthetic bold and italic, ♥ ♪ ★ from a symbol font |
 
-Narration and chat text printed on the art often comes in large blocks of many vertical lines.
-manga-ocr reads a region by squashing it into 224×224 px, which turns such a block into a few pixels
-per glyph and makes it invent text. So, like manga-image-translator and BallonsTranslator,
-these blocks are read line by line: comic-text-detector (page-level line detector) finds the lines,
-Hayai OCR v2.5 Nova (aspect-ratio preserving manga OCR, JA/ZH/KO/EN) reads each one, and they are
-joined in reading order. Regions with fewer than 2 detected lines (sound effects, short asides) are
-read whole by Hayai, which was trained on onomatopoeia (manga-ocr misread most stylized SFX in tests).
-Sound effects are read twice (tight crop and with a margin, which fixes most misreads of hand-drawn
-kana) and the fuller read kept. Speech bubbles are read by Hayai too: on the OpenMantra bubbles it and
-manga-ocr are about equal (0.9% / 0.7% character errors), but manga-ocr turns hand-drawn moans in doujin
-bubbles into unrelated words (ぅ -> そして、). When one read contains the other the longer is kept.
-This lives in `mangatl/ocr/line_ocr.py` (with `mangatl/detect/text_lines.py` and `mangatl/ocr/hayai.py`).
+Models stay loaded in one long-lived engine, which unloads idle ones when VRAM runs short
+(`--set runtime.vram_budget_mb=N` caps it). Interactive requests (an agent re-rendering a page) go
+ahead of drafting.
 
-Pages that print a Chinese translation next to the Japanese (common in `[中国翻訳]` releases): the
-Chinese block is erased and not translated, so the English appears once (`--keep-other-language`
-turns this off). A kana-free block only counts as Chinese when it uses simplified-only characters, so
-all-kanji Japanese labels (status screens like 状態：乳房開発完了) are translated.
+## Setup
 
-Typesetting outside bubbles: long text (narration, dialogue printed on the art) uses the dialogue font,
-upright, one quoted line or (thought) per line; lists (stream comments, credits, `Name: text` lines) keep
-one entry per line. Short text stays sound-effect style (Bangers, caps, follows the tilt). A bubble whose
-translation can't fit even at a smaller size gets its original lettering back instead of staying blank.
+- An NVIDIA GPU (developed on an RTX 4070 Ti, 12 GB), [uv](https://docs.astral.sh/uv/), Python 3.13.
+- Models download on first use; `--offline` refuses to download.
+- **Fonts.** The default style sheet uses CC Wild Words and Anime Ace. Their licences forbid
+  redistribution, so add them yourself as `fonts/CC Wild Words/` and `fonts/Anime Ace/`, with
+  -Regular, -Bold and -Italic in the file names. Alternatively, have the agent switch the sheet to
+  the bundled Comic Neue and Bangers (SIL OFL) with `set_style_sheet`.
+- **Text on the art** (narration, signs) needs the gated
+  [`deepghs/AnimeText_yolo`](https://huggingface.co/deepghs/AnimeText_yolo) model. Accept its terms
+  with the Hugging Face account whose token is in `~/.cache/huggingface/token`, or set `HF_TOKEN`.
+  Without it, only bubbles are drafted.
+- The studio binds to 127.0.0.1. Options: `--port`, `--workspace`, `--set PATH=VALUE` (settings
+  for drafts).
 
-Narration boxes / text drawn on the art need the gated `deepghs/AnimeText_yolo` model.
-Accept its terms at <https://huggingface.co/deepghs/AnimeText_yolo> with the account whose token is in
-`~/.cache/huggingface/token` (or set `HF_TOKEN`). With `--osb auto` (default) it switches on by itself
-once the model is accessible/downloaded.
+## Status
+
+This is a research prototype that improves one run at a time. Each run puts a fresh Claude Code
+instance on a chapter, and its output and its own feedback on the tools become the next issue.
+Done so far:
+- the MCP server and the inspector;
+- per-region lettering with measurements and previews;
+- chapter bookkeeping: speakers, glossary, script, reviews, history, export.
+
+Not yet possible:
+- adding, splitting or merging regions the detector got wrong;
+- re-cleaning a region;
+- curved text;
+- editing in the UI.
+
+The agent reports these as it meets them.
+
+**Old pipeline.** `translate.py` and `webui.py` are the earlier fully local batch translator
+(Gemma 4 via llama.cpp, with a web reader). They still run but are being removed (#32), along with
+the code that only served them.
 
 ## Development
 
 ```bash
-uv run --group dev python -m pytest       # unit + static tests; with models and a harness run of
-                                          # om10, also the stage API, the engine and the studio (GPU)
-uv run --group dev ruff check . && uv run --group dev ruff format --check .
-uv run --group dev pyright                # type check (our own modules; see [tool.pyright])
-uv run python eval/harness.py check       # regression check against the saved baseline (GPU)
-uv run python eval/rebuild_check.py eval/runs/<run>   # pages rebuilt from project.mtl == PNGs
+uv run ruff check . && uv run ruff format --check .
+uv run --group dev pyright
+uv run python -m pytest -q --ignore=tests/test_engine_gpu.py --ignore=tests/test_stages_gpu.py --ignore=tests/test_studio_gpu.py
+uv run python -m pytest -q tests/test_studio_gpu.py tests/test_stages_gpu.py   # GPU: a full MCP session end to end
 ```
 
-CI (`.github/workflows/ci.yml`) runs ruff, pyright and the tests on CPU with a light set of
-packages; tests only import modules whose import chain stays free of torch / cv2. Every change to
-the pipeline is checked with the harness (see `eval/README.md`): zero differences unless intended.
+CI runs ruff, pyright and the light tests on CPU. Changes to detection, cleaning or typesetting are
+checked against saved reference output (`eval/`, see `eval/README.md`), which must show zero
+differences unless a change is meant to alter output.
 
 ## Layout
 
 ```
-translate.py          wrapper / entry point (CLI)
-webui.py, webui/      browser UI + reader (state in webui_data/, default output in translated/)
-studio.py             the studio: MCP server + inspector UI for agent translation (state in studio_data/)
-mangatl/              the pipeline (derived from MangaTranslator at e347a09; see mangatl/NOTICE)
-  settings.py         Settings: one typed object (pydantic) describing a run, by stage; written to
-                      <output>/settings.json with every run (secrets excluded)
-  presets.py          user-facing options (translate.py, web UI) -> Settings
-  cli.py              runs one input (run(): translate.py calls it in-process for each chapter)
-  studio/             workspace.py (projects, drafts, renders with outcomes, claims, notes,
-                      activity), tools.py (the MCP tools), web.py + static/ (UI), playbook.md
-  engine/             the long-lived engine: every model (models.py: local-first download, loaders),
-                      lazy loading and unloading to fit free VRAM (engine.py), one GPU slot where
-                      interactive calls go before batch ones (gpu.py), llama-server (llm.py), jobs
-  project/            the page document (model.py), operation log with undo / conflicts / staleness
-                      (ops.py), the project file (store.py, SQLite), images as patches and 1-bit
-                      masks (blobs.py), pipeline state in and out (capture.py), rebuild.py,
-                      region matching for re-detection (match.py)
-  pipeline/           stages.py: the stage API (detect, redetect, clean, prepare, ocr, translate,
-                      typeset, render; run() composes them), page.py (load a page, run, save),
-                      stored.py (stages on a stored page: load, save as operations, story context),
-                      long strips, batches
-  detect/             bubbles, panels / reading order, outside-text detector, text lines, tilt
-  ocr/                Hayai OCR and line-by-line reading (line_ocr.py)
-  clean/              bubble cleaning, glyph masks, LaMa inpainting
-  translate/          prompts and calls (service.py), vision_pass.py, glossary, LLM client
-  typeset/            layout, fonts, renderer, symbols, narration, sound-effect labels
-  ml/                 RT-DETR adapter, SAM-TS (hi_sam)
-  common/             shared helpers: image utils, caching, logging, eval_hooks (harness)
-  inputs/             archives and path lists
-bin/llama.cpp/        prebuilt llama.cpp b11972, CUDA 13.4
-models/llm/           translator GGUFs
-models/…              detection / OCR / inpainting weights (auto-downloaded)
-assets/symbols/       DejaVu Sans Bold for ♥ ♪ ★ (free license, see LICENSE-DejaVu.txt)
-fonts/                Comic Neue (dialogue), Bangers (OSB/SFX) — both SIL OFL
-                      Add your own as fonts/<Name>/ with -Regular/-Bold/-Italic in the file names
-                      (e.g. CC Wild Words, Anime Ace; git-ignored, as their licenses forbid redistribution)
-tests/                unit tests and static checks (imports resolve, Settings reads exist);
-                      test_stages_gpu.py: region-scoped stages on a stored page;
-                      test_engine_gpu.py: warm latency, a batch interleaved with editor requests
-eval/                 harness.py: regression check of every change against a saved baseline (replays
-                      the LLM answers, diffs pages and text; see eval/README.md);
-                      OpenMantra benchmark pages used to check quality; eval/djn/ doujin test runner;
-                      eval/ch6/ a chapter vs its English scanlation (refs.py reads the pro lettering,
-                      compare.py / checklist.py side by side); eval/om/ OpenMantra books vs their
-                      pro English. Runs pass --llm-fresh, which makes temperature-0 output repeatable
-                      (model licenses: Hayai Apache-2.0; comic-text-detector weights GPL-3.0)
-logs/llama-server.log
+studio.py             entry point: MCP server + inspector UI
+mangatl/studio/       workspace.py (projects, drafts, renders with outcomes, claims, reviews,
+                      glossary, script, export), tools.py (MCP tools), web.py + static/ (UI),
+                      playbook.md (the agent's workflow)
+mangatl/pipeline/     stages.py (detect, clean, prepare, ocr, typeset, render), stored.py (stages
+                      on a stored page)
+mangatl/engine/       models (local-first download), VRAM budget, priority GPU slot, jobs
+mangatl/project/      page document, operation log with undo, the SQLite project file
+mangatl/typeset/      layout, fonts, renderer, style.py (per-region lettering)
+mangatl/detect/, ocr/, clean/, ml/
+fonts/                Comic Neue, Bangers (OFL); add licensed fonts as fonts/<Name>/
+eval/                 benchmark pages (OpenMantra) and the regression harness
+tests/
 ```
+
+## Credits
+
+The image pipeline in `mangatl/` is derived from
+[MangaTranslator](https://github.com/meangrinch/MangaTranslator) (Apache-2.0; see `mangatl/NOTICE`).
+Model licences: Hayai OCR Apache-2.0; comic-text-detector weights GPL-3.0. Symbol font: DejaVu Sans
+(`assets/symbols/LICENSE-DejaVu.txt`).
